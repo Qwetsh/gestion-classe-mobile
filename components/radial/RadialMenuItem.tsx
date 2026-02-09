@@ -1,0 +1,144 @@
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, Animated } from 'react-native';
+import { MenuItemType, ITEM_SIZE } from '../../constants/menuItems';
+
+interface RadialMenuItemProps {
+  item: MenuItemType;
+  index: number;
+  totalItems: number;
+  radius: number;
+  isHovered: boolean;
+  menuScale: Animated.Value;
+  menuOpacity: Animated.Value;
+}
+
+export function RadialMenuItem({
+  item,
+  index,
+  totalItems,
+  radius,
+  isHovered,
+  menuScale,
+  menuOpacity,
+}: RadialMenuItemProps) {
+  const angle = (index * 2 * Math.PI) / totalItems - Math.PI / 2;
+  const x = Math.cos(angle) * radius;
+  const y = Math.sin(angle) * radius;
+
+  // Separate animated value for hover effect
+  const hoverScale = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(hoverScale, {
+      toValue: isHovered ? 1.3 : 1,
+      damping: 15,
+      stiffness: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [isHovered, hoverScale]);
+
+  const animatedStyle = {
+    opacity: menuOpacity,
+    transform: [
+      {
+        translateX: menuScale.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, x],
+        }),
+      },
+      {
+        translateY: menuScale.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0, y],
+        }),
+      },
+      {
+        scale: Animated.multiply(
+          menuScale.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.3, 1],
+          }),
+          hoverScale
+        ),
+      },
+    ],
+  };
+
+  return (
+    <Animated.View
+      style={[
+        styles.itemContainer,
+        animatedStyle,
+        {
+          backgroundColor: isHovered ? item.color : `${item.color}99`,
+          borderColor: isHovered ? '#FFFFFF' : 'transparent',
+          borderWidth: isHovered ? 4 : 0,
+          // Add shadow when hovered
+          shadowOpacity: isHovered ? 0.5 : 0.25,
+          shadowRadius: isHovered ? 8 : 4,
+          elevation: isHovered ? 10 : 5,
+        },
+      ]}
+    >
+      <Text style={[styles.icon, isHovered && styles.iconHovered]}>{item.icon}</Text>
+      <Text style={[styles.label, isHovered && styles.labelHovered]} numberOfLines={1}>
+        {item.label}
+      </Text>
+      {item.subItems && (
+        <View style={[styles.submenuIndicator, isHovered && styles.submenuIndicatorHovered]}>
+          <Text style={styles.submenuArrow}>›</Text>
+        </View>
+      )}
+    </Animated.View>
+  );
+}
+
+const styles = StyleSheet.create({
+  itemContainer: {
+    position: 'absolute',
+    width: ITEM_SIZE,
+    height: ITEM_SIZE,
+    borderRadius: ITEM_SIZE / 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+  },
+  icon: {
+    fontSize: 24,
+    marginBottom: 2,
+  },
+  iconHovered: {
+    fontSize: 28,
+  },
+  label: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    textAlign: 'center',
+    maxWidth: ITEM_SIZE - 8,
+  },
+  labelHovered: {
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  submenuIndicator: {
+    position: 'absolute',
+    right: 4,
+    top: 4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  submenuIndicatorHovered: {
+    backgroundColor: 'rgba(255,255,255,0.6)',
+  },
+  submenuArrow: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+  },
+});
