@@ -16,6 +16,8 @@ import {
   StudentEventCounts,
 } from '../services/database';
 
+// Re-export getActiveSession for use in verification
+
 interface SessionState {
   // Active session
   activeSession: Session | null;
@@ -30,7 +32,7 @@ interface SessionState {
   error: string | null;
 
   // Actions
-  startSession: (userId: string, classId: string, roomId: string) => Promise<Session>;
+  startSession: (userId: string, classId: string, roomId: string, topic?: string | null) => Promise<Session>;
   endCurrentSession: () => Promise<void>;
   cancelCurrentSession: () => Promise<void>;
   loadActiveSession: (userId: string) => Promise<void>;
@@ -58,10 +60,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isLoading: false,
   error: null,
 
-  startSession: async (userId: string, classId: string, roomId: string) => {
+  startSession: async (userId: string, classId: string, roomId: string, topic?: string | null) => {
     set({ isLoading: true, error: null });
     try {
-      const session = await createSession(userId, classId, roomId);
+      const session = await createSession(userId, classId, roomId, topic);
       set({
         activeSession: session,
         isSessionActive: true,
@@ -69,7 +71,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         eventCountsByStudent: {},
         isLoading: false,
       });
-      console.log('[sessionStore] Session started:', session.id);
+      console.log('[sessionStore] Session started:', session.id, 'topic:', topic);
       return session;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to start session';
@@ -82,9 +84,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const { activeSession } = get();
     if (!activeSession) return;
 
+    const sessionId = activeSession.id;
+    const userId = activeSession.user_id;
+
     set({ isLoading: true, error: null });
     try {
-      await endSession(activeSession.id);
+      await endSession(sessionId);
+
+      // Verify the session is truly ended by checking the database
+      // This prevents race conditions where the UI navigates before DB commits
+      let retries = 0;
+      const maxRetries = 5;
+      while (retries < maxRetries) {
+        const checkSession = await getActiveSession(userId);
+        if (!checkSession || checkSession.id !== sessionId) {
+          // Session is properly ended
+          break;
+        }
+        // Wait a bit and retry
+        await new Promise(resolve => setTimeout(resolve, 50));
+        retries++;
+        console.log('[sessionStore] Waiting for session end to commit, retry:', retries);
+      }
+
+      if (retries === maxRetries) {
+        console.warn('[sessionStore] Session end verification timed out, forcing state clear');
+      }
+
       set({
         activeSession: null,
         isSessionActive: false,
@@ -92,7 +118,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         eventCountsByStudent: {},
         isLoading: false,
       });
-      console.log('[sessionStore] Session ended:', activeSession.id);
+      console.log('[sessionStore] Session ended and verified:', sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to end session';
       set({ error: message, isLoading: false });

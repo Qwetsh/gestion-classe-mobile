@@ -5,9 +5,11 @@ import * as database from '../../services/database';
 jest.mock('../../services/database', () => ({
   createSession: jest.fn(),
   endSession: jest.fn(),
+  deleteSession: jest.fn(),
   getActiveSession: jest.fn(),
   getSessionsByUserId: jest.fn(),
   createEvent: jest.fn(),
+  deleteEvent: jest.fn(),
   getEventsBySessionId: jest.fn(),
   getAllStudentEventCounts: jest.fn(),
 }));
@@ -25,6 +27,7 @@ describe('sessionStore', () => {
     user_id: mockUserId,
     class_id: mockClassId,
     room_id: mockRoomId,
+    topic: null,
     started_at: '2026-02-04T10:00:00.000Z',
     ended_at: null,
     synced_at: null,
@@ -54,7 +57,8 @@ describe('sessionStore', () => {
       expect(mockDatabase.createSession).toHaveBeenCalledWith(
         mockUserId,
         mockClassId,
-        mockRoomId
+        mockRoomId,
+        undefined
       );
       expect(result).toEqual(mockSession);
 
@@ -192,6 +196,127 @@ describe('sessionStore', () => {
 
       expect(result).toBeNull();
       expect(mockDatabase.createEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancelCurrentSession', () => {
+    it('should delete the session and clear state', async () => {
+      // Set up active session
+      useSessionStore.setState({
+        activeSession: mockSession,
+        isSessionActive: true,
+        events: [{ id: 'event-1' } as any],
+        eventCountsByStudent: { 'student-1': { participation: 2 } as any },
+      });
+
+      mockDatabase.deleteSession.mockResolvedValue(undefined);
+      mockDatabase.getActiveSession.mockResolvedValue(null);
+
+      const store = useSessionStore.getState();
+      await store.cancelCurrentSession();
+
+      expect(mockDatabase.deleteSession).toHaveBeenCalledWith(mockSessionId);
+
+      const state = useSessionStore.getState();
+      expect(state.activeSession).toBeNull();
+      expect(state.isSessionActive).toBe(false);
+      expect(state.events).toHaveLength(0);
+      expect(state.eventCountsByStudent).toEqual({});
+    });
+
+    it('should do nothing if no active session', async () => {
+      const store = useSessionStore.getState();
+      await store.cancelCurrentSession();
+
+      expect(mockDatabase.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it('should throw error if session still exists after deletion', async () => {
+      useSessionStore.setState({
+        activeSession: mockSession,
+        isSessionActive: true,
+      });
+
+      mockDatabase.deleteSession.mockResolvedValue(undefined);
+      // Session still exists after delete (bug scenario)
+      mockDatabase.getActiveSession.mockResolvedValue(mockSession);
+
+      const store = useSessionStore.getState();
+
+      await expect(store.cancelCurrentSession()).rejects.toThrow(
+        'La session existe toujours apres suppression'
+      );
+    });
+  });
+
+  describe('removeAbsence', () => {
+    const mockStudentId = 'student-xyz';
+    const mockAbsenceEvent = {
+      id: 'event-absence-1',
+      session_id: mockSessionId,
+      student_id: mockStudentId,
+      type: 'absence' as const,
+      subtype: null,
+      note: null,
+      photo_path: null,
+      timestamp: '2026-02-04T10:30:00.000Z',
+      synced_at: null,
+    };
+
+    beforeEach(() => {
+      useSessionStore.setState({
+        activeSession: mockSession,
+        isSessionActive: true,
+        events: [mockAbsenceEvent],
+        eventCountsByStudent: {
+          [mockStudentId]: {
+            participation: 0,
+            bavardage: 0,
+            absence: 1,
+            remarque: 0,
+            sortie: 0,
+          },
+        },
+      });
+    });
+
+    it('should remove absence event and update counts', async () => {
+      mockDatabase.deleteEvent.mockResolvedValue(undefined);
+
+      const store = useSessionStore.getState();
+      const result = await store.removeAbsence(mockStudentId);
+
+      expect(result).toBe(true);
+      expect(mockDatabase.deleteEvent).toHaveBeenCalledWith(mockAbsenceEvent.id);
+
+      const state = useSessionStore.getState();
+      expect(state.events).toHaveLength(0);
+      expect(state.eventCountsByStudent[mockStudentId].absence).toBe(0);
+    });
+
+    it('should return false if no absence event found', async () => {
+      useSessionStore.setState({
+        activeSession: mockSession,
+        isSessionActive: true,
+        events: [], // No events
+        eventCountsByStudent: {},
+      });
+
+      const store = useSessionStore.getState();
+      const result = await store.removeAbsence(mockStudentId);
+
+      expect(result).toBe(false);
+      expect(mockDatabase.deleteEvent).not.toHaveBeenCalled();
+    });
+
+    it('should return false if no active session', async () => {
+      useSessionStore.setState({ activeSession: null, isSessionActive: false });
+
+      const store = useSessionStore.getState();
+      const result = await store.removeAbsence(mockStudentId);
+
+      expect(result).toBe(false);
+      expect(mockDatabase.deleteEvent).not.toHaveBeenCalled();
     });
   });
 

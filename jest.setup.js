@@ -1,5 +1,8 @@
 // Jest setup file
 
+// Define React Native globals
+global.__DEV__ = true;
+
 // Mock global expo registry before any imports
 global.__ExpoImportMetaRegistry = {};
 

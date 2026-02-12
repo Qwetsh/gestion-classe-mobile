@@ -38,6 +38,7 @@ export default function HomeScreen() {
       }
     };
     initializeData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   // Auto-sync when classes list is empty (fresh install)
@@ -50,6 +51,7 @@ export default function HomeScreen() {
       }
     };
     autoSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, classesLoading, classes.length, isSyncing]);
 
   const handleLogout = async () => {
@@ -100,8 +102,8 @@ export default function HomeScreen() {
 
       {/* Main Content */}
       <View style={styles.mainContent}>
-        {/* Active Session Card */}
-        {isSessionActive && activeSession && (
+        {/* Active Session Card - only show if session exists AND has no ended_at */}
+        {isSessionActive && activeSession && !activeSession.ended_at && (
           <View style={styles.activeSessionCard}>
             <View style={styles.activeSessionHeader}>
               <View style={styles.liveIndicator}>
@@ -199,6 +201,20 @@ export default function HomeScreen() {
             <Text style={styles.quickActionSubtitle}>
               {classesLoading ? 'Chargement...' : `${classes.length} classe${classes.length > 1 ? 's' : ''}`}
             </Text>
+          </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionCard,
+              pressed && styles.quickActionCardPressed,
+            ]}
+            onPress={() => router.push('/(main)/parent-meeting')}
+          >
+            <View style={[styles.quickActionIcon, { backgroundColor: theme.colors.primarySoft }]}>
+              <Text style={styles.quickActionIconText}>👨‍👩‍👧</Text>
+            </View>
+            <Text style={styles.quickActionTitle}>Parents</Text>
+            <Text style={styles.quickActionSubtitle}>Reunions</Text>
           </Pressable>
         </View>
       </View>
@@ -381,10 +397,11 @@ const styles = StyleSheet.create({
   // Quick Actions Grid
   quickActionsGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: theme.spacing.md,
   },
   quickActionCard: {
-    flex: 1,
+    width: '47%',
     backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.xl,
     padding: theme.spacing.lg,

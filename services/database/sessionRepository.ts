@@ -6,6 +6,7 @@ export interface Session {
   user_id: string;
   class_id: string;
   room_id: string;
+  topic: string | null;
   started_at: string;
   ended_at: string | null;
   synced_at: string | null;
@@ -17,24 +18,29 @@ export interface Session {
 export async function createSession(
   userId: string,
   classId: string,
-  roomId: string
+  roomId: string,
+  topic?: string | null
 ): Promise<Session> {
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
+  const sessionTopic = topic?.trim() || null;
 
   await executeSql(
-    `INSERT INTO sessions (id, user_id, class_id, room_id, started_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, userId, classId, roomId, now]
+    `INSERT INTO sessions (id, user_id, class_id, room_id, topic, started_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, userId, classId, roomId, sessionTopic, now]
   );
 
-  console.log('[sessionRepository] Created session:', id);
+  if (__DEV__) {
+    console.log('[sessionRepository] Created session:', id, 'topic:', sessionTopic);
+  }
 
   return {
     id,
     user_id: userId,
     class_id: classId,
     room_id: roomId,
+    topic: sessionTopic,
     started_at: now,
     ended_at: null,
     synced_at: null,
@@ -53,7 +59,9 @@ export async function endSession(id: string): Promise<Session | null> {
     [now, id]
   );
 
-  console.log('[sessionRepository] Ended session:', id);
+  if (__DEV__) {
+    console.log('[sessionRepository] Ended session:', id);
+  }
   return getSessionById(id);
 }
 
@@ -119,20 +127,22 @@ export async function getSessionsByDateRange(
  * Delete a session and its events
  */
 export async function deleteSession(id: string): Promise<void> {
-  console.log('[sessionRepository] deleteSession called with id:', id);
+  if (__DEV__) {
+    console.log('[sessionRepository] deleteSession called with id:', id);
+  }
 
   // Delete events first (foreign key)
-  console.log('[sessionRepository] Deleting events for session:', id);
   await executeSql(
     `DELETE FROM events WHERE session_id = ?`,
     [id]
   );
-  console.log('[sessionRepository] Events deleted');
 
-  console.log('[sessionRepository] Deleting session:', id);
   await executeSql(
     `DELETE FROM sessions WHERE id = ?`,
     [id]
   );
-  console.log('[sessionRepository] Session deleted successfully:', id);
+
+  if (__DEV__) {
+    console.log('[sessionRepository] Session deleted:', id);
+  }
 }

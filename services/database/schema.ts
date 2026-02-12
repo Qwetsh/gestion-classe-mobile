@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * SQL statements to create all tables
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL,
   class_id TEXT NOT NULL,
   room_id TEXT NOT NULL,
+  topic TEXT,
   started_at TEXT NOT NULL DEFAULT (datetime('now')),
   ended_at TEXT,
   synced_at TEXT,

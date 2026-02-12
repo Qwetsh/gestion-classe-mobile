@@ -6,6 +6,7 @@ import {
   Pressable,
   ActivityIndicator,
   ScrollView,
+  TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack } from 'expo-router';
@@ -27,6 +28,7 @@ export default function StartSessionScreen() {
 
   const [selectedClass, setSelectedClass] = useState<Class | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
+  const [topic, setTopic] = useState('');
 
   // Load data on mount
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function StartSessionScreen() {
     if (!user?.id || !selectedClass || !selectedRoom) return;
 
     try {
-      const session = await startSession(user.id, selectedClass.id, selectedRoom.id);
+      const session = await startSession(user.id, selectedClass.id, selectedRoom.id, topic || null);
       router.replace(`/(main)/session/${session.id}`);
     } catch (error) {
       console.error('Failed to start session:', error);
@@ -209,6 +211,32 @@ export default function StartSessionScreen() {
                 ))}
               </View>
             )}
+          </View>
+
+          {/* Topic/Theme Section */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.remarqueSoft }]}>
+                <Text style={styles.sectionIcon}>📝</Text>
+              </View>
+              <Text style={styles.sectionTitle}>Theme de la seance</Text>
+              <Text style={styles.optionalBadge}>Optionnel</Text>
+            </View>
+            <View style={styles.topicInputContainer}>
+              <TextInput
+                style={styles.topicInput}
+                placeholder="Ex: Chapitre 3 - Les fonctions lineaires..."
+                placeholderTextColor={theme.colors.textTertiary}
+                value={topic}
+                onChangeText={setTopic}
+                multiline
+                numberOfLines={2}
+                maxLength={200}
+              />
+              {topic.length > 0 && (
+                <Text style={styles.topicCharCount}>{topic.length}/200</Text>
+              )}
+            </View>
           </View>
         </ScrollView>
 
@@ -464,5 +492,29 @@ const styles = StyleSheet.create({
     color: theme.colors.textTertiary,
     fontSize: 15,
     fontWeight: '500',
+  },
+  optionalBadge: {
+    marginLeft: 'auto',
+    fontSize: 12,
+    color: theme.colors.textTertiary,
+    fontStyle: 'italic',
+  },
+  topicInputContainer: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.md,
+    ...theme.shadows.sm,
+  },
+  topicInput: {
+    fontSize: 15,
+    color: theme.colors.text,
+    minHeight: 60,
+    textAlignVertical: 'top',
+  },
+  topicCharCount: {
+    fontSize: 11,
+    color: theme.colors.textTertiary,
+    textAlign: 'right',
+    marginTop: theme.spacing.xs,
   },
 });

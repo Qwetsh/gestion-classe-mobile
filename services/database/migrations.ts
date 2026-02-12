@@ -134,6 +134,29 @@ async function runMigrations(fromVersion: number): Promise<void> {
 
     console.log('[Database] Migration v3 complete');
   }
+
+  // Migration 3 -> 4: Add topic to sessions
+  if (fromVersion < 4) {
+    console.log('[Database] Applying migration: Add topic to sessions (v4)');
+
+    // Check if column already exists (in case of interrupted migration)
+    const hasTopic = await columnExists('sessions', 'topic');
+    if (!hasTopic) {
+      await executeSql(
+        'ALTER TABLE sessions ADD COLUMN topic TEXT'
+      );
+    } else {
+      console.log('[Database] Column topic already exists, skipping');
+    }
+
+    // Update schema version
+    await executeSql(
+      'UPDATE schema_version SET version = ?',
+      [4]
+    );
+
+    console.log('[Database] Migration v4 complete');
+  }
 }
 
 /**
