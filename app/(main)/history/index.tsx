@@ -5,10 +5,11 @@ import {
   StyleSheet,
   Pressable,
   ActivityIndicator,
-  FlatList,
+  SectionList,
   RefreshControl,
   ScrollView,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack } from 'expo-router';
@@ -44,6 +45,56 @@ function formatDate(dateString: string): string {
   });
 }
 
+// Helper to get date key for grouping (YYYY-MM-DD)
+function getDateKey(dateString: string): string {
+  const date = new Date(dateString);
+  return date.toISOString().split('T')[0];
+}
+
+// Helper to format relative date for section headers
+function formatRelativeDate(dateKey: string): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const date = new Date(dateKey + 'T00:00:00');
+
+  if (date.getTime() === today.getTime()) {
+    return "Aujourd'hui";
+  }
+  if (date.getTime() === yesterday.getTime()) {
+    return 'Hier';
+  }
+
+  // Check if same week
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  if (date > weekAgo) {
+    return date.toLocaleDateString('fr-FR', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+    });
+  }
+
+  // Full date for older
+  return date.toLocaleDateString('fr-FR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+interface SessionSection {
+  title: string;
+  dateKey: string;
+  data: Session[];
+}
+
 // Helper to format time
 function formatTime(dateString: string): string {
   const date = new Date(dateString);
@@ -62,6 +113,7 @@ export default function HistoryScreen() {
 
   // Filter state: null = all classes, string = specific class ID
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Load data on mount
   useEffect(() => {
@@ -93,6 +145,46 @@ export default function HistoryScreen() {
     rooms.forEach((r) => map.set(r.id, r.name));
     return map;
   }, [rooms]);
+
+  // Filter sessions by search query
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return sessions;
+
+    const query = searchQuery.toLowerCase().trim();
+    return sessions.filter((session) => {
+      const className = classMap.get(session.class_id)?.toLowerCase() || '';
+      const roomName = roomMap.get(session.room_id)?.toLowerCase() || '';
+      const topic = session.topic?.toLowerCase() || '';
+
+      return (
+        className.includes(query) ||
+        roomName.includes(query) ||
+        topic.includes(query)
+      );
+    });
+  }, [sessions, searchQuery, classMap, roomMap]);
+
+  // Group sessions by day
+  const sessionSections = useMemo((): SessionSection[] => {
+    const grouped = new Map<string, Session[]>();
+
+    for (const session of filteredSessions) {
+      const dateKey = getDateKey(session.started_at);
+      if (!grouped.has(dateKey)) {
+        grouped.set(dateKey, []);
+      }
+      grouped.get(dateKey)!.push(session);
+    }
+
+    // Sort by date descending, convert to sections
+    const sortedKeys = Array.from(grouped.keys()).sort((a, b) => b.localeCompare(a));
+
+    return sortedKeys.map((dateKey) => ({
+      title: formatRelativeDate(dateKey),
+      dateKey,
+      data: grouped.get(dateKey)!,
+    }));
+  }, [filteredSessions]);
 
   const handleRefresh = useCallback(async () => {
     // First sync with server to get latest data
@@ -156,7 +248,6 @@ export default function HistoryScreen() {
     const className = classMap.get(item.class_id) || 'Classe inconnue';
     const roomName = roomMap.get(item.room_id) || 'Salle inconnue';
     const duration = formatDuration(item.started_at, item.ended_at);
-    const dateStr = formatDate(item.started_at);
     const timeStr = formatTime(item.started_at);
 
     return (
@@ -181,16 +272,18 @@ export default function HistoryScreen() {
               <Text style={styles.deleteButtonText}>🗑️</Text>
             </Pressable>
           </View>
-          <Text style={styles.sessionDate}>{dateStr}</Text>
+          {item.topic ? (
+            <Text style={styles.sessionTopic} numberOfLines={1}>{item.topic}</Text>
+          ) : null}
           <View style={styles.sessionMeta}>
-            <View style={styles.metaItem}>
-              <Text style={styles.metaLabel}>Salle</Text>
-              <Text style={styles.metaValue}>{roomName}</Text>
-            </View>
-            <View style={styles.metaDivider} />
             <View style={styles.metaItem}>
               <Text style={styles.metaLabel}>Heure</Text>
               <Text style={styles.metaValue}>{timeStr}</Text>
+            </View>
+            <View style={styles.metaDivider} />
+            <View style={styles.metaItem}>
+              <Text style={styles.metaLabel}>Salle</Text>
+              <Text style={styles.metaValue}>{roomName}</Text>
             </View>
             <View style={styles.metaDivider} />
             <View style={styles.metaItem}>
@@ -211,11 +304,15 @@ export default function HistoryScreen() {
       <View style={styles.placeholderIconContainer}>
         <Text style={styles.placeholderEmoji}>📋</Text>
       </View>
-      <Text style={styles.placeholderTitle}>Aucune seance</Text>
+      <Text style={styles.placeholderTitle}>
+        {searchQuery ? 'Aucun resultat' : 'Aucune seance'}
+      </Text>
       <Text style={styles.placeholderText}>
-        {selectedClassId
-          ? 'Aucune seance pour cette classe'
-          : 'Vos seances terminees apparaitront ici'}
+        {searchQuery
+          ? `Aucune seance ne correspond a "${searchQuery}"`
+          : selectedClassId
+            ? 'Aucune seance pour cette classe'
+            : 'Vos seances terminees apparaitront ici'}
       </Text>
     </View>
   );
@@ -249,6 +346,30 @@ export default function HistoryScreen() {
           ),
         }}
       />
+
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <View style={styles.searchBar}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Rechercher (classe, salle, theme)..."
+            placeholderTextColor={theme.colors.textTertiary}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <Pressable
+              onPress={() => setSearchQuery('')}
+              style={styles.clearButton}
+            >
+              <Text style={styles.clearButtonText}>✕</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
 
       {/* Class Filter */}
       {classes.length > 0 && (
@@ -312,13 +433,20 @@ export default function HistoryScreen() {
           <Text style={styles.loadingText}>Chargement de l'historique...</Text>
         </View>
       ) : (
-        <FlatList
-          data={sessions}
+        <SectionList
+          sections={sessionSections}
           renderItem={renderSessionItem}
+          renderSectionHeader={({ section }) => (
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderText}>{section.title}</Text>
+              <View style={styles.sectionHeaderLine} />
+            </View>
+          )}
           keyExtractor={(item) => item.id}
           ListEmptyComponent={renderEmptyList}
-          contentContainerStyle={sessions.length === 0 ? styles.emptyList : styles.list}
+          contentContainerStyle={sessionSections.length === 0 ? styles.emptyList : styles.list}
           showsVerticalScrollIndicator={false}
+          stickySectionHeadersEnabled={false}
           refreshControl={
             <RefreshControl
               refreshing={isLoading || isSyncing}
@@ -328,10 +456,11 @@ export default function HistoryScreen() {
             />
           }
           ListHeaderComponent={
-            sessions.length > 0 ? (
+            filteredSessions.length > 0 ? (
               <View style={styles.listHeaderContainer}>
                 <Text style={styles.listHeader}>
-                  {sessions.length} seance{sessions.length > 1 ? 's' : ''}
+                  {filteredSessions.length} seance{filteredSessions.length > 1 ? 's' : ''}
+                  {searchQuery ? ` pour "${searchQuery}"` : ''}
                 </Text>
               </View>
             ) : null
@@ -359,6 +488,35 @@ const styles = StyleSheet.create({
     color: theme.colors.primary,
     fontSize: 16,
     fontWeight: '600',
+  },
+  searchContainer: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: theme.spacing.md,
+    ...theme.shadows.sm,
+  },
+  searchIcon: {
+    fontSize: 16,
+    marginRight: theme.spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    height: 44,
+    fontSize: 16,
+    color: theme.colors.text,
+  },
+  clearButton: {
+    padding: theme.spacing.xs,
+  },
+  clearButtonText: {
+    fontSize: 16,
+    color: theme.colors.textTertiary,
   },
   filterContainer: {
     paddingVertical: theme.spacing.sm,
@@ -428,6 +586,24 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.sm,
+  },
+  sectionHeaderText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.colors.primary,
+    textTransform: 'capitalize',
+    marginRight: theme.spacing.md,
+  },
+  sectionHeaderLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: theme.colors.border,
+  },
   sessionCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -465,17 +641,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: theme.colors.text,
   },
+  sessionTopic: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
   deleteButton: {
     padding: theme.spacing.xs,
   },
   deleteButtonText: {
     fontSize: 14,
-  },
-  sessionDate: {
-    fontSize: 13,
-    color: theme.colors.textTertiary,
-    marginTop: 2,
-    textTransform: 'capitalize',
   },
   sessionMeta: {
     flexDirection: 'row',
