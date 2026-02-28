@@ -117,7 +117,7 @@ export default function StartSessionScreen() {
               </View>
             ) : (
               <View style={styles.optionsList}>
-                {classes.map((cls, index) => (
+                {(selectedClass ? classes.filter(c => c.id === selectedClass.id) : classes).map((cls, index) => (
                   <Pressable
                     key={cls.id}
                     style={({ pressed }) => [
@@ -125,7 +125,14 @@ export default function StartSessionScreen() {
                       selectedClass?.id === cls.id && styles.optionCardSelected,
                       pressed && styles.optionCardPressed,
                     ]}
-                    onPress={() => setSelectedClass(cls)}
+                    onPress={() => {
+                      if (selectedClass?.id === cls.id) {
+                        setSelectedClass(null);
+                        setSelectedRoom(null);
+                      } else {
+                        setSelectedClass(cls);
+                      }
+                    }}
                   >
                     <View style={[styles.optionIconContainer, { backgroundColor: getClassColor(index) }]}>
                       <Text style={styles.optionIconText}>{cls.name.substring(0, 2).toUpperCase()}</Text>
@@ -140,11 +147,11 @@ export default function StartSessionScreen() {
                         {cls.name}
                       </Text>
                     </View>
-                    {selectedClass?.id === cls.id && (
-                      <View style={styles.checkmarkContainer}>
-                        <Text style={styles.checkmark}>✓</Text>
+                    {selectedClass?.id === cls.id ? (
+                      <View style={styles.changeButton}>
+                        <Text style={styles.changeButtonText}>Changer</Text>
                       </View>
-                    )}
+                    ) : null}
                   </Pressable>
                 ))}
               </View>
@@ -427,6 +434,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: theme.colors.textInverse,
+  },
+  changeButton: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.surfaceSecondary,
+  },
+  changeButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.textSecondary,
   },
   footer: {
     padding: theme.spacing.lg,
