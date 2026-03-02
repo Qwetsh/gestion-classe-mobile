@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 4;
 
 /**
  * SQL statements to create all tables
@@ -107,56 +107,6 @@ CREATE TABLE IF NOT EXISTS local_student_mapping (
   FOREIGN KEY (student_id) REFERENCES students(id)
 );
 
--- Group templates (saved configurations per class)
-CREATE TABLE IF NOT EXISTS group_templates (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  class_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  groups_config TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT,
-  synced_at TEXT,
-  is_deleted INTEGER DEFAULT 0,
-  FOREIGN KEY (class_id) REFERENCES classes(id)
-);
-
--- Session groups (active groups during a session)
-CREATE TABLE IF NOT EXISTS session_groups (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  group_number INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  synced_at TEXT,
-  FOREIGN KEY (session_id) REFERENCES sessions(id)
-);
-
--- Group members (student-group association)
-CREATE TABLE IF NOT EXISTS group_members (
-  id TEXT PRIMARY KEY,
-  session_group_id TEXT NOT NULL,
-  student_id TEXT NOT NULL,
-  joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-  left_at TEXT,
-  synced_at TEXT,
-  FOREIGN KEY (session_group_id) REFERENCES session_groups(id),
-  FOREIGN KEY (student_id) REFERENCES students(id)
-);
-
--- Group events (remarks and grades for groups)
-CREATE TABLE IF NOT EXISTS group_events (
-  id TEXT PRIMARY KEY,
-  session_group_id TEXT NOT NULL,
-  type TEXT NOT NULL,
-  note TEXT,
-  photo_path TEXT,
-  grade_value REAL,
-  grade_max INTEGER,
-  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-  synced_at TEXT,
-  FOREIGN KEY (session_group_id) REFERENCES session_groups(id)
-);
-
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
@@ -165,11 +115,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_student_id ON events(student_id);
 CREATE INDEX IF NOT EXISTS idx_local_mapping_student_id ON local_student_mapping(student_id);
-CREATE INDEX IF NOT EXISTS idx_group_templates_class_id ON group_templates(class_id);
-CREATE INDEX IF NOT EXISTS idx_session_groups_session_id ON session_groups(session_id);
-CREATE INDEX IF NOT EXISTS idx_group_members_session_group_id ON group_members(session_group_id);
-CREATE INDEX IF NOT EXISTS idx_group_members_student_id ON group_members(student_id);
-CREATE INDEX IF NOT EXISTS idx_group_events_session_group_id ON group_events(session_group_id);
 `;
 
 /**
@@ -181,7 +126,6 @@ export const EVENT_TYPES = {
   ABSENCE: 'absence',
   REMARQUE: 'remarque',
   SORTIE: 'sortie',
-  NOTE_GROUPE: 'note_groupe',
 } as const;
 
 /**
@@ -192,12 +136,4 @@ export const SORTIE_SUBTYPES = {
   TOILETTES: 'toilettes',
   CONVOCATION: 'convocation',
   EXCLUSION: 'exclusion',
-} as const;
-
-/**
- * Group event types
- */
-export const GROUP_EVENT_TYPES = {
-  REMARQUE: 'remarque',
-  NOTE: 'note',
 } as const;

@@ -13,10 +13,6 @@ export interface SyncResult {
   studentsSync: number;
   roomsSync: number;
   plansSync: number;
-  groupTemplatesSync: number;
-  sessionGroupsSync: number;
-  groupMembersSync: number;
-  groupEventsSync: number;
   errors: string[];
 }
 
@@ -26,29 +22,14 @@ export interface SyncResult {
 export async function getUnsyncedCount(): Promise<number> {
   if (!isSupabaseConfigured) return 0;
 
-  const tables = [
-    'sessions',
-    'events',
-    'classes',
-    'students',
-    'rooms',
-    'class_room_plans',
-    'group_templates',
-    'session_groups',
-    'group_members',
-    'group_events',
-  ];
+  const tables = ['sessions', 'events', 'classes', 'students', 'rooms', 'class_room_plans'];
   let total = 0;
 
   for (const table of tables) {
-    try {
-      const result = await queryAll<{ count: number }>(
-        `SELECT COUNT(*) as count FROM ${table} WHERE synced_at IS NULL`
-      );
-      total += result[0]?.count || 0;
-    } catch {
-      // Table might not exist yet, skip
-    }
+    const result = await queryAll<{ count: number }>(
+      `SELECT COUNT(*) as count FROM ${table} WHERE synced_at IS NULL`
+    );
+    total += result[0]?.count || 0;
   }
 
   return total;
@@ -66,10 +47,6 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     studentsSync: 0,
     roomsSync: 0,
     plansSync: 0,
-    groupTemplatesSync: 0,
-    sessionGroupsSync: 0,
-    groupMembersSync: 0,
-    groupEventsSync: 0,
     errors: [],
   };
 
@@ -80,7 +57,7 @@ export async function syncAll(userId: string): Promise<SyncResult> {
   }
 
   try {
-    // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events -> groups
+    // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events
 
     // 1. Sync classes
     result.classesSync = await syncClasses(userId);
@@ -99,18 +76,6 @@ export async function syncAll(userId: string): Promise<SyncResult> {
 
     // 6. Sync events
     result.eventsSync = await syncEvents();
-
-    // 7. Sync group templates
-    result.groupTemplatesSync = await syncGroupTemplates(userId);
-
-    // 8. Sync session groups (depends on sessions)
-    result.sessionGroupsSync = await syncSessionGroups();
-
-    // 9. Sync group members (depends on session groups and students)
-    result.groupMembersSync = await syncGroupMembers();
-
-    // 10. Sync group events (depends on session groups)
-    result.groupEventsSync = await syncGroupEvents();
 
     console.log('[syncService] Sync complete:', result);
   } catch (error) {
@@ -521,203 +486,6 @@ async function syncEvents(): Promise<number> {
   }
 
   return unsynced.length;
-}
-
-/**
- * Sync group templates to Supabase
- */
-async function syncGroupTemplates(userId: string): Promise<number> {
-  if (!supabase) return 0;
-
-  try {
-    const unsynced = await queryAll<{
-      id: string;
-      class_id: string;
-      name: string;
-      groups_config: string;
-      created_at: string;
-      updated_at: string | null;
-      is_deleted: number;
-    }>(`SELECT * FROM group_templates WHERE user_id = ? AND synced_at IS NULL`, [userId]);
-
-    if (unsynced.length === 0) return 0;
-
-    const toSync = unsynced.map((t) => ({
-      id: t.id,
-      user_id: userId,
-      class_id: t.class_id,
-      name: t.name,
-      groups_config: JSON.parse(t.groups_config),
-      created_at: t.created_at,
-      updated_at: t.updated_at,
-      is_deleted: t.is_deleted === 1,
-    }));
-
-    const { error } = await supabase
-      .from('group_templates')
-      .upsert(toSync, { onConflict: 'id' });
-
-    if (error) {
-      console.error('[syncService] Group templates sync error:', error);
-      throw new Error(`Group templates: ${error.message}`);
-    }
-
-    // Mark as synced
-    const now = new Date().toISOString();
-    for (const t of unsynced) {
-      await executeSql(`UPDATE group_templates SET synced_at = ? WHERE id = ?`, [now, t.id]);
-    }
-
-    return unsynced.length;
-  } catch (error) {
-    console.error('[syncService] syncGroupTemplates error:', error);
-    return 0;
-  }
-}
-
-/**
- * Sync session groups to Supabase
- */
-async function syncSessionGroups(): Promise<number> {
-  if (!supabase) return 0;
-
-  try {
-    const unsynced = await queryAll<{
-      id: string;
-      session_id: string;
-      group_number: number;
-      created_at: string;
-    }>(`SELECT * FROM session_groups WHERE synced_at IS NULL`);
-
-    if (unsynced.length === 0) return 0;
-
-    const toSync = unsynced.map((g) => ({
-      id: g.id,
-      session_id: g.session_id,
-      group_number: g.group_number,
-      created_at: g.created_at,
-    }));
-
-    const { error } = await supabase
-      .from('session_groups')
-      .upsert(toSync, { onConflict: 'id' });
-
-    if (error) {
-      console.error('[syncService] Session groups sync error:', error);
-      throw new Error(`Session groups: ${error.message}`);
-    }
-
-    // Mark as synced
-    const now = new Date().toISOString();
-    for (const g of unsynced) {
-      await executeSql(`UPDATE session_groups SET synced_at = ? WHERE id = ?`, [now, g.id]);
-    }
-
-    return unsynced.length;
-  } catch (error) {
-    console.error('[syncService] syncSessionGroups error:', error);
-    return 0;
-  }
-}
-
-/**
- * Sync group members to Supabase
- */
-async function syncGroupMembers(): Promise<number> {
-  if (!supabase) return 0;
-
-  try {
-    const unsynced = await queryAll<{
-      id: string;
-      session_group_id: string;
-      student_id: string;
-      joined_at: string;
-      left_at: string | null;
-    }>(`SELECT * FROM group_members WHERE synced_at IS NULL`);
-
-    if (unsynced.length === 0) return 0;
-
-    const toSync = unsynced.map((m) => ({
-      id: m.id,
-      session_group_id: m.session_group_id,
-      student_id: m.student_id,
-      joined_at: m.joined_at,
-      left_at: m.left_at,
-    }));
-
-    const { error } = await supabase
-      .from('group_members')
-      .upsert(toSync, { onConflict: 'id' });
-
-    if (error) {
-      console.error('[syncService] Group members sync error:', error);
-      throw new Error(`Group members: ${error.message}`);
-    }
-
-    // Mark as synced
-    const now = new Date().toISOString();
-    for (const m of unsynced) {
-      await executeSql(`UPDATE group_members SET synced_at = ? WHERE id = ?`, [now, m.id]);
-    }
-
-    return unsynced.length;
-  } catch (error) {
-    console.error('[syncService] syncGroupMembers error:', error);
-    return 0;
-  }
-}
-
-/**
- * Sync group events to Supabase
- */
-async function syncGroupEvents(): Promise<number> {
-  if (!supabase) return 0;
-
-  try {
-    const unsynced = await queryAll<{
-      id: string;
-      session_group_id: string;
-      type: string;
-      note: string | null;
-      photo_path: string | null;
-      grade_value: number | null;
-      grade_max: number | null;
-      timestamp: string;
-    }>(`SELECT * FROM group_events WHERE synced_at IS NULL`);
-
-    if (unsynced.length === 0) return 0;
-
-    const toSync = unsynced.map((e) => ({
-      id: e.id,
-      session_group_id: e.session_group_id,
-      type: e.type,
-      note: e.note,
-      photo_path: e.photo_path,
-      grade_value: e.grade_value,
-      grade_max: e.grade_max,
-      timestamp: e.timestamp,
-    }));
-
-    const { error } = await supabase
-      .from('group_events')
-      .upsert(toSync, { onConflict: 'id' });
-
-    if (error) {
-      console.error('[syncService] Group events sync error:', error);
-      throw new Error(`Group events: ${error.message}`);
-    }
-
-    // Mark as synced
-    const now = new Date().toISOString();
-    for (const e of unsynced) {
-      await executeSql(`UPDATE group_events SET synced_at = ? WHERE id = ?`, [now, e.id]);
-    }
-
-    return unsynced.length;
-  } catch (error) {
-    console.error('[syncService] syncGroupEvents error:', error);
-    return 0;
-  }
 }
 
 /**

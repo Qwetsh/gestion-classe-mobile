@@ -42,8 +42,7 @@ export type EventType =
   | 'bavardage'
   | 'absence'
   | 'remarque'
-  | 'sortie'
-  | 'note_groupe';
+  | 'sortie';
 
 export interface Room {
   id: string;
@@ -56,84 +55,4 @@ export interface Room {
   updated_at: string | null;
   synced_at: string | null;
   is_deleted: number;
-}
-
-// ============ GROUP TYPES ============
-
-/**
- * Template de groupes sauvegardé (par classe)
- */
-export interface GroupTemplate {
-  id: string;
-  userId: string;
-  classId: string;
-  name: string; // Ex: "Îlots habituels"
-  groupsConfig: GroupConfig[]; // Configuration des groupes
-  createdAt: string;
-  updatedAt: string | null;
-  syncedAt: string | null;
-  isDeleted: boolean;
-}
-
-/**
- * Configuration d'un groupe dans un template
- */
-export interface GroupConfig {
-  number: number; // Numéro du groupe (1, 2, 3...)
-  studentIds: string[]; // IDs des élèves
-}
-
-/**
- * Groupe actif dans une séance
- */
-export interface SessionGroup {
-  id: string;
-  sessionId: string;
-  groupNumber: number; // 1, 2, 3...
-  createdAt: string;
-  syncedAt: string | null;
-}
-
-/**
- * Membre d'un groupe (liaison élève-groupe)
- */
-export interface GroupMember {
-  id: string;
-  sessionGroupId: string;
-  studentId: string;
-  joinedAt: string;
-  leftAt: string | null; // NULL si toujours membre
-  syncedAt: string | null;
-}
-
-/**
- * Événement de groupe (remarque ou note)
- */
-export interface GroupEvent {
-  id: string;
-  sessionGroupId: string;
-  type: GroupEventType;
-  note: string | null; // Texte remarque
-  photoPath: string | null; // Photo optionnelle
-  gradeValue: number | null; // Valeur note (ex: 8)
-  gradeMax: number | null; // Barème (ex: 10)
-  timestamp: string;
-  syncedAt: string | null;
-}
-
-export type GroupEventType = 'remarque' | 'note';
-
-/**
- * Groupe avec ses membres (pour l'affichage)
- */
-export interface SessionGroupWithMembers extends SessionGroup {
-  members: GroupMemberWithStudent[];
-  events: GroupEvent[];
-}
-
-/**
- * Membre avec infos élève
- */
-export interface GroupMemberWithStudent extends GroupMember {
-  student: Student;
 }

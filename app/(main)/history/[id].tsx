@@ -21,7 +21,6 @@ const EVENT_CONFIG: Record<EventType, { label: string; color: string; softColor:
   absence: { label: 'Absence', color: theme.colors.absence, softColor: theme.colors.absenceSoft, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, softColor: theme.colors.remarqueSoft, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, softColor: theme.colors.sortieSoft, emoji: 'S' },
-  note_groupe: { label: 'Note groupe', color: theme.colors.participation, softColor: theme.colors.participationSoft, emoji: 'G' },
 };
 
 // Helper to format duration
@@ -121,7 +120,6 @@ export default function SessionDetailScreen() {
       absence: 0,
       remarque: 0,
       sortie: 0,
-      note_groupe: 0,
     };
 
     sessionEvents.forEach((event) => {

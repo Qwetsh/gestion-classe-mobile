@@ -14,7 +14,6 @@ export {
   CREATE_TABLES_SQL,
   EVENT_TYPES,
   SORTIE_SUBTYPES,
-  GROUP_EVENT_TYPES,
 } from './schema';
 
 // Migrations
@@ -102,8 +101,6 @@ export {
   getAllStudentEventCounts,
   deleteEvent,
   deleteEventsByStudentId,
-  createGroupGradeEvent,
-  createGroupGradeEventsForMembers,
   type Event,
   type EventType,
   type SortieSubtype,
@@ -122,64 +119,3 @@ export {
   type DeleteClassResult,
   type DeleteAllDataResult,
 } from './deleteService';
-
-// Group Templates
-export {
-  createGroupTemplate,
-  getTemplatesByClassId,
-  getTemplateById,
-  updateGroupTemplate,
-  deleteGroupTemplate,
-  getUnsyncedTemplates,
-  markTemplateSynced,
-  type GroupTemplateRow,
-} from './groupTemplateRepository';
-
-// Session Groups
-export {
-  createSessionGroup,
-  createSessionGroups,
-  getGroupsBySessionId,
-  getGroupById,
-  getGroupByNumber,
-  deleteSessionGroup,
-  deleteGroupsBySessionId,
-  getUnsyncedGroups,
-  markGroupSynced,
-  getNextGroupNumber,
-  type SessionGroupRow,
-} from './sessionGroupRepository';
-
-// Group Members
-export {
-  addMemberToGroup,
-  addMembersToGroup,
-  getActiveMembers,
-  getAllMembers,
-  getMemberById,
-  getStudentGroup,
-  removeMemberFromGroup,
-  moveStudentToGroup,
-  deleteGroupMembers,
-  getUnsyncedMembers,
-  markMemberSynced,
-  isStudentInAnyGroup,
-  type GroupMemberRow,
-} from './groupMemberRepository';
-
-// Group Events
-export {
-  createGroupRemark,
-  createGroupGrade,
-  getEventsByGroupId,
-  getEventsByType,
-  getEventById as getGroupEventById,
-  getEventsBySessionId as getGroupEventsBySessionId,
-  updateGroupEvent,
-  deleteGroupEvent,
-  deleteEventsByGroupId,
-  getUnsyncedEvents as getUnsyncedGroupEvents,
-  markEventSynced as markGroupEventSynced,
-  getGradeStatsBySession,
-  type GroupEventRow,
-} from './groupEventRepository';

@@ -157,84 +157,6 @@ async function runMigrations(fromVersion: number): Promise<void> {
 
     console.log('[Database] Migration v4 complete');
   }
-
-  // Migration 4 -> 5: Add group tables
-  if (fromVersion < 5) {
-    console.log('[Database] Applying migration: Add group tables (v5)');
-
-    // Create group_templates table
-    await executeSql(`
-      CREATE TABLE IF NOT EXISTS group_templates (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        class_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        groups_config TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT,
-        synced_at TEXT,
-        is_deleted INTEGER DEFAULT 0,
-        FOREIGN KEY (class_id) REFERENCES classes(id)
-      )
-    `);
-
-    // Create session_groups table
-    await executeSql(`
-      CREATE TABLE IF NOT EXISTS session_groups (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        group_number INTEGER NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        synced_at TEXT,
-        FOREIGN KEY (session_id) REFERENCES sessions(id)
-      )
-    `);
-
-    // Create group_members table
-    await executeSql(`
-      CREATE TABLE IF NOT EXISTS group_members (
-        id TEXT PRIMARY KEY,
-        session_group_id TEXT NOT NULL,
-        student_id TEXT NOT NULL,
-        joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-        left_at TEXT,
-        synced_at TEXT,
-        FOREIGN KEY (session_group_id) REFERENCES session_groups(id),
-        FOREIGN KEY (student_id) REFERENCES students(id)
-      )
-    `);
-
-    // Create group_events table
-    await executeSql(`
-      CREATE TABLE IF NOT EXISTS group_events (
-        id TEXT PRIMARY KEY,
-        session_group_id TEXT NOT NULL,
-        type TEXT NOT NULL,
-        note TEXT,
-        photo_path TEXT,
-        grade_value REAL,
-        grade_max INTEGER,
-        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-        synced_at TEXT,
-        FOREIGN KEY (session_group_id) REFERENCES session_groups(id)
-      )
-    `);
-
-    // Create indexes
-    await executeSql('CREATE INDEX IF NOT EXISTS idx_group_templates_class_id ON group_templates(class_id)');
-    await executeSql('CREATE INDEX IF NOT EXISTS idx_session_groups_session_id ON session_groups(session_id)');
-    await executeSql('CREATE INDEX IF NOT EXISTS idx_group_members_session_group_id ON group_members(session_group_id)');
-    await executeSql('CREATE INDEX IF NOT EXISTS idx_group_members_student_id ON group_members(student_id)');
-    await executeSql('CREATE INDEX IF NOT EXISTS idx_group_events_session_group_id ON group_events(session_group_id)');
-
-    // Update schema version
-    await executeSql(
-      'UPDATE schema_version SET version = ?',
-      [5]
-    );
-
-    console.log('[Database] Migration v5 complete');
-  }
 }
 
 /**
@@ -246,12 +168,8 @@ export async function resetDatabase(): Promise<void> {
 
   const db = await getDatabase();
 
-  // Drop all tables (order matters due to foreign keys)
+  // Drop all tables
   const tables = [
-    'group_events',
-    'group_members',
-    'session_groups',
-    'group_templates',
     'local_student_mapping',
     'events',
     'sessions',
@@ -284,10 +202,6 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'sessions',
     'events',
     'local_student_mapping',
-    'group_templates',
-    'session_groups',
-    'group_members',
-    'group_events',
   ];
 
   const stats: Record<string, number> = {};
