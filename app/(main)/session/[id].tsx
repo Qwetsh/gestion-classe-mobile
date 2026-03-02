@@ -25,6 +25,7 @@ import {
   usePlanStore,
   useSessionStore,
   useOralEvaluationStore,
+  useGroupStore,
   ORAL_GRADE_LABELS,
   StudentWithMapping,
 } from '../../../stores';
@@ -36,6 +37,7 @@ import {
   uploadEventPhoto,
   type PhotoQuality,
 } from '../../../services/photos';
+import { GroupPanel, GroupBadge } from '../../../components/groups';
 
 const IS_NATIVE = Platform.OS === 'ios' || Platform.OS === 'android';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -162,6 +164,12 @@ function NativeSessionScreen() {
     resetClassEvaluations,
   } = useOralEvaluationStore();
 
+  const {
+    groups,
+    loadGroups,
+    getStudentGroupNumber,
+  } = useGroupStore();
+
   const [isInitializing, setIsInitializing] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState<StudentWithMapping | null>(null);
   const [showRemarqueModal, setShowRemarqueModal] = useState(false);
@@ -184,6 +192,9 @@ function NativeSessionScreen() {
   const [studentEvents, setStudentEvents] = useState<Event[]>([]);
   const [isDeletingEvent, setIsDeletingEvent] = useState(false);
 
+  // Group panel state
+  const [showGroupPanel, setShowGroupPanel] = useState(false);
+
   // Progress circle state
   const [showProgress, setShowProgress] = useState(false);
   const [touchPos, setTouchPos] = useState({ x: 0, y: 0 });
@@ -197,6 +208,24 @@ function NativeSessionScreen() {
   const students: StudentWithMapping[] = activeSession?.class_id
     ? studentsByClass[activeSession.class_id] || []
     : [];
+
+  // Build student -> group number mapping for badge display
+  const studentGroupMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    groups.forEach((group) => {
+      group.members.forEach((member) => {
+        map[member.studentId] = group.groupNumber;
+      });
+    });
+    return map;
+  }, [groups]);
+
+  // Get list of absent student IDs
+  const absentStudentIds = useMemo(() => {
+    return students
+      .filter((s) => isStudentAbsent(s.id))
+      .map((s) => s.id);
+  }, [students, eventCountsByStudent]);
 
   // Check if a student is absent
   const isStudentAbsent = useCallback((studentId: string): boolean => {
@@ -399,6 +428,9 @@ function NativeSessionScreen() {
           await loadTrimesterSettings(user.id);
           await loadForClass(activeSession.class_id);
         }
+        // Load groups for the session
+        const loadedStudents = studentsByClass[activeSession.class_id] || [];
+        await loadGroups(activeSession.id, loadedStudents);
       } catch (error) {
         console.error('[Session] Failed to load session data:', error);
         Alert.alert(
@@ -768,6 +800,12 @@ function NativeSessionScreen() {
           >
             {student ? (
               <View style={styles.cellContent}>
+                {/* Group badge */}
+                {studentGroupMap[student.id] && (
+                  <View style={styles.groupBadgeContainer}>
+                    <GroupBadge groupNumber={studentGroupMap[student.id]} size="small" />
+                  </View>
+                )}
                 <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent]} numberOfLines={1}>
                   {getDisplayName(student).split(' ')[0]}
                 </Text>
@@ -885,6 +923,19 @@ function NativeSessionScreen() {
           >
             <Text style={styles.toolbarButtonIcon}>🗑️</Text>
             <Text style={styles.toolbarButtonText}>Supprimer</Text>
+          </Pressable>
+          <View style={styles.toolbarDivider} />
+          <Pressable
+            style={styles.toolbarButton}
+            onPress={() => setShowGroupPanel(true)}
+          >
+            <Text style={styles.toolbarButtonIcon}>👥</Text>
+            <Text style={styles.toolbarButtonText}>Groupes</Text>
+            {groups.length > 0 && (
+              <View style={styles.groupCountBadge}>
+                <Text style={styles.groupCountText}>{groups.length}</Text>
+              </View>
+            )}
           </Pressable>
         </View>
 
@@ -1287,6 +1338,20 @@ function NativeSessionScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Group Panel */}
+      {activeSession && user && (
+        <GroupPanel
+          visible={showGroupPanel}
+          onClose={() => setShowGroupPanel(false)}
+          sessionId={activeSession.id}
+          classId={activeSession.class_id}
+          userId={user.id}
+          students={students}
+          absentStudentIds={absentStudentIds}
+          positions={currentPlan?.positions}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -1424,6 +1489,18 @@ const styles = StyleSheet.create({
     color: theme.colors.participation,
     fontWeight: '600',
   },
+  groupCountBadge: {
+    backgroundColor: '#8B5CF6' + '30',
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 2,
+    borderRadius: theme.radius.sm,
+    marginLeft: theme.spacing.xs,
+  },
+  groupCountText: {
+    fontSize: 11,
+    color: '#8B5CF6',
+    fontWeight: '600',
+  },
   gridArea: {
     flex: 1,
     padding: theme.spacing.lg,
@@ -1487,6 +1564,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 2,
+  },
+  groupBadgeContainer: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    zIndex: 10,
   },
   cellName: {
     fontSize: 9,

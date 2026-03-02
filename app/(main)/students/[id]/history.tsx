@@ -28,6 +28,7 @@ const EVENT_CONFIG: Record<EventType, { label: string; color: string; emoji: str
   absence: { label: 'Absence', color: theme.colors.absence, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, emoji: 'S' },
+  note_groupe: { label: 'Note groupe', color: theme.colors.participation, emoji: 'G' },
 };
 
 // Helper to format date
@@ -118,6 +119,7 @@ export default function StudentHistoryScreen() {
       absence: 0,
       remarque: 0,
       sortie: 0,
+      note_groupe: 0,
     };
 
     studentEvents.forEach((event) => {
