@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -38,7 +38,12 @@ export default function StartSessionScreen() {
       // Check for existing active session
       loadActiveSession(user.id);
     }
-  }, [user?.id]);
+  }, [user?.id, loadClasses, loadRooms, loadActiveSession]);
+
+  // Memoize displayed classes to avoid recalculation on each render
+  const displayedClasses = useMemo(() => {
+    return selectedClass ? classes.filter(c => c.id === selectedClass.id) : classes;
+  }, [selectedClass, classes]);
 
   const handleStartSession = async () => {
     if (!user?.id || !selectedClass || !selectedRoom) return;
@@ -117,7 +122,7 @@ export default function StartSessionScreen() {
               </View>
             ) : (
               <View style={styles.optionsList}>
-                {(selectedClass ? classes.filter(c => c.id === selectedClass.id) : classes).map((cls, index) => (
+                {displayedClasses.map((cls, index) => (
                   <Pressable
                     key={cls.id}
                     style={({ pressed }) => [

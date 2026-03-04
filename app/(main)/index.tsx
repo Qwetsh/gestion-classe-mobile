@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useAuthStore, useClassStore, useSessionStore, useSyncStore } from '../../stores';
 import { theme } from '../../constants/theme';
 import { SyncButton } from '../../components';
@@ -29,30 +29,44 @@ export default function HomeScreen() {
   } = useSessionStore();
   const { sync, isSyncing } = useSyncStore();
 
-  // Load classes and check for active session on mount
+  // Track if auto-sync has been attempted to prevent multiple triggers
+  const hasAutoSynced = useRef(false);
+
+  // Load classes on mount
   useEffect(() => {
-    const initializeData = async () => {
+    if (user?.id) {
+      loadClasses(user.id);
+    }
+  }, [user?.id, loadClasses]);
+
+  // Reload active session every time the screen comes into focus
+  // This ensures the UI reflects the current state after ending a session
+  useFocusEffect(
+    useCallback(() => {
       if (user?.id) {
-        await loadClasses(user.id);
         loadActiveSession(user.id);
       }
-    };
-    initializeData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+    }, [user?.id, loadActiveSession])
+  );
 
-  // Auto-sync when classes list is empty (fresh install)
+  // Auto-sync when classes list is empty (fresh install) - only once
   useEffect(() => {
     const autoSync = async () => {
-      if (user?.id && !classesLoading && classes.length === 0 && !isSyncing) {
-        console.log('[HomeScreen] No classes found locally, auto-syncing...');
+      if (
+        user?.id &&
+        !classesLoading &&
+        classes.length === 0 &&
+        !isSyncing &&
+        !hasAutoSynced.current
+      ) {
+        hasAutoSynced.current = true;
+        if (__DEV__) console.log('[HomeScreen] No classes found locally, auto-syncing...');
         await sync(user.id);
         await loadClasses(user.id);
       }
     };
     autoSync();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, classesLoading, classes.length, isSyncing]);
+  }, [user?.id, classesLoading, classes.length, isSyncing, sync, loadClasses]);
 
   const handleLogout = async () => {
     await signOut();

@@ -16,7 +16,8 @@ import {
   StudentEventCounts,
 } from '../services/database';
 
-// Re-export getActiveSession for use in verification
+// Track pending event creations to prevent double-tap duplicates
+const pendingEvents = new Set<string>();
 
 interface SessionState {
   // Active session
@@ -85,32 +86,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!activeSession) return;
 
     const sessionId = activeSession.id;
-    const userId = activeSession.user_id;
 
     set({ isLoading: true, error: null });
     try {
       await endSession(sessionId);
 
-      // Verify the session is truly ended by checking the database
-      // This prevents race conditions where the UI navigates before DB commits
-      let retries = 0;
-      const maxRetries = 5;
-      while (retries < maxRetries) {
-        const checkSession = await getActiveSession(userId);
-        if (!checkSession || checkSession.id !== sessionId) {
-          // Session is properly ended
-          break;
-        }
-        // Wait a bit and retry
-        await new Promise(resolve => setTimeout(resolve, 50));
-        retries++;
-        console.log('[sessionStore] Waiting for session end to commit, retry:', retries);
-      }
-
-      if (retries === maxRetries) {
-        console.warn('[sessionStore] Session end verification timed out, forcing state clear');
-      }
-
+      // Clear state immediately - the DB operation is synchronous in SQLite
       set({
         activeSession: null,
         isSessionActive: false,
@@ -118,7 +99,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         eventCountsByStudent: {},
         isLoading: false,
       });
-      console.log('[sessionStore] Session ended and verified:', sessionId);
+
+      if (__DEV__) {
+        console.log('[sessionStore] Session ended:', sessionId);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to end session';
       set({ error: message, isLoading: false });
@@ -172,7 +156,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const session = await getActiveSession(userId);
-      if (session) {
+
+      if (__DEV__) {
+        console.log('[sessionStore] loadActiveSession result:', session?.id ?? 'null', 'ended_at:', session?.ended_at ?? 'N/A');
+      }
+
+      // Double-check: only set as active if session exists AND has no ended_at
+      if (session && !session.ended_at) {
         set({
           activeSession: session,
           isSessionActive: true,
@@ -215,11 +205,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     note?: string | null,
     photoPath?: string | null
   ) => {
-    const { activeSession, eventCountsByStudent } = get();
+    const { activeSession } = get();
     if (!activeSession) {
-      console.warn('[sessionStore] No active session for event');
+      if (__DEV__) console.warn('[sessionStore] No active session for event');
       return null;
     }
+
+    // Prevent double-tap: create unique key for this event request
+    const eventKey = `${studentId}-${type}-${Date.now().toString().slice(0, -2)}`;
+    if (pendingEvents.has(eventKey)) {
+      if (__DEV__) console.log('[sessionStore] Duplicate event prevented:', eventKey);
+      return null;
+    }
+    pendingEvents.add(eventKey);
 
     try {
       const event = await createEvent(
@@ -272,11 +270,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         };
       });
 
-      console.log('[sessionStore] Event added:', type, 'for student:', studentId);
+      if (__DEV__) {
+        console.log('[sessionStore] Event added:', type, 'for student:', studentId);
+      }
       return event;
     } catch (error) {
-      console.error('[sessionStore] Failed to add event:', error);
+      if (__DEV__) console.error('[sessionStore] Failed to add event:', error);
       return null;
+    } finally {
+      // Clean up pending event key after a short delay
+      setTimeout(() => pendingEvents.delete(eventKey), 500);
     }
   },
 

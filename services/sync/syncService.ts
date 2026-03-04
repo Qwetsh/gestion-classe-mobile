@@ -22,17 +22,18 @@ export interface SyncResult {
 export async function getUnsyncedCount(): Promise<number> {
   if (!isSupabaseConfigured) return 0;
 
-  const tables = ['sessions', 'events', 'classes', 'students', 'rooms', 'class_room_plans'];
-  let total = 0;
+  const result = await queryFirst<{ total: number }>(`
+    SELECT (
+      (SELECT COUNT(*) FROM sessions WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM events WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM classes WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL)
+    ) as total
+  `);
 
-  for (const table of tables) {
-    const result = await queryAll<{ count: number }>(
-      `SELECT COUNT(*) as count FROM ${table} WHERE synced_at IS NULL`
-    );
-    total += result[0]?.count || 0;
-  }
-
-  return total;
+  return result?.total || 0;
 }
 
 /**
@@ -117,11 +118,14 @@ async function syncClasses(userId: string): Promise<number> {
     throw new Error(`Classes: ${error.message}`);
   }
 
-  // Mark as synced
+  // Mark as synced (batch update)
   const now = new Date().toISOString();
-  for (const c of unsynced) {
-    await executeSql(`UPDATE classes SET synced_at = ? WHERE id = ?`, [now, c.id]);
-  }
+  const ids = unsynced.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE classes SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
 
   return unsynced.length;
 }
@@ -159,11 +163,14 @@ async function syncStudents(): Promise<number> {
     throw new Error(`Students: ${error.message}`);
   }
 
-  // Mark as synced
+  // Mark as synced (batch update)
   const now = new Date().toISOString();
-  for (const s of unsynced) {
-    await executeSql(`UPDATE students SET synced_at = ? WHERE id = ?`, [now, s.id]);
-  }
+  const ids = unsynced.map(s => s.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE students SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
 
   return unsynced.length;
 }
@@ -204,11 +211,14 @@ async function syncRooms(userId: string): Promise<number> {
     throw new Error(`Rooms: ${error.message}`);
   }
 
-  // Mark as synced
+  // Mark as synced (batch update)
   const now = new Date().toISOString();
-  for (const r of unsynced) {
-    await executeSql(`UPDATE rooms SET synced_at = ? WHERE id = ?`, [now, r.id]);
-  }
+  const ids = unsynced.map(r => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE rooms SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
 
   return unsynced.length;
 }
@@ -419,12 +429,13 @@ async function syncSessions(): Promise<number> {
     console.log('[syncService] Class synced successfully:', cls.name);
   }
 
-  // Now sync sessions
+  // Now sync sessions (including topic field)
   const toSync = unsynced.map((s) => ({
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
     room_id: s.room_id,
+    topic: s.topic,
     started_at: s.started_at,
     ended_at: s.ended_at,
   }));
@@ -438,11 +449,14 @@ async function syncSessions(): Promise<number> {
     throw new Error(`Sessions: ${error.message}`);
   }
 
-  // Mark as synced
+  // Mark as synced (batch update)
   const now = new Date().toISOString();
-  for (const s of unsynced) {
-    await executeSql(`UPDATE sessions SET synced_at = ? WHERE id = ?`, [now, s.id]);
-  }
+  const ids = unsynced.map(s => s.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE sessions SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
 
   return unsynced.length;
 }
@@ -479,11 +493,14 @@ async function syncEvents(): Promise<number> {
     throw new Error(`Events: ${error.message}`);
   }
 
-  // Mark as synced
+  // Mark as synced (batch update)
   const now = new Date().toISOString();
-  for (const e of unsynced) {
-    await executeSql(`UPDATE events SET synced_at = ? WHERE id = ?`, [now, e.id]);
-  }
+  const ids = unsynced.map(e => e.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE events SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
 
   return unsynced.length;
 }

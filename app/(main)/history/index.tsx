@@ -114,6 +114,7 @@ export default function HistoryScreen() {
   // Filter state: null = all classes, string = specific class ID
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Load data on mount
   useEffect(() => {
@@ -122,7 +123,7 @@ export default function HistoryScreen() {
       loadClasses(user.id);
       loadRooms(user.id);
     }
-  }, [user?.id]);
+  }, [user?.id, loadSessionHistory, loadClasses, loadRooms]);
 
   // Reload sessions when filter changes
   useEffect(() => {
@@ -131,7 +132,7 @@ export default function HistoryScreen() {
     } else if (user?.id) {
       loadSessionHistory(user.id);
     }
-  }, [selectedClassId, user?.id]);
+  }, [selectedClassId, user?.id, loadSessionsByClass, loadSessionHistory]);
 
   // Create lookup maps for class and room names
   const classMap = useMemo(() => {
@@ -208,24 +209,29 @@ export default function HistoryScreen() {
   };
 
   const handleDeleteSession = (session: Session) => {
+    if (isDeleting) return;
+
     const className = classMap.get(session.class_id) || 'Classe inconnue';
     const dateStr = formatDate(session.started_at);
 
     Alert.alert(
-      'Supprimer la seance',
-      `Voulez-vous vraiment supprimer la seance du ${dateStr} (${className}) ?\n\nTous les evenements (implications, bavardages, etc.) seront egalement supprimes.`,
+      'Supprimer la séance',
+      `Voulez-vous vraiment supprimer la séance du ${dateStr} (${className}) ?\n\nTous les événements (participations, bavardages, etc.) seront également supprimés.`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
           text: 'Supprimer',
           style: 'destructive',
           onPress: async () => {
+            setIsDeleting(true);
             try {
               await deleteSession(session.id);
               handleRefresh();
             } catch (error) {
-              console.error('Error deleting session:', error);
-              Alert.alert('Erreur', 'Impossible de supprimer la seance');
+              if (__DEV__) console.error('Error deleting session:', error);
+              Alert.alert('Erreur', 'Impossible de supprimer la séance');
+            } finally {
+              setIsDeleting(false);
             }
           },
         },
