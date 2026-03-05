@@ -728,10 +728,19 @@ export async function pullFromServer(userId: string): Promise<{
         );
 
         if (existing.length === 0) {
-          // Insert new session
+          // IMPORTANT: If session has no ended_at on server, don't import it as "active"
+          // This prevents zombie sessions from being recreated after sync
+          // Instead, auto-end the session with the current timestamp
+          const effectiveEndedAt = session.ended_at || now;
+
+          if (!session.ended_at) {
+            console.log('[syncService] Auto-ending imported session (was active on server):', session.id);
+          }
+
+          // Insert new session (with auto-ended_at if it was active)
           await executeSql(
             `INSERT INTO sessions (id, user_id, class_id, room_id, started_at, ended_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [session.id, session.user_id, session.class_id, session.room_id, session.started_at, session.ended_at, now]
+            [session.id, session.user_id, session.class_id, session.room_id, session.started_at, effectiveEndedAt, now]
           );
           result.sessions++;
           console.log('[syncService] Pulled session:', session.id);
