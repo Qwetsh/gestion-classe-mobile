@@ -124,6 +124,42 @@ export async function getSessionsByDateRange(
 }
 
 /**
+ * Cleanup orphan sessions (active sessions older than maxHours)
+ * These are sessions that were never properly ended (app crash, force quit, etc.)
+ * We auto-end them rather than delete to preserve event data
+ */
+export async function cleanupOrphanSessions(userId: string, maxHours: number = 12): Promise<number> {
+  const cutoffDate = new Date();
+  cutoffDate.setHours(cutoffDate.getHours() - maxHours);
+  const cutoffISO = cutoffDate.toISOString();
+  const now = new Date().toISOString();
+
+  // Find orphan sessions
+  const orphans = await queryAll<Session>(
+    `SELECT * FROM sessions
+     WHERE user_id = ?
+       AND ended_at IS NULL
+       AND started_at < ?`,
+    [userId, cutoffISO]
+  );
+
+  if (orphans.length > 0) {
+    console.log(`[sessionRepository] Found ${orphans.length} orphan session(s), auto-ending them`);
+
+    // Auto-end each orphan session
+    for (const session of orphans) {
+      await executeSql(
+        `UPDATE sessions SET ended_at = ?, synced_at = NULL WHERE id = ?`,
+        [now, session.id]
+      );
+      console.log(`[sessionRepository] Auto-ended orphan session: ${session.id} (started: ${session.started_at})`);
+    }
+  }
+
+  return orphans.length;
+}
+
+/**
  * Delete a session and its events
  */
 export async function deleteSession(id: string): Promise<void> {

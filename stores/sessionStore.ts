@@ -6,6 +6,7 @@ import {
   deleteSession,
   getActiveSession,
   getSessionsByUserId,
+  cleanupOrphanSessions,
   Event,
   EventType,
   SortieSubtype,
@@ -155,6 +156,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   loadActiveSession: async (userId: string) => {
     set({ isLoading: true, error: null });
     try {
+      // Cleanup orphan sessions (active sessions older than 4 hours)
+      // This handles cases where app crashed or was force-quit without ending the session
+      // 4 hours is generous - a typical class session is 1-2 hours max
+      const cleanedUp = await cleanupOrphanSessions(userId, 4);
+      if (cleanedUp > 0) {
+        console.log(`[sessionStore] Auto-ended ${cleanedUp} orphan session(s)`);
+      }
+
       const session = await getActiveSession(userId);
 
       if (__DEV__) {

@@ -89,6 +89,7 @@ export {
   getSessionsByClassId,
   getSessionsByDateRange,
   deleteSession,
+  cleanupOrphanSessions,
   type Session,
 } from './sessionRepository';
 
