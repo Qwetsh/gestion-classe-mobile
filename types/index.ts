@@ -5,6 +5,7 @@ export interface Student {
   id: string;
   pseudo: string;
   classId: string;
+  groupId?: string | null;
   createdAt: string;
   photoPath?: string | null;
 }
@@ -42,7 +43,8 @@ export type EventType =
   | 'bavardage'
   | 'absence'
   | 'remarque'
-  | 'sortie';
+  | 'sortie'
+  | 'retour';
 
 export interface Room {
   id: string;

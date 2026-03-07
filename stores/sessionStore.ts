@@ -7,6 +7,7 @@ import {
   getActiveSession,
   getSessionsByUserId,
   cleanupOrphanSessions,
+  updateSessionNotes,
   Event,
   EventType,
   SortieSubtype,
@@ -17,8 +18,17 @@ import {
   StudentEventCounts,
 } from '../services/database';
 
-// Track pending event creations to prevent double-tap duplicates
-const pendingEvents = new Set<string>();
+// Orphan session cleanup threshold (in hours)
+// Sessions older than this and still "active" are auto-ended
+// A typical class is 1-2 hours, so 4 hours is generous
+const ORPHAN_SESSION_TIMEOUT_HOURS = 4;
+
+// Active sortie info
+interface ActiveSortie {
+  eventId: string;
+  timestamp: string;
+  subtype: SortieSubtype | null;
+}
 
 interface SessionState {
   // Active session
@@ -29,9 +39,15 @@ interface SessionState {
   events: Event[];
   eventCountsByStudent: Record<string, StudentEventCounts>;
 
+  // Active sorties (students currently out)
+  activeSorties: Record<string, ActiveSortie>;
+
   // Loading states
   isLoading: boolean;
   error: string | null;
+
+  // Internal: track pending events to prevent double-tap (managed inside store)
+  _pendingEventKeys: Set<string>;
 
   // Actions
   startSession: (userId: string, classId: string, roomId: string, topic?: string | null) => Promise<Session>;
@@ -49,6 +65,12 @@ interface SessionState {
     photoPath?: string | null
   ) => Promise<Event | null>;
   removeAbsence: (studentId: string) => Promise<boolean>;
+  markReturn: (studentId: string) => Promise<boolean>;
+  isStudentOut: (studentId: string) => boolean;
+  getActiveSortie: (studentId: string) => ActiveSortie | null;
+
+  // Session notes
+  updateNotes: (notes: string | null) => Promise<void>;
 
   // Reset
   clearSession: () => void;
@@ -59,8 +81,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isSessionActive: false,
   events: [],
   eventCountsByStudent: {},
+  activeSorties: {},
   isLoading: false,
   error: null,
+  _pendingEventKeys: new Set<string>(),
 
   startSession: async (userId: string, classId: string, roomId: string, topic?: string | null) => {
     set({ isLoading: true, error: null });
@@ -71,6 +95,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         isSessionActive: true,
         events: [],
         eventCountsByStudent: {},
+        activeSorties: {},
         isLoading: false,
       });
       console.log('[sessionStore] Session started:', session.id, 'topic:', topic);
@@ -88,25 +113,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const sessionId = activeSession.id;
 
+    // Set loading state but keep session data until DB confirms
     set({ isLoading: true, error: null });
+
     try {
+      // CRITICAL: Complete DB operation FIRST
+      // This ensures we don't clear UI state if DB fails
       await endSession(sessionId);
 
-      // Clear state immediately - the DB operation is synchronous in SQLite
+      // Only clear state after DB success
       set({
         activeSession: null,
         isSessionActive: false,
         events: [],
         eventCountsByStudent: {},
+        activeSorties: {},
         isLoading: false,
+        error: null,
+        _pendingEventKeys: new Set<string>(),
       });
 
       if (__DEV__) {
         console.log('[sessionStore] Session ended:', sessionId);
       }
     } catch (error) {
+      // DB operation failed - keep session state so user can retry
+      // The orphan cleanup mechanism will handle truly stuck sessions
       const message = error instanceof Error ? error.message : 'Failed to end session';
+      console.error('[sessionStore] endSession DB error:', message);
       set({ error: message, isLoading: false });
+      // Re-throw so caller knows it failed
       throw error;
     }
   },
@@ -114,41 +150,54 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   cancelCurrentSession: async () => {
     const { activeSession } = get();
     if (!activeSession) {
-      console.log('[sessionStore] cancelCurrentSession: No active session to cancel');
+      if (__DEV__) {
+        console.log('[sessionStore] cancelCurrentSession: No active session to cancel');
+      }
       return;
     }
 
     const sessionId = activeSession.id;
-    console.log('[sessionStore] cancelCurrentSession: Starting deletion of session:', sessionId);
+    const userId = activeSession.user_id;
 
+    if (__DEV__) {
+      console.log('[sessionStore] cancelCurrentSession: Starting deletion of session:', sessionId);
+    }
+
+    // Set loading state but keep session data until DB confirms
     set({ isLoading: true, error: null });
-    try {
-      // Delete the session and all its events
-      console.log('[sessionStore] Calling deleteSession...');
-      await deleteSession(sessionId);
-      console.log('[sessionStore] deleteSession completed successfully');
 
-      // Verify deletion by trying to fetch the session again
-      const verifySession = await getActiveSession(activeSession.user_id);
+    try {
+      // CRITICAL: Complete DB operation FIRST
+      await deleteSession(sessionId);
+
+      // Verify deletion
+      const verifySession = await getActiveSession(userId);
       if (verifySession && verifySession.id === sessionId) {
         console.error('[sessionStore] CRITICAL: Session still exists after deletion!');
-        throw new Error('La session existe toujours apres suppression');
+        throw new Error('Session deletion verification failed');
       }
-      console.log('[sessionStore] Verification passed: session no longer exists');
 
-      // Force clear the state
+      // Only clear state after DB success
       set({
         activeSession: null,
         isSessionActive: false,
         events: [],
         eventCountsByStudent: {},
+        activeSorties: {},
         isLoading: false,
+        error: null,
+        _pendingEventKeys: new Set<string>(),
       });
-      console.log('[sessionStore] Session cancelled and deleted:', sessionId);
+
+      if (__DEV__) {
+        console.log('[sessionStore] Session cancelled and deleted:', sessionId);
+      }
     } catch (error) {
-      console.error('[sessionStore] cancelCurrentSession ERROR:', error);
+      // DB operation failed - keep session state so user can retry
+      console.error('[sessionStore] cancelCurrentSession DB error:', error);
       const message = error instanceof Error ? error.message : 'Failed to cancel session';
       set({ error: message, isLoading: false });
+      // Re-throw so caller knows it failed
       throw error;
     }
   },
@@ -156,10 +205,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   loadActiveSession: async (userId: string) => {
     set({ isLoading: true, error: null });
     try {
-      // Cleanup orphan sessions (active sessions older than 4 hours)
+      // Cleanup orphan sessions (active sessions older than configured threshold)
       // This handles cases where app crashed or was force-quit without ending the session
-      // 4 hours is generous - a typical class session is 1-2 hours max
-      const cleanedUp = await cleanupOrphanSessions(userId, 4);
+      const cleanedUp = await cleanupOrphanSessions(userId, ORPHAN_SESSION_TIMEOUT_HOURS);
       if (cleanedUp > 0) {
         console.log(`[sessionStore] Auto-ended ${cleanedUp} orphan session(s)`);
       }
@@ -175,10 +223,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         set({
           activeSession: session,
           isSessionActive: true,
-          isLoading: false,
+          // Keep isLoading true until events are loaded
         });
-        // Load events for the session
+        // Load events for the session, then set loading to false
         await get().loadSessionEvents();
+        set({ isLoading: false });
       } else {
         set({
           activeSession: null,
@@ -201,7 +250,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         getEventsBySessionId(activeSession.id),
         getAllStudentEventCounts(activeSession.id),
       ]);
-      set({ events, eventCountsByStudent });
+
+      // Compute active sorties from events
+      // A student is "out" if their last sortie/retour event is a sortie
+      const activeSorties: Record<string, ActiveSortie> = {};
+      const sortedEvents = [...events].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+
+      for (const event of sortedEvents) {
+        if (event.type === 'sortie') {
+          activeSorties[event.student_id] = {
+            eventId: event.id,
+            timestamp: event.timestamp,
+            subtype: event.subtype as SortieSubtype | null,
+          };
+        } else if (event.type === 'retour') {
+          delete activeSorties[event.student_id];
+        }
+      }
+
+      set({ events, eventCountsByStudent, activeSorties });
     } catch (error) {
       console.error('[sessionStore] Failed to load events:', error);
     }
@@ -214,19 +283,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     note?: string | null,
     photoPath?: string | null
   ) => {
-    const { activeSession } = get();
+    const { activeSession, _pendingEventKeys } = get();
     if (!activeSession) {
       if (__DEV__) console.warn('[sessionStore] No active session for event');
       return null;
     }
 
     // Prevent double-tap: create unique key for this event request
-    const eventKey = `${studentId}-${type}-${Date.now().toString().slice(0, -2)}`;
-    if (pendingEvents.has(eventKey)) {
+    // Using 100ms time bucket to catch rapid taps
+    const eventKey = `${studentId}-${type}-${Math.floor(Date.now() / 100)}`;
+    if (_pendingEventKeys.has(eventKey)) {
       if (__DEV__) console.log('[sessionStore] Duplicate event prevented:', eventKey);
       return null;
     }
-    pendingEvents.add(eventKey);
+
+    // Add to pending set (immutable update)
+    const newPendingKeys = new Set(_pendingEventKeys);
+    newPendingKeys.add(eventKey);
+    set({ _pendingEventKeys: newPendingKeys });
 
     try {
       const event = await createEvent(
@@ -238,7 +312,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         photoPath
       );
 
-      // Update local state
+      // Update local state and clean up pending key
       set((state) => {
         const newEvents = [...state.events, event];
 
@@ -268,6 +342,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           case 'sortie':
             updatedCounts.sortie++;
             break;
+          // 'retour' doesn't increment any count
+        }
+
+        // Remove from pending (cleanup)
+        const cleanedPendingKeys = new Set(state._pendingEventKeys);
+        cleanedPendingKeys.delete(eventKey);
+
+        // Update active sorties
+        const newActiveSorties = { ...state.activeSorties };
+        if (type === 'sortie') {
+          newActiveSorties[studentId] = {
+            eventId: event.id,
+            timestamp: event.timestamp,
+            subtype: subtype || null,
+          };
+        } else if (type === 'retour') {
+          delete newActiveSorties[studentId];
         }
 
         return {
@@ -276,6 +367,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ...state.eventCountsByStudent,
             [studentId]: updatedCounts,
           },
+          activeSorties: newActiveSorties,
+          _pendingEventKeys: cleanedPendingKeys,
         };
       });
 
@@ -284,11 +377,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
       return event;
     } catch (error) {
+      // Clean up pending key on error
+      set((state) => {
+        const cleanedPendingKeys = new Set(state._pendingEventKeys);
+        cleanedPendingKeys.delete(eventKey);
+        return { _pendingEventKeys: cleanedPendingKeys };
+      });
       if (__DEV__) console.error('[sessionStore] Failed to add event:', error);
       return null;
-    } finally {
-      // Clean up pending event key after a short delay
-      setTimeout(() => pendingEvents.delete(eventKey), 500);
     }
   },
 
@@ -345,13 +441,70 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  markReturn: async (studentId: string) => {
+    const { activeSession, activeSorties, addEvent } = get();
+    if (!activeSession) {
+      console.warn('[sessionStore] No active session for marking return');
+      return false;
+    }
+
+    // Check if student is actually out
+    if (!activeSorties[studentId]) {
+      console.warn('[sessionStore] Student is not currently out:', studentId);
+      return false;
+    }
+
+    try {
+      // Add a 'retour' event
+      const event = await addEvent(studentId, 'retour' as EventType);
+      if (event) {
+        console.log('[sessionStore] Return marked for student:', studentId);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('[sessionStore] Failed to mark return:', error);
+      return false;
+    }
+  },
+
+  isStudentOut: (studentId: string) => {
+    return !!get().activeSorties[studentId];
+  },
+
+  getActiveSortie: (studentId: string) => {
+    return get().activeSorties[studentId] || null;
+  },
+
+  updateNotes: async (notes: string | null) => {
+    const { activeSession } = get();
+    if (!activeSession) {
+      console.warn('[sessionStore] No active session to update notes');
+      return;
+    }
+
+    try {
+      const updatedSession = await updateSessionNotes(activeSession.id, notes);
+      if (updatedSession) {
+        set({ activeSession: updatedSession });
+        if (__DEV__) {
+          console.log('[sessionStore] Session notes updated');
+        }
+      }
+    } catch (error) {
+      console.error('[sessionStore] Failed to update session notes:', error);
+    }
+  },
+
   clearSession: () => {
     set({
       activeSession: null,
       isSessionActive: false,
       events: [],
       eventCountsByStudent: {},
+      activeSorties: {},
       error: null,
+      _pendingEventKeys: new Set<string>(),
     });
   },
 }));

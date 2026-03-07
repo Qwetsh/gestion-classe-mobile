@@ -25,6 +25,7 @@ import {
   usePlanStore,
   useSessionStore,
   useOralEvaluationStore,
+  useGroupStore,
   ORAL_GRADE_LABELS,
   StudentWithMapping,
 } from '../../../stores';
@@ -37,9 +38,18 @@ import {
   type PhotoQuality,
 } from '../../../services/photos';
 
+// Conditional imports for native-only components
+// These are only used on native platforms (iOS/Android)
+import { RadialMenu } from '../../../components/radial';
+import { useRadialMenu, RadialMenuSelection } from '../../../hooks/useRadialMenu';
+
 const IS_NATIVE = Platform.OS === 'ios' || Platform.OS === 'android';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const LONG_PRESS_DURATION = 400; // ms
+
+// Session screen constants
+const LONG_PRESS_DURATION = 400; // ms - Time required for long press to trigger radial menu
+const TOUCH_MOVE_THRESHOLD = 20; // px - Max distance finger can move before long press is cancelled
+const ABSENT_STUDENT_TAP_DELAY = 200; // ms - Delay before showing cancel absence dialog
 
 // Web-only component
 function WebNotSupportedScreen() {
@@ -132,22 +142,25 @@ function ProgressCircle({
 
 // Native-only component
 function NativeSessionScreen() {
-  const { RadialMenu } = require('../../../components/radial');
-  const { useRadialMenu } = require('../../../hooks/useRadialMenu');
-
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuthStore();
   const { loadClassById, currentClass } = useClassStore();
   const { studentsByClass, loadStudentsForClass } = useStudentStore();
+  const { groups, loadGroups } = useGroupStore();
   const { loadRoomById, currentRoom } = useRoomStore();
   const { loadPlan, currentPlan } = usePlanStore();
   const {
     activeSession,
     eventCountsByStudent,
+    activeSorties,
     endCurrentSession,
     cancelCurrentSession,
     addEvent,
     removeAbsence,
+    markReturn,
+    isStudentOut,
+    getActiveSortie,
+    updateNotes,
     loadActiveSession,
     loadSessionEvents,
   } = useSessionStore();
@@ -167,14 +180,22 @@ function NativeSessionScreen() {
   const [showRemarqueModal, setShowRemarqueModal] = useState(false);
   const [remarqueText, setRemarqueText] = useState('');
   const [remarquePhotoUri, setRemarquePhotoUri] = useState<string | null>(null);
+  const [timerTick, setTimerTick] = useState(0); // For updating sortie timers
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoQuality, setPhotoQuality] = useState<PhotoQuality>('minimal');
 
   // Oral evaluation state
   const [showOralModal, setShowOralModal] = useState(false);
+  const [showOralStudentPicker, setShowOralStudentPicker] = useState(false);
   const [oralStudent, setOralStudent] = useState<StudentWithMapping | null>(null);
   const [selectedOralGrade, setSelectedOralGrade] = useState<number | null>(null);
   const [isSavingOral, setIsSavingOral] = useState(false);
+  const [unevaluatedList, setUnevaluatedList] = useState<StudentWithMapping[]>([]);
+
+  // Session notes state
+  const [showSessionNotesModal, setShowSessionNotesModal] = useState(false);
+  const [sessionNotesText, setSessionNotesText] = useState('');
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
 
   // Delete event state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -189,10 +210,57 @@ function NativeSessionScreen() {
   const [touchPos, setTouchPos] = useState({ x: 0, y: 0 });
   const progressAnim = useRef(new Animated.Value(0)).current;
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isMountedRef = useRef(true);
 
   // Container position tracking for coordinate conversion
   const containerRef = useRef<View>(null);
   const containerOffsetRef = useRef({ x: 0, y: 0 });
+
+  // Cleanup on unmount - prevent state updates after unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      // Stop any running animations to prevent memory leaks
+      progressAnim.stopAnimation();
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Timer update for active sorties - update every 10 seconds
+  useEffect(() => {
+    const hasActiveSorties = Object.keys(activeSorties).length > 0;
+    if (!hasActiveSorties) return;
+
+    const interval = setInterval(() => {
+      setTimerTick((t) => t + 1);
+    }, 10000); // Update every 10 seconds
+
+    return () => clearInterval(interval);
+  }, [activeSorties]);
+
+  // Format elapsed time for sortie timer
+  const formatElapsedTime = useCallback((timestamp: string): string => {
+    const start = new Date(timestamp).getTime();
+    const now = Date.now();
+    const elapsed = Math.floor((now - start) / 1000); // seconds
+
+    const minutes = Math.floor(elapsed / 60);
+    const seconds = elapsed % 60;
+
+    if (minutes < 1) {
+      return '<1m';
+    } else if (minutes < 60) {
+      return `${minutes}m`;
+    } else {
+      const hours = Math.floor(minutes / 60);
+      const remainingMinutes = minutes % 60;
+      return `${hours}h${remainingMinutes.toString().padStart(2, '0')}`;
+    }
+  }, [timerTick]); // Include timerTick to trigger re-renders
 
   const students: StudentWithMapping[] = activeSession?.class_id
     ? studentsByClass[activeSession.class_id] || []
@@ -225,8 +293,41 @@ function NativeSessionScreen() {
     );
   }, [removeAbsence]);
 
+  // Handle marking return for a student who is out
+  const handleMarkReturn = useCallback((student: StudentWithMapping) => {
+    const sortie = getActiveSortie(student.id);
+    if (!sortie) return;
+
+    const elapsed = formatElapsedTime(sortie.timestamp);
+    const subtypeLabels: Record<string, string> = {
+      infirmerie: 'infirmerie',
+      toilettes: 'toilettes',
+      convocation: 'convocation',
+      exclusion: 'exclusion',
+    };
+    const subtypeLabel = sortie.subtype ? subtypeLabels[sortie.subtype] || sortie.subtype : 'sorti(e)';
+
+    Alert.alert(
+      'Retour de l\'eleve',
+      `${student.fullName || student.pseudo} est ${subtypeLabel} depuis ${elapsed}.\n\nMarquer son retour ?`,
+      [
+        { text: 'Non', style: 'cancel' },
+        {
+          text: 'Oui, retour',
+          style: 'default',
+          onPress: async () => {
+            const success = await markReturn(student.id);
+            if (!success) {
+              Alert.alert('Erreur', 'Impossible de marquer le retour');
+            }
+          },
+        },
+      ]
+    );
+  }, [getActiveSortie, formatElapsedTime, markReturn]);
+
   // Handle selection from radial menu
-  const handleRadialSelection = useCallback(async (selection: any) => {
+  const handleRadialSelection = useCallback(async (selection: RadialMenuSelection) => {
     if (!selectedStudent) return;
 
     const itemId = selection.parentId || selection.itemId;
@@ -301,8 +402,11 @@ function NativeSessionScreen() {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
-    setShowProgress(false);
-    progressAnim.setValue(0);
+    // Only update state if component is still mounted
+    if (isMountedRef.current) {
+      setShowProgress(false);
+      progressAnim.setValue(0);
+    }
   };
 
   // Handle touch start on a student cell
@@ -314,7 +418,16 @@ function NativeSessionScreen() {
       // Short delay to distinguish from scroll
       longPressTimerRef.current = setTimeout(() => {
         handleCancelAbsence(student);
-      }, 200);
+      }, ABSENT_STUDENT_TAP_DELAY);
+      return;
+    }
+
+    // Check if student is out (sortie) - show return dialog instead of radial menu
+    if (isStudentOut(student.id)) {
+      // Short delay to distinguish from scroll
+      longPressTimerRef.current = setTimeout(() => {
+        handleMarkReturn(student);
+      }, ABSENT_STUDENT_TAP_DELAY);
       return;
     }
 
@@ -335,6 +448,8 @@ function NativeSessionScreen() {
 
     // Start long press timer
     longPressTimerRef.current = setTimeout(() => {
+      // Check if still mounted before updating state
+      if (!isMountedRef.current) return;
       setShowProgress(false);
       setSelectedStudent(student);
       menuOpenRef.current = true;
@@ -352,7 +467,7 @@ function NativeSessionScreen() {
       const dx = containerPos.x - touchPos.x;
       const dy = containerPos.y - touchPos.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-      if (distance > 20) {
+      if (distance > TOUCH_MOVE_THRESHOLD) {
         clearLongPressTimer();
         return;
       }
@@ -371,7 +486,11 @@ function NativeSessionScreen() {
     }
   };
 
-  // Load session data
+  // Load session data on mount
+  // INTENTIONAL: activeSession is excluded from deps because:
+  // 1. We only want to load once when user.id is available
+  // 2. Including activeSession would cause infinite loops since loadActiveSession updates it
+  // 3. loadActiveSession is stable (zustand selector)
   useEffect(() => {
     const loadData = async () => {
       if (!user?.id) return;
@@ -382,6 +501,7 @@ function NativeSessionScreen() {
       setIsInitializing(false);
     };
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
   useEffect(() => {
@@ -392,6 +512,7 @@ function NativeSessionScreen() {
           loadClassById(activeSession.class_id),
           loadRoomById(activeSession.room_id),
           loadStudentsForClass(activeSession.class_id),
+          loadGroups(activeSession.class_id),
           loadPlan(activeSession.class_id, activeSession.room_id),
         ]);
         // Load oral evaluations for the class
@@ -460,8 +581,20 @@ function NativeSessionScreen() {
     );
   };
 
+  const MAX_REMARQUE_LENGTH = 500;
+
   const handleSubmitRemarque = async () => {
     if (!selectedStudent || !user) return;
+
+    // Validate remarque text length
+    const trimmedText = remarqueText.trim();
+    if (trimmedText.length > MAX_REMARQUE_LENGTH) {
+      Alert.alert(
+        'Texte trop long',
+        `La remarque ne peut pas depasser ${MAX_REMARQUE_LENGTH} caracteres (actuellement ${trimmedText.length}).`
+      );
+      return;
+    }
 
     setIsUploadingPhoto(true);
     let photoPath: string | null = null;
@@ -476,7 +609,7 @@ function NativeSessionScreen() {
       }
     }
 
-    await addEvent(selectedStudent.id, EVENT_TYPES.REMARQUE, null, remarqueText || null, photoPath);
+    await addEvent(selectedStudent.id, EVENT_TYPES.REMARQUE, null, trimmedText || null, photoPath);
 
     setRemarqueText('');
     setRemarquePhotoUri(null);
@@ -540,13 +673,42 @@ function NativeSessionScreen() {
       return;
     }
 
-    // Select random unevaluated student
-    const randomIndex = Math.floor(Math.random() * unevaluatedStudents.length);
-    const selected = unevaluatedStudents[randomIndex];
-    setOralStudent(selected);
+    // Store unevaluated list for manual selection
+    setUnevaluatedList(unevaluatedStudents);
+
+    // Propose choice: random or manual selection
+    Alert.alert(
+      'Evaluation orale',
+      `${unevaluatedStudents.length} eleve(s) non evalue(s)`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: '🎯 Choisir',
+          onPress: () => {
+            setShowOralStudentPicker(true);
+          },
+        },
+        {
+          text: '🎲 Hasard',
+          onPress: () => {
+            const randomIndex = Math.floor(Math.random() * unevaluatedStudents.length);
+            const selected = unevaluatedStudents[randomIndex];
+            setOralStudent(selected);
+            setSelectedOralGrade(null);
+            setShowOralModal(true);
+          },
+        },
+      ]
+    );
+  }, [students, isStudentAbsent, activeSession, getUnevaluatedStudents, resetClassEvaluations]);
+
+  // Handle manual student selection for oral
+  const handleSelectStudentForOral = useCallback((student: StudentWithMapping) => {
+    setShowOralStudentPicker(false);
+    setOralStudent(student);
     setSelectedOralGrade(null);
     setShowOralModal(true);
-  }, [students, isStudentAbsent, activeSession, getUnevaluatedStudents, resetClassEvaluations]);
+  }, []);
 
   const handleSaveOralEvaluation = async () => {
     if (!oralStudent || selectedOralGrade === null || !user || !activeSession) return;
@@ -576,6 +738,28 @@ function NativeSessionScreen() {
       setShowOralModal(false);
       setOralStudent(null);
       setSelectedOralGrade(null);
+    }
+  };
+
+  // Session notes handlers
+  const handleOpenSessionNotes = useCallback(() => {
+    if (activeSession) {
+      setSessionNotesText(activeSession.notes || '');
+      setShowSessionNotesModal(true);
+    }
+  }, [activeSession]);
+
+  const handleSaveSessionNotes = async () => {
+    if (!activeSession) return;
+
+    setIsSavingNotes(true);
+    try {
+      await updateNotes(sessionNotesText.trim() || null);
+      setShowSessionNotesModal(false);
+    } catch (error) {
+      Alert.alert('Erreur', 'Impossible de sauvegarder la note');
+    } finally {
+      setIsSavingNotes(false);
     }
   };
 
@@ -737,6 +921,9 @@ function NativeSessionScreen() {
         const counts = student ? eventCountsByStudent[student.id] : null;
 
         const isAbsent = student ? isStudentAbsent(student.id) : false;
+        const isOut = student ? isStudentOut(student.id) : false;
+        const activeSortie = student && isOut ? getActiveSortie(student.id) : null;
+        const studentGroup = student?.groupId ? groups.find(g => g.id === student.groupId) : null;
 
         cells.push(
           <View
@@ -746,6 +933,7 @@ function NativeSessionScreen() {
               { width: cellSize, height: cellSize },
               student && styles.gridCellOccupied,
               student && isAbsent && styles.gridCellAbsent,
+              student && isOut && styles.gridCellOut,
               selectedStudent?.id === student?.id && styles.gridCellSelected,
             ]}
             onTouchStart={(e) => {
@@ -766,14 +954,21 @@ function NativeSessionScreen() {
               }
             }}
           >
+            {studentGroup && (
+              <View style={[styles.groupIndicator, { backgroundColor: studentGroup.color }]} />
+            )}
             {student ? (
               <View style={styles.cellContent}>
-                <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent]} numberOfLines={1}>
+                <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
                   {getDisplayName(student).split(' ')[0]}
                 </Text>
                 {isAbsent ? (
                   <View style={styles.absentBadge}>
                     <Text style={styles.absentBadgeText}>ABS</Text>
+                  </View>
+                ) : isOut && activeSortie ? (
+                  <View style={styles.sortieBadge}>
+                    <Text style={styles.sortieBadgeText}>🚪 {formatElapsedTime(activeSortie.timestamp)}</Text>
                   </View>
                 ) : (
                   counts && (counts.participation > 0 || counts.bavardage > 0) && (
@@ -811,7 +1006,7 @@ function NativeSessionScreen() {
         </View>
       </View>
     );
-  }, [gridData, students, eventCountsByStudent, selectedStudent, isStudentAbsent, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
+  }, [gridData, students, eventCountsByStudent, selectedStudent, isStudentAbsent, isStudentOut, getActiveSortie, formatElapsedTime, groups, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
 
   if (isInitializing || !activeSession) {
     return (
@@ -876,6 +1071,17 @@ function NativeSessionScreen() {
                   {getEvaluatedCount(activeSession.class_id)}/{students.filter(s => !isStudentAbsent(s.id)).length}
                 </Text>
               </View>
+            )}
+          </Pressable>
+          <View style={styles.toolbarDivider} />
+          <Pressable
+            style={styles.toolbarButton}
+            onPress={handleOpenSessionNotes}
+          >
+            <Text style={styles.toolbarButtonIcon}>📝</Text>
+            <Text style={styles.toolbarButtonText}>Note</Text>
+            {activeSession?.notes && (
+              <View style={styles.noteIndicator} />
             )}
           </Pressable>
           <View style={styles.toolbarDivider} />
@@ -1146,6 +1352,111 @@ function NativeSessionScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Oral Student Picker Modal */}
+      <Modal
+        visible={showOralStudentPicker}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowOralStudentPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setShowOralStudentPicker(false)}
+          />
+          <View style={[styles.modalContent, styles.oralPickerContent]}>
+            <Text style={styles.modalTitle}>Choisir un eleve</Text>
+            <Text style={styles.oralPickerHint}>
+              {unevaluatedList.length} eleve(s) non evalue(s) ce trimestre
+            </Text>
+            <ScrollView style={styles.oralPickerList} showsVerticalScrollIndicator={false}>
+              {unevaluatedList
+                .sort((a, b) => (a.fullName || a.pseudo).localeCompare(b.fullName || b.pseudo))
+                .map((student) => (
+                  <Pressable
+                    key={student.id}
+                    style={styles.oralPickerItem}
+                    onPress={() => handleSelectStudentForOral(student)}
+                  >
+                    <Text style={styles.oralPickerItemText}>
+                      {student.fullName || student.pseudo}
+                    </Text>
+                  </Pressable>
+                ))}
+            </ScrollView>
+            <Pressable
+              style={styles.modalCancelButton}
+              onPress={() => setShowOralStudentPicker(false)}
+            >
+              <Text style={styles.modalCancelButtonText}>Annuler</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Session Notes Modal */}
+      <Modal
+        visible={showSessionNotesModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSessionNotesModal(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => setShowSessionNotesModal(false)}
+          />
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Note de seance</Text>
+            <Text style={styles.sessionNotesHint}>
+              Notez vos observations sur cette seance (notions incomprises, remarques generales...)
+            </Text>
+
+            <TextInput
+              style={styles.sessionNotesInput}
+              placeholder="Vos notes sur cette seance..."
+              placeholderTextColor={theme.colors.textTertiary}
+              value={sessionNotesText}
+              onChangeText={setSessionNotesText}
+              multiline
+              numberOfLines={5}
+              maxLength={1000}
+              textAlignVertical="top"
+            />
+            <Text style={styles.sessionNotesCharCount}>
+              {sessionNotesText.length}/1000
+            </Text>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelButton}
+                onPress={() => setShowSessionNotesModal(false)}
+                disabled={isSavingNotes}
+              >
+                <Text style={styles.modalCancelButtonText}>Annuler</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.confirmButton,
+                  isSavingNotes && styles.buttonDisabled,
+                ]}
+                onPress={handleSaveSessionNotes}
+                disabled={isSavingNotes}
+              >
+                {isSavingNotes ? (
+                  <ActivityIndicator color={theme.colors.textInverse} size="small" />
+                ) : (
+                  <Text style={styles.confirmButtonText}>Enregistrer</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Student Picker Modal (for delete) */}
@@ -1424,6 +1735,66 @@ const styles = StyleSheet.create({
     color: theme.colors.participation,
     fontWeight: '600',
   },
+  noteIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.primary,
+    position: 'absolute',
+    top: 4,
+    right: 4,
+  },
+  sessionNotesHint: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.md,
+    textAlign: 'center',
+  },
+  sessionNotesInput: {
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+    fontSize: 15,
+    color: theme.colors.text,
+    minHeight: 120,
+    maxHeight: 200,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  sessionNotesCharCount: {
+    fontSize: 11,
+    color: theme.colors.textTertiary,
+    textAlign: 'right',
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.md,
+  },
+  oralPickerContent: {
+    maxHeight: '70%',
+  },
+  oralPickerHint: {
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.md,
+    textAlign: 'center',
+  },
+  oralPickerList: {
+    maxHeight: 300,
+    marginBottom: theme.spacing.md,
+  },
+  oralPickerItem: {
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.lg,
+    marginBottom: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  oralPickerItemText: {
+    fontSize: 16,
+    color: theme.colors.text,
+    fontWeight: '500',
+  },
   gridArea: {
     flex: 1,
     padding: theme.spacing.lg,
@@ -1477,10 +1848,24 @@ const styles = StyleSheet.create({
     borderColor: '#EF4444',
     borderWidth: 2,
   },
+  gridCellOut: {
+    backgroundColor: '#FEF3C7', // Light amber/yellow background
+    borderColor: '#F59E0B',
+    borderWidth: 2,
+  },
   gridCellSelected: {
     borderColor: theme.colors.participation,
     borderWidth: 2,
     backgroundColor: theme.colors.participation + '20',
+  },
+  groupIndicator: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    borderTopLeftRadius: theme.radius.sm,
+    borderBottomLeftRadius: theme.radius.sm,
   },
   cellContent: {
     flex: 1,
@@ -1498,6 +1883,10 @@ const styles = StyleSheet.create({
     color: '#DC2626', // Red text
     fontWeight: '600',
   },
+  cellNameOut: {
+    color: '#D97706', // Amber text
+    fontWeight: '600',
+  },
   absentBadge: {
     backgroundColor: '#DC2626',
     borderRadius: 4,
@@ -1506,6 +1895,18 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   absentBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 7,
+    fontWeight: '700',
+  },
+  sortieBadge: {
+    backgroundColor: '#F59E0B',
+    borderRadius: 4,
+    paddingHorizontal: 3,
+    paddingVertical: 1,
+    marginTop: 2,
+  },
+  sortieBadgeText: {
     color: '#FFFFFF',
     fontSize: 7,
     fontWeight: '700',

@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useDatabase, useAutoSync } from '../hooks';
 import { useNetworkStore } from '../stores';
-import { OfflineIndicator } from '../components';
+import { ErrorBoundary, OfflineIndicator } from '../components';
 import { theme } from '../constants/theme';
 
 export default function RootLayout() {
@@ -51,18 +51,20 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <OfflineIndicator />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: theme.colors.background },
-        }}
-      >
-        <Stack.Screen name="index" />
-        <Stack.Screen name="(auth)" />
-        <Stack.Screen name="(main)" />
-      </Stack>
+      <ErrorBoundary>
+        <StatusBar style="dark" />
+        <OfflineIndicator />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: theme.colors.background },
+          }}
+        >
+          <Stack.Screen name="index" />
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(main)" />
+        </Stack>
+      </ErrorBoundary>
     </SafeAreaProvider>
   );
 }

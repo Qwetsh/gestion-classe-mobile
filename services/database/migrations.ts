@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { getDatabase, queryFirst, queryAll, executeSql } from './client';
+import { getDatabase, queryFirst, queryAll, executeSql, executeTransaction } from './client';
 import { SCHEMA_VERSION, CREATE_TABLES_SQL } from './schema';
 
 interface SchemaVersion {
@@ -67,6 +67,7 @@ export async function initializeDatabase(): Promise<void> {
 
 /**
  * Run all necessary migrations
+ * Each migration is atomic - either fully succeeds or fully rolls back
  */
 async function runMigrations(fromVersion: number): Promise<void> {
   console.log('[Database] Running migrations from version', fromVersion);
@@ -74,88 +75,170 @@ async function runMigrations(fromVersion: number): Promise<void> {
   const db = await getDatabase();
 
   // Migration 0 -> 1: Initial schema
+  // Note: Initial schema uses execAsync which handles its own transaction
   if (fromVersion < 1) {
     console.log('[Database] Applying migration: Initial schema (v1)');
 
-    // Execute all CREATE TABLE statements
-    await db.execAsync(CREATE_TABLES_SQL);
+    try {
+      // Execute all CREATE TABLE statements
+      await db.execAsync(CREATE_TABLES_SQL);
 
-    // Set schema version
-    await executeSql(
-      'INSERT OR REPLACE INTO schema_version (version) VALUES (?)',
-      [1]
-    );
+      // Set schema version
+      await executeSql(
+        'INSERT OR REPLACE INTO schema_version (version) VALUES (?)',
+        [1]
+      );
 
-    console.log('[Database] Migration v1 complete');
+      console.log('[Database] Migration v1 complete');
+    } catch (error) {
+      console.error('[Database] Migration v1 failed:', error);
+      throw new Error('Initial schema migration failed. Database may be corrupted.');
+    }
   }
 
   // Migration 1 -> 2: Add photo_path to events
   if (fromVersion < 2) {
     console.log('[Database] Applying migration: Add photo_path to events (v2)');
 
-    // Check if column already exists (in case of interrupted migration)
+    // Check if column already exists (idempotent check for interrupted migrations)
     const hasPhotoPath = await columnExists('events', 'photo_path');
     if (!hasPhotoPath) {
-      await executeSql(
-        'ALTER TABLE events ADD COLUMN photo_path TEXT'
-      );
+      // ATOMIC: Both ALTER and version update in same transaction
+      await db.execAsync('BEGIN TRANSACTION');
+      try {
+        await db.runAsync('ALTER TABLE events ADD COLUMN photo_path TEXT');
+        await db.runAsync('UPDATE schema_version SET version = ?', [2]);
+        await db.execAsync('COMMIT');
+        console.log('[Database] Migration v2 complete');
+      } catch (error) {
+        await db.execAsync('ROLLBACK');
+        console.error('[Database] Migration v2 failed, rolled back:', error);
+        throw error;
+      }
     } else {
-      console.log('[Database] Column photo_path already exists, skipping');
+      // Column exists, just update version
+      console.log('[Database] Column photo_path already exists, updating version only');
+      await executeSql('UPDATE schema_version SET version = ?', [2]);
     }
-
-    // Update schema version
-    await executeSql(
-      'UPDATE schema_version SET version = ?',
-      [2]
-    );
-
-    console.log('[Database] Migration v2 complete');
   }
 
   // Migration 2 -> 3: Add disabled_cells to rooms
   if (fromVersion < 3) {
     console.log('[Database] Applying migration: Add disabled_cells to rooms (v3)');
 
-    // Check if column already exists (in case of interrupted migration)
     const hasDisabledCells = await columnExists('rooms', 'disabled_cells');
     if (!hasDisabledCells) {
-      await executeSql(
-        "ALTER TABLE rooms ADD COLUMN disabled_cells TEXT DEFAULT '[]'"
-      );
+      // ATOMIC: Both ALTER and version update in same transaction
+      await db.execAsync('BEGIN TRANSACTION');
+      try {
+        await db.runAsync("ALTER TABLE rooms ADD COLUMN disabled_cells TEXT DEFAULT '[]'");
+        await db.runAsync('UPDATE schema_version SET version = ?', [3]);
+        await db.execAsync('COMMIT');
+        console.log('[Database] Migration v3 complete');
+      } catch (error) {
+        await db.execAsync('ROLLBACK');
+        console.error('[Database] Migration v3 failed, rolled back:', error);
+        throw error;
+      }
     } else {
-      console.log('[Database] Column disabled_cells already exists, skipping');
+      console.log('[Database] Column disabled_cells already exists, updating version only');
+      await executeSql('UPDATE schema_version SET version = ?', [3]);
     }
-
-    // Update schema version
-    await executeSql(
-      'UPDATE schema_version SET version = ?',
-      [3]
-    );
-
-    console.log('[Database] Migration v3 complete');
   }
 
   // Migration 3 -> 4: Add topic to sessions
   if (fromVersion < 4) {
     console.log('[Database] Applying migration: Add topic to sessions (v4)');
 
-    // Check if column already exists (in case of interrupted migration)
     const hasTopic = await columnExists('sessions', 'topic');
     if (!hasTopic) {
-      await executeSql(
-        'ALTER TABLE sessions ADD COLUMN topic TEXT'
-      );
+      // ATOMIC: Both ALTER and version update in same transaction
+      await db.execAsync('BEGIN TRANSACTION');
+      try {
+        await db.runAsync('ALTER TABLE sessions ADD COLUMN topic TEXT');
+        await db.runAsync('UPDATE schema_version SET version = ?', [4]);
+        await db.execAsync('COMMIT');
+        console.log('[Database] Migration v4 complete');
+      } catch (error) {
+        await db.execAsync('ROLLBACK');
+        console.error('[Database] Migration v4 failed, rolled back:', error);
+        throw error;
+      }
     } else {
-      console.log('[Database] Column topic already exists, skipping');
+      console.log('[Database] Column topic already exists, updating version only');
+      await executeSql('UPDATE schema_version SET version = ?', [4]);
     }
+  }
 
-    // Update schema version
-    await executeSql(
-      'UPDATE schema_version SET version = ?',
-      [4]
+  // Migration 4 -> 5: Add notes to sessions (for session-level notes during class)
+  if (fromVersion < 5) {
+    console.log('[Database] Applying migration: Add notes to sessions (v5)');
+
+    const hasNotes = await columnExists('sessions', 'notes');
+    if (!hasNotes) {
+      // ATOMIC: Both ALTER and version update in same transaction
+      await db.execAsync('BEGIN TRANSACTION');
+      try {
+        await db.runAsync('ALTER TABLE sessions ADD COLUMN notes TEXT');
+        await db.runAsync('UPDATE schema_version SET version = ?', [5]);
+        await db.execAsync('COMMIT');
+        console.log('[Database] Migration v5 complete');
+      } catch (error) {
+        await db.execAsync('ROLLBACK');
+        console.error('[Database] Migration v5 failed, rolled back:', error);
+        throw error;
+      }
+    } else {
+      console.log('[Database] Column notes already exists, updating version only');
+      await executeSql('UPDATE schema_version SET version = ?', [5]);
+    }
+  }
+
+  // Migration 5 -> 6: Add student_groups table and group_id to students
+  if (fromVersion < 6) {
+    console.log('[Database] Applying migration: Add student_groups and group_id (v6)');
+
+    // Check if student_groups table exists
+    const tables = await queryAll<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='student_groups'`
     );
+    const hasGroupsTable = tables.length > 0;
 
-    console.log('[Database] Migration v4 complete');
+    // Check if group_id column exists in students
+    const hasGroupId = await columnExists('students', 'group_id');
+
+    // ATOMIC: All changes in same transaction
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      if (!hasGroupsTable) {
+        await db.runAsync(`
+          CREATE TABLE student_groups (
+            id TEXT PRIMARY KEY,
+            class_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#6366f1',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            synced_at TEXT,
+            FOREIGN KEY (class_id) REFERENCES classes(id)
+          )
+        `);
+        await db.runAsync(`CREATE INDEX IF NOT EXISTS idx_student_groups_class_id ON student_groups(class_id)`);
+      }
+
+      if (!hasGroupId) {
+        await db.runAsync('ALTER TABLE students ADD COLUMN group_id TEXT REFERENCES student_groups(id)');
+        await db.runAsync(`CREATE INDEX IF NOT EXISTS idx_students_group_id ON students(group_id)`);
+      }
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [6]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v6 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v6 failed, rolled back:', error);
+      throw error;
+    }
   }
 }
 
@@ -176,6 +259,7 @@ export async function resetDatabase(): Promise<void> {
     'class_room_plans',
     'rooms',
     'students',
+    'student_groups',
     'classes',
     'schema_version',
   ];
@@ -197,6 +281,7 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
   const tables = [
     'classes',
     'students',
+    'student_groups',
     'rooms',
     'class_room_plans',
     'sessions',

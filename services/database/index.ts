@@ -54,6 +54,20 @@ export {
 } from './localMappingRepository';
 
 export {
+  createGroup,
+  getGroupsByClassId,
+  getGroupById,
+  updateGroup,
+  deleteGroup,
+  assignStudentToGroup,
+  getStudentsByGroupId,
+  getUnsyncedGroups,
+  deleteGroupsByClassId,
+  GROUP_COLORS,
+  type StudentGroup,
+} from './groupRepository';
+
+export {
   createRoom,
   getRoomsByUserId,
   getRoomById,
@@ -88,6 +102,7 @@ export {
   getSessionsByUserId,
   getSessionsByClassId,
   getSessionsByDateRange,
+  updateSessionNotes,
   deleteSession,
   cleanupOrphanSessions,
   type Session,
@@ -100,12 +115,14 @@ export {
   getStudentEventsInSession,
   getStudentEventCounts,
   getAllStudentEventCounts,
+  getClassStudentEventCounts,
   deleteEvent,
   deleteEventsByStudentId,
   type Event,
   type EventType,
   type SortieSubtype,
   type StudentEventCounts,
+  type ClassStudentEventCounts,
 } from './eventRepository';
 
 // Delete Service (RGPD)

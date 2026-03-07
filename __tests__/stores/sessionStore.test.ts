@@ -12,6 +12,7 @@ jest.mock('../../services/database', () => ({
   deleteEvent: jest.fn(),
   getEventsBySessionId: jest.fn(),
   getAllStudentEventCounts: jest.fn(),
+  cleanupOrphanSessions: jest.fn().mockResolvedValue(0),
 }));
 
 const mockDatabase = database as jest.Mocked<typeof database>;
@@ -28,6 +29,7 @@ describe('sessionStore', () => {
     class_id: mockClassId,
     room_id: mockRoomId,
     topic: null,
+    notes: null,
     started_at: '2026-02-04T10:00:00.000Z',
     ended_at: null,
     synced_at: null,
@@ -244,7 +246,7 @@ describe('sessionStore', () => {
       const store = useSessionStore.getState();
 
       await expect(store.cancelCurrentSession()).rejects.toThrow(
-        'La session existe toujours apres suppression'
+        'Session deletion verification failed'
       );
     });
   });

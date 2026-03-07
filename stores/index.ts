@@ -9,3 +9,4 @@ export { useNetworkStore, useIsOffline } from './networkStore';
 export { useSyncStore } from './syncStore';
 export { useOralEvaluationStore, ORAL_GRADE_LABELS, type OralEvaluation } from './oralEvaluationStore';
 export { useParentMeetingStore, type Period, type StudentStats, type WeeklyData, type StudentDashboard } from './parentMeetingStore';
+export { useGroupStore, GROUP_COLORS } from './groupStore';

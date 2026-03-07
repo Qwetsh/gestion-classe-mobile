@@ -177,6 +177,69 @@ export async function getAllStudentEventCounts(
   return countsByStudent;
 }
 
+export interface ClassStudentEventCounts {
+  participation: number;
+  bavardage: number;
+  absence: number;
+  remarque: number;
+  sortie: number;
+  retour: number;
+}
+
+/**
+ * Get event counts for all students in a class across all sessions
+ */
+export async function getClassStudentEventCounts(
+  classId: string
+): Promise<Record<string, ClassStudentEventCounts>> {
+  const events = await queryAll<Event>(
+    `SELECT e.* FROM events e
+     INNER JOIN sessions s ON e.session_id = s.id
+     WHERE s.class_id = ?
+     ORDER BY e.timestamp ASC`,
+    [classId]
+  );
+
+  const countsByStudent: Record<string, ClassStudentEventCounts> = {};
+
+  for (const event of events) {
+    if (!countsByStudent[event.student_id]) {
+      countsByStudent[event.student_id] = {
+        participation: 0,
+        bavardage: 0,
+        absence: 0,
+        remarque: 0,
+        sortie: 0,
+        retour: 0,
+      };
+    }
+
+    const counts = countsByStudent[event.student_id];
+    switch (event.type) {
+      case EVENT_TYPES.PARTICIPATION:
+        counts.participation++;
+        break;
+      case EVENT_TYPES.BAVARDAGE:
+        counts.bavardage++;
+        break;
+      case EVENT_TYPES.ABSENCE:
+        counts.absence++;
+        break;
+      case EVENT_TYPES.REMARQUE:
+        counts.remarque++;
+        break;
+      case EVENT_TYPES.SORTIE:
+        counts.sortie++;
+        break;
+      case EVENT_TYPES.RETOUR:
+        counts.retour++;
+        break;
+    }
+  }
+
+  return countsByStudent;
+}
+
 /**
  * Delete an event
  */

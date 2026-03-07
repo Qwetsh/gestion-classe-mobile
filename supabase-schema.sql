@@ -22,12 +22,24 @@ CREATE TABLE IF NOT EXISTS public.classes (
   is_deleted BOOLEAN DEFAULT FALSE
 );
 
+-- Student groups (îlots) table
+CREATE TABLE IF NOT EXISTS public.student_groups (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  class_id UUID NOT NULL REFERENCES public.classes(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '#6366f1',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ
+);
+
 -- Students table (pseudonymized - only pseudo stored here)
 CREATE TABLE IF NOT EXISTS public.students (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   pseudo TEXT NOT NULL,
   class_id UUID NOT NULL REFERENCES public.classes(id) ON DELETE CASCADE,
+  group_id UUID REFERENCES public.student_groups(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ,
   is_deleted BOOLEAN DEFAULT FALSE
@@ -62,6 +74,8 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   class_id UUID NOT NULL REFERENCES public.classes(id) ON DELETE CASCADE,
   room_id UUID NOT NULL REFERENCES public.rooms(id) ON DELETE CASCADE,
+  topic TEXT,
+  notes TEXT,
   started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ended_at TIMESTAMPTZ
 );
@@ -71,7 +85,7 @@ CREATE TABLE IF NOT EXISTS public.events (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   session_id UUID NOT NULL REFERENCES public.sessions(id) ON DELETE CASCADE,
   student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
-  type TEXT NOT NULL CHECK (type IN ('participation', 'bavardage', 'absence', 'remarque', 'sortie')),
+  type TEXT NOT NULL CHECK (type IN ('participation', 'bavardage', 'absence', 'remarque', 'sortie', 'retour')),
   subtype TEXT CHECK (subtype IN ('infirmerie', 'toilettes', 'convocation', 'exclusion') OR subtype IS NULL),
   note TEXT,
   timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -82,8 +96,11 @@ CREATE TABLE IF NOT EXISTS public.events (
 -- ============================================
 
 CREATE INDEX IF NOT EXISTS idx_classes_user_id ON public.classes(user_id);
+CREATE INDEX IF NOT EXISTS idx_student_groups_user_id ON public.student_groups(user_id);
+CREATE INDEX IF NOT EXISTS idx_student_groups_class_id ON public.student_groups(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON public.students(user_id);
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON public.students(class_id);
+CREATE INDEX IF NOT EXISTS idx_students_group_id ON public.students(group_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_user_id ON public.rooms(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON public.sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_class_id ON public.sessions(class_id);
@@ -97,6 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_events_student_id ON public.events(student_id);
 
 -- Enable RLS on all tables
 ALTER TABLE public.classes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rooms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.class_room_plans ENABLE ROW LEVEL SECURITY;
@@ -114,6 +132,19 @@ CREATE POLICY "Users can update own classes" ON public.classes
   FOR UPDATE USING (auth.uid() = user_id);
 
 CREATE POLICY "Users can delete own classes" ON public.classes
+  FOR DELETE USING (auth.uid() = user_id);
+
+-- Student groups policies
+CREATE POLICY "Users can view own student_groups" ON public.student_groups
+  FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own student_groups" ON public.student_groups
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own student_groups" ON public.student_groups
+  FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete own student_groups" ON public.student_groups
   FOR DELETE USING (auth.uid() = user_id);
 
 -- Students policies

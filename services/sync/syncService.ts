@@ -13,6 +13,7 @@ export interface SyncResult {
   studentsSync: number;
   roomsSync: number;
   plansSync: number;
+  groupsSync: number;
   errors: string[];
 }
 
@@ -29,7 +30,8 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM classes WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL)
+      (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM student_groups WHERE synced_at IS NULL)
     ) as total
   `);
 
@@ -48,6 +50,7 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     studentsSync: 0,
     roomsSync: 0,
     plansSync: 0,
+    groupsSync: 0,
     errors: [],
   };
 
@@ -58,27 +61,32 @@ export async function syncAll(userId: string): Promise<SyncResult> {
   }
 
   try {
-    // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events
+    // Sync in dependency order: classes -> groups -> students -> rooms -> plans -> sessions -> events
 
     // 1. Sync classes
     result.classesSync = await syncClasses(userId);
 
-    // 2. Sync students
+    // 2. Sync groups (depends on classes)
+    result.groupsSync = await syncGroups(userId);
+
+    // 3. Sync students (depends on classes and groups)
     result.studentsSync = await syncStudents();
 
-    // 3. Sync rooms
+    // 4. Sync rooms
     result.roomsSync = await syncRooms(userId);
 
-    // 4. Sync class_room_plans
+    // 5. Sync class_room_plans
     result.plansSync = await syncPlans(userId);
 
-    // 5. Sync sessions
+    // 6. Sync sessions
     result.sessionsSync = await syncSessions();
 
-    // 6. Sync events
+    // 7. Sync events
     result.eventsSync = await syncEvents();
 
-    console.log('[syncService] Sync complete:', result);
+    if (__DEV__) {
+      console.log('[syncService] Sync complete:', result);
+    }
   } catch (error) {
     console.error('[syncService] Sync failed:', error);
     result.success = false;
@@ -131,6 +139,52 @@ async function syncClasses(userId: string): Promise<number> {
 }
 
 /**
+ * Sync student groups to Supabase
+ */
+async function syncGroups(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    class_id: string;
+    name: string;
+    color: string;
+    created_at: string;
+  }>(`SELECT id, class_id, name, color, created_at FROM student_groups WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map((g) => ({
+    id: g.id,
+    user_id: userId,
+    class_id: g.class_id,
+    name: g.name,
+    color: g.color,
+    created_at: g.created_at,
+  }));
+
+  const { error } = await supabase
+    .from('student_groups')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Groups sync error:', error);
+    throw new Error(`Groups: ${error.message}`);
+  }
+
+  // Mark as synced (batch update)
+  const now = new Date().toISOString();
+  const ids = unsynced.map(g => g.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE student_groups SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return unsynced.length;
+}
+
+/**
  * Sync students to Supabase
  */
 async function syncStudents(): Promise<number> {
@@ -140,9 +194,10 @@ async function syncStudents(): Promise<number> {
     id: string;
     user_id: string;
     class_id: string;
+    group_id: string | null;
     pseudo: string;
     created_at: string;
-  }>(`SELECT id, user_id, class_id, pseudo, created_at FROM students WHERE synced_at IS NULL`);
+  }>(`SELECT id, user_id, class_id, group_id, pseudo, created_at FROM students WHERE synced_at IS NULL`);
 
   if (unsynced.length === 0) return 0;
 
@@ -150,6 +205,7 @@ async function syncStudents(): Promise<number> {
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
+    group_id: s.group_id,
     pseudo: s.pseudo,
     created_at: s.created_at,
   }));
@@ -192,15 +248,24 @@ async function syncRooms(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map((r) => ({
-    id: r.id,
-    user_id: userId,
-    name: r.name,
-    grid_rows: r.grid_rows,
-    grid_cols: r.grid_cols,
-    disabled_cells: JSON.parse(r.disabled_cells || '[]'),
-    created_at: r.created_at,
-  }));
+  const toSync = unsynced.map((r) => {
+    let disabledCells: string[] = [];
+    try {
+      disabledCells = JSON.parse(r.disabled_cells || '[]');
+    } catch {
+      console.warn('[syncService] Invalid disabled_cells JSON for room:', r.id);
+      disabledCells = [];
+    }
+    return {
+      id: r.id,
+      user_id: userId,
+      name: r.name,
+      grid_rows: r.grid_rows,
+      grid_cols: r.grid_cols,
+      disabled_cells: disabledCells,
+      created_at: r.created_at,
+    };
+  });
 
   const { error } = await supabase
     .from('rooms')
@@ -225,6 +290,7 @@ async function syncRooms(userId: string): Promise<number> {
 
 /**
  * Sync class_room_plans to Supabase
+ * Optimized: batch verify classes/rooms existence instead of N+1 queries
  */
 async function syncPlans(userId: string): Promise<number> {
   if (!supabase) return 0;
@@ -240,84 +306,136 @@ async function syncPlans(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
+  // Batch: get all unique class_ids and room_ids
+  const classIds = [...new Set(unsynced.map(p => p.class_id))];
+  const roomIds = [...new Set(unsynced.map(p => p.room_id))];
+
+  // Single query to verify all classes exist on server
+  const { data: existingClasses } = await supabase
+    .from('classes')
+    .select('id')
+    .in('id', classIds);
+  const serverClassIds = new Set((existingClasses || []).map(c => c.id));
+
+  // Single query to verify all rooms exist on server
+  const { data: existingRooms } = await supabase
+    .from('rooms')
+    .select('id')
+    .in('id', roomIds);
+  const serverRoomIds = new Set((existingRooms || []).map(r => r.id));
+
+  // Single query to get existing plans on server
+  const { data: existingPlans } = await supabase
+    .from('class_room_plans')
+    .select('id, class_id, room_id')
+    .in('class_id', classIds);
+
+  // Build lookup map: "class_id:room_id" -> server plan id
+  const serverPlanMap = new Map<string, string>();
+  for (const plan of (existingPlans || [])) {
+    serverPlanMap.set(`${plan.class_id}:${plan.room_id}`, plan.id);
+  }
+
   let syncedCount = 0;
   const now = new Date().toISOString();
+  const toInsert: Array<{
+    id: string;
+    class_id: string;
+    room_id: string;
+    user_id: string;
+    positions: Record<string, unknown>;
+    created_at: string;
+    updated_at: string | null;
+  }> = [];
+  const toUpdate: Array<{
+    localId: string;
+    serverId: string;
+    positions: Record<string, unknown>;
+    updated_at: string;
+  }> = [];
+  const syncedIds: string[] = [];
 
-  // For each plan, check if it exists on server and update, or insert new
+  // Categorize plans for batch operations
   for (const p of unsynced) {
-    // First verify that the class and room exist on the server
-    const { data: classExists } = await supabase
-      .from('classes')
-      .select('id')
-      .eq('id', p.class_id)
-      .single();
-
-    const { data: roomExists } = await supabase
-      .from('rooms')
-      .select('id')
-      .eq('id', p.room_id)
-      .single();
-
-    if (!classExists || !roomExists) {
-      console.log('[syncService] Skipping plan - class or room not on server yet:', p.class_id, p.room_id);
+    // Skip if class or room not on server
+    if (!serverClassIds.has(p.class_id) || !serverRoomIds.has(p.room_id)) {
+      if (__DEV__) {
+        console.log('[syncService] Skipping plan - class or room not on server yet:', p.class_id, p.room_id);
+      }
       continue;
     }
 
-    // Check if plan already exists on server for this class/room combo
-    const { data: existing } = await supabase
-      .from('class_room_plans')
-      .select('id')
-      .eq('class_id', p.class_id)
-      .eq('room_id', p.room_id)
-      .single();
-
-    // Parse positions from JSON string
-    let positionsData;
+    // Parse positions safely
+    let positionsData: Record<string, unknown>;
     try {
       positionsData = JSON.parse(p.positions);
     } catch {
       positionsData = {};
     }
 
-    if (existing) {
-      // Update existing plan
-      const { error: updateError } = await supabase
-        .from('class_room_plans')
-        .update({
-          positions: positionsData,
-          updated_at: p.updated_at || now,
-        })
-        .eq('id', existing.id);
+    const serverPlanId = serverPlanMap.get(`${p.class_id}:${p.room_id}`);
 
-      if (updateError) {
-        console.error('[syncService] Plan update error:', updateError);
-        // Don't throw, just skip this plan
-        continue;
-      }
+    if (serverPlanId) {
+      // Plan exists on server - queue for update
+      toUpdate.push({
+        localId: p.id,
+        serverId: serverPlanId,
+        positions: positionsData,
+        updated_at: p.updated_at || now,
+      });
     } else {
-      // Insert new plan with user_id (required by RLS)
-      const { error: insertError } = await supabase
-        .from('class_room_plans')
-        .insert({
-          id: p.id,
-          class_id: p.class_id,
-          room_id: p.room_id,
-          user_id: userId,
-          positions: positionsData,
-          created_at: p.created_at,
-          updated_at: p.updated_at,
-        });
-
-      if (insertError) {
-        console.error('[syncService] Plan insert error:', insertError);
-        // Don't throw, just skip this plan
-        continue;
-      }
+      // New plan - queue for insert
+      toInsert.push({
+        id: p.id,
+        class_id: p.class_id,
+        room_id: p.room_id,
+        user_id: userId,
+        positions: positionsData,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+      });
     }
+  }
 
-    // Mark as synced
-    await executeSql(`UPDATE class_room_plans SET synced_at = ? WHERE id = ?`, [now, p.id]);
-    syncedCount++;
+  // Batch insert new plans
+  if (toInsert.length > 0) {
+    const { error: insertError } = await supabase
+      .from('class_room_plans')
+      .insert(toInsert);
+
+    if (insertError) {
+      console.error('[syncService] Batch plan insert error:', insertError);
+    } else {
+      syncedIds.push(...toInsert.map(p => p.id));
+      syncedCount += toInsert.length;
+    }
+  }
+
+  // Update existing plans (one by one - Supabase doesn't support batch update with different values)
+  for (const update of toUpdate) {
+    const { error: updateError } = await supabase
+      .from('class_room_plans')
+      .update({
+        positions: update.positions,
+        updated_at: update.updated_at,
+      })
+      .eq('id', update.serverId);
+
+    if (updateError) {
+      console.error('[syncService] Plan update error:', updateError);
+    } else {
+      syncedIds.push(update.localId);
+      syncedCount++;
+    }
+  }
+
+  // Batch mark as synced
+  if (syncedIds.length > 0) {
+    const placeholders = syncedIds.map(() => '?').join(',');
+    await executeSql(
+      `UPDATE class_room_plans SET synced_at = ? WHERE id IN (${placeholders})`,
+      [now, ...syncedIds]
+    );
   }
 
   return syncedCount;
@@ -343,7 +461,9 @@ async function syncSessions(): Promise<number> {
 
   // Check for unsynced rooms that are referenced by sessions
   for (const roomId of roomIds) {
-    console.log('[syncService] Checking room dependency:', roomId);
+    if (__DEV__) {
+      console.log('[syncService] Checking room dependency:', roomId);
+    }
 
     const room = await queryFirst<{ id: string; synced_at: string | null; user_id: string; name: string; grid_rows: number; grid_cols: number; disabled_cells: string; created_at: string }>(
       `SELECT id, synced_at, user_id, name, grid_rows, grid_cols, disabled_cells, created_at FROM rooms WHERE id = ?`,
@@ -356,7 +476,18 @@ async function syncSessions(): Promise<number> {
     }
 
     // Always force sync the room to Supabase (even if synced_at is set, it might not exist on server)
-    console.log('[syncService] Force syncing room to ensure it exists on server:', room.name, 'id:', room.id, 'user_id:', room.user_id);
+    if (__DEV__) {
+      console.log('[syncService] Force syncing room to ensure it exists on server:', room.name);
+    }
+
+    let roomDisabledCells: string[] = [];
+    try {
+      roomDisabledCells = JSON.parse(room.disabled_cells || '[]');
+    } catch {
+      console.warn('[syncService] Invalid disabled_cells JSON for room:', room.id);
+      roomDisabledCells = [];
+    }
+
     const { error: roomError, data: roomData } = await supabase
       .from('rooms')
       .upsert({
@@ -365,7 +496,7 @@ async function syncSessions(): Promise<number> {
         name: room.name,
         grid_rows: room.grid_rows,
         grid_cols: room.grid_cols,
-        disabled_cells: JSON.parse(room.disabled_cells || '[]'),
+        disabled_cells: roomDisabledCells,
         created_at: room.created_at,
       }, { onConflict: 'id' })
       .select();
@@ -375,7 +506,9 @@ async function syncSessions(): Promise<number> {
       throw new Error(`Room sync required for session failed: ${roomError.message}`);
     }
 
-    console.log('[syncService] Room upsert result:', roomData);
+    if (__DEV__) {
+      console.log('[syncService] Room upsert result:', roomData);
+    }
 
     // Verify the room actually exists on server
     const { data: verifyRoom, error: verifyError } = await supabase
@@ -391,12 +524,16 @@ async function syncSessions(): Promise<number> {
 
     // Mark room as synced
     await executeSql(`UPDATE rooms SET synced_at = ? WHERE id = ?`, [new Date().toISOString(), roomId]);
-    console.log('[syncService] Room synced and verified:', room.name);
+    if (__DEV__) {
+      console.log('[syncService] Room synced and verified:', room.name);
+    }
   }
 
   // Check for unsynced classes that are referenced by sessions
   for (const classId of classIds) {
-    console.log('[syncService] Checking class dependency:', classId);
+    if (__DEV__) {
+      console.log('[syncService] Checking class dependency:', classId);
+    }
 
     const cls = await queryFirst<{ id: string; synced_at: string | null; user_id: string; name: string; created_at: string }>(
       `SELECT id, synced_at, user_id, name, created_at FROM classes WHERE id = ?`,
@@ -409,7 +546,9 @@ async function syncSessions(): Promise<number> {
     }
 
     // Always force sync the class to Supabase
-    console.log('[syncService] Force syncing class to ensure it exists on server:', cls.name);
+    if (__DEV__) {
+      console.log('[syncService] Force syncing class to ensure it exists on server:', cls.name);
+    }
     const { error: classError } = await supabase
       .from('classes')
       .upsert({
@@ -426,16 +565,19 @@ async function syncSessions(): Promise<number> {
 
     // Mark class as synced
     await executeSql(`UPDATE classes SET synced_at = ? WHERE id = ?`, [new Date().toISOString(), classId]);
-    console.log('[syncService] Class synced successfully:', cls.name);
+    if (__DEV__) {
+      console.log('[syncService] Class synced successfully:', cls.name);
+    }
   }
 
-  // Now sync sessions (including topic field)
+  // Now sync sessions (including topic and notes fields)
   const toSync = unsynced.map((s) => ({
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
     room_id: s.room_id,
     topic: s.topic,
+    notes: s.notes,
     started_at: s.started_at,
     ended_at: s.ended_at,
   }));
@@ -508,19 +650,24 @@ async function syncEvents(): Promise<number> {
 /**
  * Pull data from Supabase to local SQLite
  * This is the reverse sync: server -> mobile
+ * Returns counts of synced items and any errors encountered
  */
 export async function pullFromServer(userId: string): Promise<{
   classes: number;
   students: number;
+  groups: number;
   rooms: number;
   plans: number;
   sessions: number;
   events: number;
+  errors: string[];
 }> {
-  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0 };
+  const result = { classes: 0, students: 0, groups: 0, rooms: 0, plans: 0, sessions: 0, events: 0, errors: [] as string[] };
 
   if (!isSupabaseConfigured || !supabase) {
-    console.log('[syncService] Supabase not configured, skipping pull');
+    if (__DEV__) {
+      console.log('[syncService] Supabase not configured, skipping pull');
+    }
     return result;
   }
 
@@ -535,26 +682,37 @@ export async function pullFromServer(userId: string): Promise<{
 
     if (classesError) {
       console.error('[syncService] Pull classes error:', classesError);
-    } else {
-      const serverClassIds = new Set((serverClasses || []).map(c => c.id));
+      result.errors.push(`Classes: ${classesError.message}`);
+      // IMPORTANT: Do NOT delete local data if server request failed
+    } else if (serverClasses !== null) {
+      // Only proceed with deletions if we got a valid response from server
+      const serverClassIds = new Set(serverClasses.map(c => c.id));
 
       // Delete local classes that don't exist on server anymore
-      const localClasses = await queryAll<{ id: string }>(
-        `SELECT id FROM classes WHERE user_id = ?`,
+      // SAFETY: Only delete if server returned data (not null/undefined)
+      // This prevents data loss on network errors or partial responses
+      const localClasses = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM classes WHERE user_id = ?`,
         [userId]
       );
       for (const local of localClasses) {
-        if (!serverClassIds.has(local.id)) {
+        // Only delete if:
+        // 1. Not on server anymore
+        // 2. AND was previously synced (synced_at is set)
+        // This protects locally-created data that hasn't been pushed yet
+        if (!serverClassIds.has(local.id) && local.synced_at !== null) {
           // Class was deleted on server, remove locally
           await executeSql(`DELETE FROM students WHERE class_id = ?`, [local.id]);
           await executeSql(`DELETE FROM class_room_plans WHERE class_id = ?`, [local.id]);
           await executeSql(`DELETE FROM classes WHERE id = ?`, [local.id]);
-          console.log('[syncService] Deleted local class not on server:', local.id);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local class not on server:', local.id);
+          }
         }
       }
 
       // Add new classes from server
-      for (const cls of (serverClasses || [])) {
+      for (const cls of serverClasses) {
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM classes WHERE id = ?`,
           [cls.id]
@@ -566,36 +724,102 @@ export async function pullFromServer(userId: string): Promise<{
             [cls.id, userId, cls.name, cls.created_at, now]
           );
           result.classes++;
-          console.log('[syncService] Pulled class:', cls.name);
+          if (__DEV__) {
+            console.log('[syncService] Pulled class:', cls.name);
+          }
         }
       }
     }
 
-    // 2. Pull students from Supabase
+    // 2. Pull groups from Supabase (before students since students reference groups)
+    // Get all class IDs for this user first
+    const userClasses = await queryAll<{ id: string }>(
+      `SELECT id FROM classes WHERE user_id = ?`,
+      [userId]
+    );
+    const userClassIds = userClasses.map(c => c.id);
+
+    if (userClassIds.length > 0) {
+      const { data: serverGroups, error: groupsError } = await supabase
+        .from('student_groups')
+        .select('id, class_id, name, color, created_at')
+        .in('class_id', userClassIds);
+
+      if (groupsError) {
+        console.error('[syncService] Pull groups error:', groupsError);
+        result.errors.push(`Groups: ${groupsError.message}`);
+      } else if (serverGroups !== null) {
+        const serverGroupIds = new Set(serverGroups.map(g => g.id));
+
+        // Delete local groups that don't exist on server anymore
+        const localGroups = await queryAll<{ id: string; synced_at: string | null }>(
+          `SELECT id, synced_at FROM student_groups WHERE class_id IN (${userClassIds.map(() => '?').join(',')})`,
+          userClassIds
+        );
+        for (const local of localGroups) {
+          if (!serverGroupIds.has(local.id) && local.synced_at !== null) {
+            // Clear group_id from students before deleting the group
+            await executeSql(`UPDATE students SET group_id = NULL WHERE group_id = ?`, [local.id]);
+            await executeSql(`DELETE FROM student_groups WHERE id = ?`, [local.id]);
+            if (__DEV__) {
+              console.log('[syncService] Deleted local group not on server:', local.id);
+            }
+          }
+        }
+
+        // Add new groups from server
+        for (const group of serverGroups) {
+          const existing = await queryAll<{ id: string }>(
+            `SELECT id FROM student_groups WHERE id = ?`,
+            [group.id]
+          );
+
+          if (existing.length === 0) {
+            await executeSql(
+              `INSERT INTO student_groups (id, class_id, user_id, name, color, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [group.id, group.class_id, userId, group.name, group.color, group.created_at, now]
+            );
+            result.groups++;
+            if (__DEV__) {
+              console.log('[syncService] Pulled group:', group.name);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Pull students from Supabase
     const { data: serverStudents, error: studentsError } = await supabase
       .from('students')
-      .select('id, user_id, class_id, pseudo, created_at')
+      .select('id, user_id, class_id, group_id, pseudo, created_at')
       .eq('user_id', userId);
 
     if (studentsError) {
       console.error('[syncService] Pull students error:', studentsError);
-    } else {
-      const serverStudentIds = new Set((serverStudents || []).map(s => s.id));
+      result.errors.push(`Students: ${studentsError.message}`);
+      // IMPORTANT: Do NOT delete local data if server request failed
+    } else if (serverStudents !== null) {
+      // Only proceed with deletions if we got a valid response from server
+      const serverStudentIds = new Set(serverStudents.map(s => s.id));
 
       // Delete local students that don't exist on server anymore
-      const localStudents = await queryAll<{ id: string }>(
-        `SELECT id FROM students WHERE user_id = ?`,
+      // SAFETY: Only delete previously synced students
+      const localStudents = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM students WHERE user_id = ?`,
         [userId]
       );
       for (const local of localStudents) {
-        if (!serverStudentIds.has(local.id)) {
+        // Only delete if was previously synced (protects unsynced local data)
+        if (!serverStudentIds.has(local.id) && local.synced_at !== null) {
           await executeSql(`DELETE FROM students WHERE id = ?`, [local.id]);
-          console.log('[syncService] Deleted local student not on server:', local.id);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local student not on server:', local.id);
+          }
         }
       }
 
       // Add new students from server
-      for (const student of (serverStudents || [])) {
+      for (const student of serverStudents) {
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM students WHERE id = ?`,
           [student.id]
@@ -603,16 +827,24 @@ export async function pullFromServer(userId: string): Promise<{
 
         if (existing.length === 0) {
           await executeSql(
-            `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?)`,
-            [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now]
+            `INSERT INTO students (id, user_id, class_id, group_id, pseudo, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [student.id, student.user_id, student.class_id, student.group_id, student.pseudo, student.created_at, now]
           );
           result.students++;
-          console.log('[syncService] Pulled student:', student.pseudo);
+          if (__DEV__) {
+            console.log('[syncService] Pulled student:', student.pseudo);
+          }
+        } else {
+          // Update existing student's group_id
+          await executeSql(
+            `UPDATE students SET group_id = ?, synced_at = ? WHERE id = ?`,
+            [student.group_id, now, student.id]
+          );
         }
       }
     }
 
-    // 3. Pull rooms from Supabase
+    // 4. Pull rooms from Supabase
     const { data: serverRooms, error: roomsError } = await supabase
       .from('rooms')
       .select('id, name, grid_rows, grid_cols, disabled_cells, created_at')
@@ -620,24 +852,31 @@ export async function pullFromServer(userId: string): Promise<{
 
     if (roomsError) {
       console.error('[syncService] Pull rooms error:', roomsError);
-    } else {
-      const serverRoomIds = new Set((serverRooms || []).map(r => r.id));
+      result.errors.push(`Rooms: ${roomsError.message}`);
+      // IMPORTANT: Do NOT delete local data if server request failed
+    } else if (serverRooms !== null) {
+      // Only proceed with deletions if we got a valid response from server
+      const serverRoomIds = new Set(serverRooms.map(r => r.id));
 
       // Delete local rooms that don't exist on server anymore
-      const localRooms = await queryAll<{ id: string }>(
-        `SELECT id FROM rooms WHERE user_id = ? AND is_deleted = 0`,
+      // SAFETY: Only delete previously synced rooms
+      const localRooms = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM rooms WHERE user_id = ? AND is_deleted = 0`,
         [userId]
       );
       for (const local of localRooms) {
-        if (!serverRoomIds.has(local.id)) {
+        // Only delete if was previously synced (protects unsynced local data)
+        if (!serverRoomIds.has(local.id) && local.synced_at !== null) {
           await executeSql(`DELETE FROM class_room_plans WHERE room_id = ?`, [local.id]);
           await executeSql(`DELETE FROM rooms WHERE id = ?`, [local.id]);
-          console.log('[syncService] Deleted local room not on server:', local.id);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local room not on server:', local.id);
+          }
         }
       }
 
       // Add/update rooms from server
-      for (const room of (serverRooms || [])) {
+      for (const room of serverRooms) {
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM rooms WHERE id = ?`,
           [room.id]
@@ -651,18 +890,22 @@ export async function pullFromServer(userId: string): Promise<{
             [room.id, userId, room.name, room.grid_rows, room.grid_cols, disabledCellsJson, room.created_at, now]
           );
           result.rooms++;
-          console.log('[syncService] Pulled room:', room.name);
+          if (__DEV__) {
+            console.log('[syncService] Pulled room:', room.name);
+          }
         } else {
           await executeSql(
             `UPDATE rooms SET name = ?, grid_rows = ?, grid_cols = ?, disabled_cells = ?, synced_at = ? WHERE id = ?`,
             [room.name, room.grid_rows, room.grid_cols, disabledCellsJson, now, room.id]
           );
-          console.log('[syncService] Updated room from server:', room.name);
+          if (__DEV__) {
+            console.log('[syncService] Updated room from server:', room.name);
+          }
         }
       }
     }
 
-    // 4. Pull class_room_plans from Supabase
+    // 5. Pull class_room_plans from Supabase
     // Get all class IDs for this user
     const localClasses = await queryAll<{ id: string }>(
       `SELECT id FROM classes WHERE user_id = ?`,
@@ -678,6 +921,7 @@ export async function pullFromServer(userId: string): Promise<{
 
       if (plansError) {
         console.error('[syncService] Pull plans error:', plansError);
+        result.errors.push(`Plans: ${plansError.message}`);
       } else if (serverPlans && serverPlans.length > 0) {
         for (const plan of serverPlans) {
           // Check if exists locally
@@ -698,27 +942,32 @@ export async function pullFromServer(userId: string): Promise<{
               [plan.id, plan.class_id, plan.room_id, positionsJson, plan.created_at, plan.updated_at, now]
             );
             result.plans++;
-            console.log('[syncService] Pulled plan for class:', plan.class_id, 'room:', plan.room_id);
+            if (__DEV__) {
+              console.log('[syncService] Pulled plan for class:', plan.class_id, 'room:', plan.room_id);
+            }
           } else {
             // Update existing plan - server wins for positions
             await executeSql(
               `UPDATE class_room_plans SET positions = ?, updated_at = ?, synced_at = ? WHERE class_id = ? AND room_id = ?`,
               [positionsJson, plan.updated_at || now, now, plan.class_id, plan.room_id]
             );
-            console.log('[syncService] Updated plan for class:', plan.class_id, 'room:', plan.room_id);
+            if (__DEV__) {
+              console.log('[syncService] Updated plan for class:', plan.class_id, 'room:', plan.room_id);
+            }
           }
         }
       }
     }
 
-    // 5. Pull sessions from Supabase
+    // 6. Pull sessions from Supabase
     const { data: serverSessions, error: sessionsError } = await supabase
       .from('sessions')
-      .select('id, user_id, class_id, room_id, started_at, ended_at')
+      .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at')
       .eq('user_id', userId);
 
     if (sessionsError) {
       console.error('[syncService] Pull sessions error:', sessionsError);
+      result.errors.push(`Sessions: ${sessionsError.message}`);
     } else if (serverSessions && serverSessions.length > 0) {
       for (const session of serverSessions) {
         // Check if exists locally
@@ -734,21 +983,25 @@ export async function pullFromServer(userId: string): Promise<{
           const effectiveEndedAt = session.ended_at || now;
 
           if (!session.ended_at) {
-            console.log('[syncService] Auto-ending imported session (was active on server):', session.id);
+            if (__DEV__) {
+              console.log('[syncService] Auto-ending imported session (was active on server):', session.id);
+            }
           }
 
           // Insert new session (with auto-ended_at if it was active)
           await executeSql(
-            `INSERT INTO sessions (id, user_id, class_id, room_id, started_at, ended_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [session.id, session.user_id, session.class_id, session.room_id, session.started_at, effectiveEndedAt, now]
+            `INSERT INTO sessions (id, user_id, class_id, room_id, topic, notes, started_at, ended_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [session.id, session.user_id, session.class_id, session.room_id, session.topic || null, session.notes || null, session.started_at, effectiveEndedAt, now]
           );
           result.sessions++;
-          console.log('[syncService] Pulled session:', session.id);
+          if (__DEV__) {
+            console.log('[syncService] Pulled session:', session.id);
+          }
         }
       }
     }
 
-    // 6. Pull events from Supabase (for all user's sessions)
+    // 7. Pull events from Supabase (for all user's sessions)
     // Get all session IDs for this user
     const localSessions = await queryAll<{ id: string }>(
       `SELECT id FROM sessions WHERE user_id = ?`,
@@ -764,6 +1017,7 @@ export async function pullFromServer(userId: string): Promise<{
 
       if (eventsError) {
         console.error('[syncService] Pull events error:', eventsError);
+        result.errors.push(`Events: ${eventsError.message}`);
       } else if (serverEvents && serverEvents.length > 0) {
         for (const event of serverEvents) {
           // Check if exists locally
@@ -781,13 +1035,18 @@ export async function pullFromServer(userId: string): Promise<{
             result.events++;
           }
         }
-        console.log('[syncService] Pulled events:', result.events);
+        if (__DEV__) {
+          console.log('[syncService] Pulled events:', result.events);
+        }
       }
     }
 
-    console.log('[syncService] Pull complete:', result);
+    if (__DEV__) {
+      console.log('[syncService] Pull complete:', result);
+    }
   } catch (error) {
     console.error('[syncService] Pull failed:', error);
+    result.errors.push(error instanceof Error ? error.message : 'Pull failed with unknown error');
   }
 
   return result;

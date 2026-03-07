@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,10 +16,11 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
-import { useAuthStore, useClassStore, useStudentStore, useRoomStore, StudentWithMapping } from '../../../stores';
+import { useAuthStore, useClassStore, useStudentStore, useRoomStore, useGroupStore, useHistoryStore, GROUP_COLORS, StudentWithMapping } from '../../../stores';
 import { theme } from '../../../constants/theme';
-import { Class } from '../../../types';
-import { Room, getClassDeleteStats, deleteClassCompletely } from '../../../services/database';
+import { Class, EventType } from '../../../types';
+import { Room, getClassDeleteStats, deleteClassCompletely, StudentGroup, getClassStudentEventCounts, getSessionsByClassId } from '../../../services/database';
+import { exportClassPdf } from '../../../services/pdfExport';
 
 export default function ClassDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -48,6 +49,14 @@ export default function ClassDetailScreen() {
     rooms,
     loadRooms,
   } = useRoomStore();
+  const {
+    groups,
+    loadGroups,
+    addGroup,
+    editGroup,
+    removeGroup,
+    setStudentGroup,
+  } = useGroupStore();
 
   const [currentClass, setCurrentClass] = useState<Class | null>(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -61,6 +70,14 @@ export default function ClassDetailScreen() {
   const [newStudentLastName, setNewStudentLastName] = useState('');
   const [isAddingStudent, setIsAddingStudent] = useState(false);
 
+  // Group modal state
+  const [groupModalVisible, setGroupModalVisible] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<StudentGroup | null>(null);
+  const [groupName, setGroupName] = useState('');
+  const [groupColor, setGroupColor] = useState<string>(GROUP_COLORS[0]);
+  const [assignGroupModalVisible, setAssignGroupModalVisible] = useState(false);
+  const [selectedStudentForGroup, setSelectedStudentForGroup] = useState<StudentWithMapping | null>(null);
+
   // Delete modal state
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [deleteStats, setDeleteStats] = useState<{
@@ -69,6 +86,9 @@ export default function ClassDetailScreen() {
     eventsCount: number;
   } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // PDF export state
+  const [isExporting, setIsExporting] = useState(false);
 
   const students = id ? studentsByClass[id] || [] : [];
 
@@ -91,6 +111,13 @@ export default function ClassDetailScreen() {
       loadRooms(user.id);
     }
   }, [user?.id]);
+
+  // Load groups for this class
+  useEffect(() => {
+    if (id) {
+      loadGroups(id);
+    }
+  }, [id]);
 
   // Show import result
   useEffect(() => {
@@ -248,30 +275,161 @@ export default function ClassDetailScreen() {
     router.push(`/(main)/students/${student.id}/history`);
   };
 
-  const renderStudentItem = ({ item }: { item: StudentWithMapping }) => (
-    <Pressable
-      style={({ pressed }) => [
-        styles.studentItem,
-        pressed && styles.studentItemPressed,
-      ]}
-      onPress={() => handleStudentPress(item)}
-      onLongPress={() => handleRemoveStudent(item)}
-      delayLongPress={500}
-    >
-      <View style={styles.studentAvatar}>
-        <Text style={styles.studentInitial}>
-          {item.firstName?.charAt(0) || item.pseudo.charAt(0)}
-        </Text>
-      </View>
-      <View style={styles.studentInfo}>
-        <Text style={styles.studentName}>
-          {item.fullName || item.pseudo}
-        </Text>
-        <Text style={styles.studentPseudo}>{item.pseudo}</Text>
-      </View>
-      <Text style={styles.studentChevron}>›</Text>
-    </Pressable>
-  );
+  // Group handlers
+  const handleOpenGroupModal = (group?: StudentGroup) => {
+    if (group) {
+      setEditingGroup(group);
+      setGroupName(group.name);
+      setGroupColor(group.color);
+    } else {
+      setEditingGroup(null);
+      setGroupName('');
+      // Find next available color
+      const usedColors = new Set(groups.map(g => g.color));
+      const nextColor = GROUP_COLORS.find(c => !usedColors.has(c)) || GROUP_COLORS[0];
+      setGroupColor(nextColor);
+    }
+    setGroupModalVisible(true);
+  };
+
+  const handleSaveGroup = async () => {
+    if (!user?.id || !id || !groupName.trim()) return;
+
+    if (editingGroup) {
+      await editGroup(editingGroup.id, groupName, groupColor);
+    } else {
+      await addGroup(id, user.id, groupName, groupColor);
+    }
+    setGroupModalVisible(false);
+  };
+
+  const handleDeleteGroup = (group: StudentGroup) => {
+    Alert.alert(
+      'Supprimer le groupe',
+      `Voulez-vous supprimer le groupe "${group.name}" ?\n\nLes eleves seront retires du groupe mais pas supprimes.`,
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Supprimer',
+          style: 'destructive',
+          onPress: () => removeGroup(group.id),
+        },
+      ]
+    );
+  };
+
+  const handleOpenAssignGroup = (student: StudentWithMapping) => {
+    setSelectedStudentForGroup(student);
+    setAssignGroupModalVisible(true);
+  };
+
+  const handleAssignGroup = async (groupId: string | null) => {
+    if (!selectedStudentForGroup) return;
+    await setStudentGroup(selectedStudentForGroup.id, groupId);
+    // Reload students to reflect the change
+    if (id && user?.id) {
+      await loadStudentsForClass(id);
+    }
+    setAssignGroupModalVisible(false);
+    setSelectedStudentForGroup(null);
+  };
+
+  const getStudentGroup = (student: StudentWithMapping): StudentGroup | undefined => {
+    return groups.find(g => g.id === student.groupId);
+  };
+
+  // Handle PDF export
+  const handleExportPdf = useCallback(async () => {
+    if (!currentClass || isExporting) return;
+
+    setIsExporting(true);
+    try {
+      // Get event counts for all students
+      const eventCounts = await getClassStudentEventCounts(currentClass.id);
+
+      // Get session count
+      const sessions = await getSessionsByClassId(currentClass.id);
+
+      // Build student data with counts
+      const studentData = students.map((student) => ({
+        id: student.id,
+        name: student.fullName || student.pseudo,
+        pseudo: student.pseudo,
+        counts: eventCounts[student.id] || {
+          participation: 0,
+          bavardage: 0,
+          absence: 0,
+          remarque: 0,
+          sortie: 0,
+          retour: 0,
+        },
+      }));
+
+      // Calculate date range from sessions
+      let dateRange: { from: string; to: string } | undefined;
+      if (sessions.length > 0) {
+        const sortedSessions = sessions.sort(
+          (a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
+        );
+        dateRange = {
+          from: sortedSessions[0].started_at,
+          to: sortedSessions[sortedSessions.length - 1].started_at,
+        };
+      }
+
+      await exportClassPdf({
+        className: currentClass.name,
+        students: studentData,
+        totalSessions: sessions.length,
+        dateRange,
+      });
+    } catch (err) {
+      console.error('PDF export error:', err);
+      Alert.alert('Erreur', 'Impossible d\'exporter le PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [currentClass, students, isExporting]);
+
+  const renderStudentItem = ({ item }: { item: StudentWithMapping }) => {
+    const studentGroup = getStudentGroup(item);
+    return (
+      <Pressable
+        style={({ pressed }) => [
+          styles.studentItem,
+          pressed && styles.studentItemPressed,
+        ]}
+        onPress={() => handleStudentPress(item)}
+        onLongPress={() => handleRemoveStudent(item)}
+        delayLongPress={500}
+      >
+        {studentGroup && (
+          <View style={[styles.groupColorIndicator, { backgroundColor: studentGroup.color }]} />
+        )}
+        <View style={styles.studentAvatar}>
+          <Text style={styles.studentInitial}>
+            {item.firstName?.charAt(0) || item.pseudo.charAt(0)}
+          </Text>
+        </View>
+        <View style={styles.studentInfo}>
+          <Text style={styles.studentName}>
+            {item.fullName || item.pseudo}
+          </Text>
+          <Text style={styles.studentPseudo}>{item.pseudo}</Text>
+        </View>
+        <Pressable
+          style={styles.assignGroupButton}
+          onPress={() => handleOpenAssignGroup(item)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Text style={styles.assignGroupButtonText}>
+            {studentGroup ? studentGroup.name : '+ Groupe'}
+          </Text>
+        </Pressable>
+        <Text style={styles.studentChevron}>›</Text>
+      </Pressable>
+    );
+  };
 
   if (!currentClass) {
     return (
@@ -300,7 +458,21 @@ export default function ClassDetailScreen() {
           <Text style={styles.backText}>‹ Retour</Text>
         </Pressable>
         <Text style={styles.headerTitle}>{currentClass.name}</Text>
-        <View style={styles.headerSpacer} />
+        <Pressable
+          style={({ pressed }) => [
+            styles.exportButton,
+            pressed && styles.exportButtonPressed,
+            isExporting && styles.exportButtonDisabled,
+          ]}
+          onPress={handleExportPdf}
+          disabled={isExporting || students.length === 0}
+        >
+          {isExporting ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          ) : (
+            <Text style={styles.exportButtonText}>PDF</Text>
+          )}
+        </Pressable>
       </View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
@@ -379,6 +551,52 @@ export default function ClassDetailScreen() {
                   {renderStudentItem({ item: student })}
                 </View>
               ))}
+            </View>
+          )}
+        </View>
+
+        {/* Groups Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Groupes / Ilots</Text>
+            <Pressable
+              style={styles.addGroupButton}
+              onPress={() => handleOpenGroupModal()}
+            >
+              <Text style={styles.addGroupButtonText}>+ Nouveau</Text>
+            </Pressable>
+          </View>
+
+          {groups.length === 0 ? (
+            <View style={styles.emptySection}>
+              <Text style={styles.emptySectionEmoji}>👥</Text>
+              <Text style={styles.emptySectionText}>
+                Aucun groupe cree
+              </Text>
+              <Text style={styles.emptySectionHint}>
+                Creez des groupes pour organiser vos eleves en ilots
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.groupsList}>
+              {groups.map((group) => {
+                const memberCount = students.filter(s => s.groupId === group.id).length;
+                return (
+                  <Pressable
+                    key={group.id}
+                    style={styles.groupItem}
+                    onPress={() => handleOpenGroupModal(group)}
+                    onLongPress={() => handleDeleteGroup(group)}
+                    delayLongPress={500}
+                  >
+                    <View style={[styles.groupColorDot, { backgroundColor: group.color }]} />
+                    <Text style={styles.groupName}>{group.name}</Text>
+                    <Text style={styles.groupMemberCount}>
+                      {memberCount} eleve{memberCount !== 1 ? 's' : ''}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
           )}
         </View>
@@ -575,6 +793,135 @@ export default function ClassDetailScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Group Create/Edit Modal */}
+      <Modal
+        visible={groupModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setGroupModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <Pressable style={styles.modalBackdrop} onPress={() => setGroupModalVisible(false)} />
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>
+              {editingGroup ? 'Modifier le groupe' : 'Nouveau groupe'}
+            </Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="Nom du groupe"
+              placeholderTextColor={theme.colors.textTertiary}
+              value={groupName}
+              onChangeText={setGroupName}
+              autoCapitalize="words"
+              autoFocus
+            />
+
+            <Text style={styles.colorPickerLabel}>Couleur</Text>
+            <View style={styles.colorPicker}>
+              {GROUP_COLORS.map((color) => (
+                <Pressable
+                  key={color}
+                  style={[
+                    styles.colorOption,
+                    { backgroundColor: color },
+                    groupColor === color && styles.colorOptionSelected,
+                  ]}
+                  onPress={() => setGroupColor(color)}
+                />
+              ))}
+            </View>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.cancelButton}
+                onPress={() => setGroupModalVisible(false)}
+              >
+                <Text style={styles.cancelButtonText}>Annuler</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.confirmButton,
+                  !groupName.trim() && styles.buttonDisabled,
+                ]}
+                onPress={handleSaveGroup}
+                disabled={!groupName.trim()}
+              >
+                <Text style={styles.confirmButtonText}>
+                  {editingGroup ? 'Modifier' : 'Creer'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Assign Group Modal */}
+      <Modal
+        visible={assignGroupModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAssignGroupModalVisible(false)}
+      >
+        <Pressable
+          style={styles.assignGroupModalOverlay}
+          onPress={() => setAssignGroupModalVisible(false)}
+        >
+          <Pressable
+            style={styles.assignGroupModalContent}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text style={styles.modalTitle}>
+              Assigner {selectedStudentForGroup?.fullName || selectedStudentForGroup?.pseudo}
+            </Text>
+
+            <ScrollView style={styles.assignGroupList}>
+              <Pressable
+                style={[
+                  styles.assignGroupOption,
+                  !selectedStudentForGroup?.groupId && styles.assignGroupOptionSelected,
+                ]}
+                onPress={() => handleAssignGroup(null)}
+              >
+                <View style={[styles.assignGroupDot, { backgroundColor: theme.colors.textTertiary }]} />
+                <Text style={styles.assignGroupOptionText}>Aucun groupe</Text>
+                {!selectedStudentForGroup?.groupId && (
+                  <Text style={styles.assignGroupCheck}>✓</Text>
+                )}
+              </Pressable>
+
+              {groups.map((group) => (
+                <Pressable
+                  key={group.id}
+                  style={[
+                    styles.assignGroupOption,
+                    selectedStudentForGroup?.groupId === group.id && styles.assignGroupOptionSelected,
+                  ]}
+                  onPress={() => handleAssignGroup(group.id)}
+                >
+                  <View style={[styles.assignGroupDot, { backgroundColor: group.color }]} />
+                  <Text style={styles.assignGroupOptionText}>{group.name}</Text>
+                  {selectedStudentForGroup?.groupId === group.id && (
+                    <Text style={styles.assignGroupCheck}>✓</Text>
+                  )}
+                </Pressable>
+              ))}
+            </ScrollView>
+
+            <Pressable
+              style={styles.cancelButton}
+              onPress={() => setAssignGroupModalVisible(false)}
+            >
+              <Text style={styles.cancelButtonText}>Fermer</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Delete Confirmation Modal */}
       <Modal
         visible={deleteModalVisible}
@@ -667,6 +1014,25 @@ const styles = StyleSheet.create({
   },
   headerSpacer: {
     minWidth: 80,
+  },
+  exportButton: {
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    minWidth: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  exportButtonPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+  },
+  exportButtonDisabled: {
+    opacity: 0.5,
+  },
+  exportButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: theme.colors.primary,
   },
   centerContent: {
     flex: 1,
@@ -1047,6 +1413,133 @@ const styles = StyleSheet.create({
   deleteModalDeleteText: {
     color: theme.colors.textInverse,
     fontSize: 16,
+    fontWeight: '600',
+  },
+
+  // Group styles
+  groupColorIndicator: {
+    width: 4,
+    height: '80%',
+    borderRadius: 2,
+    marginRight: theme.spacing.sm,
+  },
+  groupsList: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    ...theme.shadows.sm,
+  },
+  groupItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  groupColorDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    marginRight: theme.spacing.md,
+  },
+  groupName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500',
+    color: theme.colors.text,
+  },
+  groupMemberCount: {
+    fontSize: 12,
+    color: theme.colors.textTertiary,
+  },
+  addGroupButton: {
+    backgroundColor: theme.colors.participation,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+  },
+  addGroupButtonText: {
+    color: theme.colors.textInverse,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  assignGroupButton: {
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginRight: theme.spacing.xs,
+  },
+  assignGroupButtonText: {
+    fontSize: 11,
+    color: theme.colors.textSecondary,
+    fontWeight: '500',
+  },
+  colorPickerLabel: {
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.sm,
+  },
+  colorPicker: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.lg,
+  },
+  colorOption: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  colorOptionSelected: {
+    borderColor: theme.colors.text,
+  },
+  assignGroupModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  assignGroupModalContent: {
+    width: '85%',
+    maxWidth: 340,
+    maxHeight: '60%',
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    ...theme.shadows.lg,
+  },
+  assignGroupList: {
+    maxHeight: 250,
+    marginBottom: theme.spacing.md,
+  },
+  assignGroupOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    marginBottom: theme.spacing.xs,
+  },
+  assignGroupOptionSelected: {
+    backgroundColor: theme.colors.background,
+  },
+  assignGroupDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: theme.spacing.md,
+  },
+  assignGroupOptionText: {
+    flex: 1,
+    fontSize: 14,
+    color: theme.colors.text,
+  },
+  assignGroupCheck: {
+    fontSize: 16,
+    color: theme.colors.participation,
     fontWeight: '600',
   },
 });

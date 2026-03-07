@@ -7,6 +7,7 @@ export interface Session {
   class_id: string;
   room_id: string;
   topic: string | null;
+  notes: string | null;
   started_at: string;
   ended_at: string | null;
   synced_at: string | null;
@@ -41,6 +42,7 @@ export async function createSession(
     class_id: classId,
     room_id: roomId,
     topic: sessionTopic,
+    notes: null,
     started_at: now,
     ended_at: null,
     synced_at: null,
@@ -157,6 +159,24 @@ export async function cleanupOrphanSessions(userId: string, maxHours: number = 1
   }
 
   return orphans.length;
+}
+
+/**
+ * Update session notes
+ */
+export async function updateSessionNotes(id: string, notes: string | null): Promise<Session | null> {
+  const trimmedNotes = notes?.trim() || null;
+
+  // Reset synced_at to NULL so the session gets re-synced with new notes
+  await executeSql(
+    `UPDATE sessions SET notes = ?, synced_at = NULL WHERE id = ?`,
+    [trimmedNotes, id]
+  );
+
+  if (__DEV__) {
+    console.log('[sessionRepository] Updated session notes:', id);
+  }
+  return getSessionById(id);
 }
 
 /**

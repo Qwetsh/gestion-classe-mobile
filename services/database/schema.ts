@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 /**
  * SQL statements to create all tables
@@ -25,17 +25,31 @@ CREATE TABLE IF NOT EXISTS classes (
   is_deleted INTEGER DEFAULT 0
 );
 
+-- Student groups table (îlots)
+CREATE TABLE IF NOT EXISTS student_groups (
+  id TEXT PRIMARY KEY,
+  class_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '#6366f1',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (class_id) REFERENCES classes(id)
+);
+
 -- Students table (pseudonymized)
 CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
   pseudo TEXT NOT NULL,
   class_id TEXT NOT NULL,
+  group_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT,
   synced_at TEXT,
   is_deleted INTEGER DEFAULT 0,
-  FOREIGN KEY (class_id) REFERENCES classes(id)
+  FOREIGN KEY (class_id) REFERENCES classes(id),
+  FOREIGN KEY (group_id) REFERENCES student_groups(id)
 );
 
 -- Rooms table
@@ -108,8 +122,10 @@ CREATE TABLE IF NOT EXISTS local_student_mapping (
 );
 
 -- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_student_groups_class_id ON student_groups(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
+CREATE INDEX IF NOT EXISTS idx_students_group_id ON students(group_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_class_id ON sessions(class_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
@@ -126,6 +142,7 @@ export const EVENT_TYPES = {
   ABSENCE: 'absence',
   REMARQUE: 'remarque',
   SORTIE: 'sortie',
+  RETOUR: 'retour',
 } as const;
 
 /**

@@ -20,7 +20,15 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 
   if (!db) {
     db = await SQLite.openDatabaseAsync(DATABASE_NAME);
-    console.log('[Database] Opened database:', DATABASE_NAME);
+
+    // CRITICAL: Enable foreign key constraints for data integrity
+    // Without this, CASCADE deletes don't work and orphaned records can occur
+    await db.execAsync('PRAGMA foreign_keys = ON');
+
+    if (__DEV__) {
+      console.log('[Database] Opened database:', DATABASE_NAME);
+      console.log('[Database] Foreign keys enabled');
+    }
   }
   return db;
 }

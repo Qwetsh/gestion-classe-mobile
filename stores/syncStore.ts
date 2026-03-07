@@ -1,6 +1,30 @@
 import { create } from 'zustand';
 import { syncAll, getUnsyncedCount, pullFromServer, type SyncResult } from '../services/sync';
 
+// Sync operation timeout (2 minutes - generous for large datasets)
+const SYNC_TIMEOUT_MS = 2 * 60 * 1000;
+
+/**
+ * Wraps a promise with a timeout
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`${operation} timeout apres ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+
+    promise
+      .then((result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
 interface SyncState {
   isSyncing: boolean;
   lastSyncResult: SyncResult | null;
@@ -32,6 +56,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         studentsSync: 0,
         roomsSync: 0,
         plansSync: 0,
+        groupsSync: 0,
         errors: ['Synchronisation deja en cours'],
       };
     }
@@ -39,13 +64,25 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ isSyncing: true, error: null });
 
     try {
-      // First, pull data from server (server -> mobile)
-      console.log('[syncStore] Pulling from server...');
-      await pullFromServer(userId);
+      // First, pull data from server (server -> mobile) with timeout
+      if (__DEV__) {
+        console.log('[syncStore] Pulling from server...');
+      }
+      await withTimeout(
+        pullFromServer(userId),
+        SYNC_TIMEOUT_MS,
+        'Pull serveur'
+      );
 
-      // Then, push local data to server (mobile -> server)
-      console.log('[syncStore] Pushing to server...');
-      const result = await syncAll(userId);
+      // Then, push local data to server (mobile -> server) with timeout
+      if (__DEV__) {
+        console.log('[syncStore] Pushing to server...');
+      }
+      const result = await withTimeout(
+        syncAll(userId),
+        SYNC_TIMEOUT_MS,
+        'Push serveur'
+      );
 
       set({
         isSyncing: false,
@@ -58,6 +95,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Erreur de synchronisation';
+      console.error('[syncStore] Sync error:', errorMessage);
       set({
         isSyncing: false,
         error: errorMessage,
@@ -71,6 +109,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         studentsSync: 0,
         roomsSync: 0,
         plansSync: 0,
+        groupsSync: 0,
         errors: [errorMessage],
       };
     }

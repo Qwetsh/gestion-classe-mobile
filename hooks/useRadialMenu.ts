@@ -39,15 +39,42 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   // Refs for values needed in callbacks (to avoid stale closures)
   const lastHoveredIdRef = useRef<string | null>(null);
   const submenuTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const closeMenuTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const menuStateRef = useRef<MenuState>('closed');
   const menuPositionRef = useRef({ x: 0, y: 0 });
   const activeSubmenuRef = useRef<MenuItemType | null>(null);
   const onSelectRef = useRef(onSelect);
+  const isMountedRef = useRef(true);
 
   // Keep onSelect ref updated
   useEffect(() => {
     onSelectRef.current = onSelect;
   }, [onSelect]);
+
+  // Cleanup all timers and animations on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      // Clear all pending timeouts
+      if (submenuTimeoutRef.current) {
+        clearTimeout(submenuTimeoutRef.current);
+        submenuTimeoutRef.current = null;
+      }
+      if (closeMenuTimeoutRef.current) {
+        clearTimeout(closeMenuTimeoutRef.current);
+        closeMenuTimeoutRef.current = null;
+      }
+
+      // Stop all running animations
+      menuScale.stopAnimation();
+      menuOpacity.stopAnimation();
+      submenuScale.stopAnimation();
+      submenuOpacity.stopAnimation();
+    };
+  }, []);
 
   // Animated values
   const menuScale = useRef(new Animated.Value(0)).current;
@@ -116,6 +143,12 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   const closeMenu = useCallback(() => {
     clearSubmenuTimeout();
 
+    // Clear any existing close timeout
+    if (closeMenuTimeoutRef.current) {
+      clearTimeout(closeMenuTimeoutRef.current);
+      closeMenuTimeoutRef.current = null;
+    }
+
     Animated.parallel([
       Animated.spring(menuScale, {
         toValue: 0,
@@ -141,13 +174,17 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
       }),
     ]).start();
 
-    setTimeout(() => {
+    // Use tracked timeout for proper cleanup
+    closeMenuTimeoutRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return;
+
       setMenuState('closed');
       menuStateRef.current = 'closed';
       setActiveSubmenu(null);
       activeSubmenuRef.current = null;
       setHoveredItem(null);
       lastHoveredIdRef.current = null;
+      closeMenuTimeoutRef.current = null;
     }, 150);
   }, [menuScale, menuOpacity, submenuScale, submenuOpacity, clearSubmenuTimeout]);
 

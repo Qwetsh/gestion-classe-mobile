@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,14 @@ import {
   ActivityIndicator,
   FlatList,
   ScrollView,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useClassStore, useRoomStore, useHistoryStore, useStudentStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
 import { type Event, type EventType } from '../../../services/database';
+import { exportSessionPdf } from '../../../services/pdfExport';
 
 // Event type display config
 const EVENT_CONFIG: Record<EventType, { label: string; color: string; softColor: string; emoji: string }> = {
@@ -21,6 +23,7 @@ const EVENT_CONFIG: Record<EventType, { label: string; color: string; softColor:
   absence: { label: 'Absence', color: theme.colors.absence, softColor: theme.colors.absenceSoft, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, softColor: theme.colors.remarqueSoft, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, softColor: theme.colors.sortieSoft, emoji: 'S' },
+  retour: { label: 'Retour', color: '#10B981', softColor: '#ECFDF5', emoji: '↩' },
 };
 
 // Helper to format duration
@@ -74,6 +77,8 @@ export default function SessionDetailScreen() {
     clearError,
   } = useHistoryStore();
 
+  const [isExporting, setIsExporting] = useState(false);
+
   // Load session detail on mount
   useEffect(() => {
     if (id) {
@@ -112,6 +117,33 @@ export default function SessionDetailScreen() {
     return map;
   }, [students]);
 
+  // Handle PDF export
+  const handleExportPdf = useCallback(async () => {
+    if (!selectedSession || isExporting) return;
+
+    setIsExporting(true);
+    try {
+      const className = classMap.get(selectedSession.class_id) || 'Classe';
+      const roomName = roomMap.get(selectedSession.room_id) || 'Salle';
+
+      await exportSessionPdf({
+        className,
+        roomName,
+        startedAt: selectedSession.started_at,
+        endedAt: selectedSession.ended_at,
+        topic: selectedSession.topic,
+        notes: selectedSession.notes,
+        events: sessionEvents,
+        studentNames: Object.fromEntries(studentMap),
+      });
+    } catch (err) {
+      console.error('[SessionDetail] Export error:', err);
+      Alert.alert('Erreur', 'Impossible d\'exporter le PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [selectedSession, sessionEvents, classMap, roomMap, studentMap, isExporting]);
+
   // Calculate totals
   const totals = useMemo(() => {
     const total: Record<EventType, number> = {
@@ -120,6 +152,7 @@ export default function SessionDetailScreen() {
       absence: 0,
       remarque: 0,
       sortie: 0,
+      retour: 0,
     };
 
     sessionEvents.forEach((event) => {
@@ -212,6 +245,23 @@ export default function SessionDetailScreen() {
               ]}
             >
               <Text style={styles.backButtonText}>← Retour</Text>
+            </Pressable>
+          ),
+          headerRight: () => (
+            <Pressable
+              onPress={handleExportPdf}
+              disabled={isExporting}
+              style={({ pressed }) => [
+                styles.exportButton,
+                pressed && styles.exportButtonPressed,
+                isExporting && styles.exportButtonDisabled,
+              ]}
+            >
+              {isExporting ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : (
+                <Text style={styles.exportButtonText}>📄 PDF</Text>
+              )}
             </Pressable>
           ),
         }}
@@ -377,6 +427,23 @@ const styles = StyleSheet.create({
   backButtonText: {
     color: theme.colors.primary,
     fontSize: 16,
+    fontWeight: '600',
+  },
+  exportButton: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primarySoft,
+  },
+  exportButtonPressed: {
+    backgroundColor: theme.colors.primary + '30',
+  },
+  exportButtonDisabled: {
+    opacity: 0.5,
+  },
+  exportButtonText: {
+    color: theme.colors.primary,
+    fontSize: 14,
     fontWeight: '600',
   },
   errorBanner: {

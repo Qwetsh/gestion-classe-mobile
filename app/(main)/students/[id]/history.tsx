@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useHistoryStore, useStudentStore, useAuthStore } from '../../../../stores';
+import { useHistoryStore, useStudentStore, useAuthStore, useClassStore } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
 import {
   type Event,
@@ -20,6 +20,7 @@ import {
   deleteStudentCompletely,
 } from '../../../../services/database';
 import { PhotoPicker } from '../../../../components';
+import { exportStudentHistoryPdf } from '../../../../services/pdfExport';
 
 // Event type display config
 const EVENT_CONFIG: Record<EventType, { label: string; color: string; emoji: string }> = {
@@ -28,6 +29,7 @@ const EVENT_CONFIG: Record<EventType, { label: string; color: string; emoji: str
   absence: { label: 'Absence', color: theme.colors.absence, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, emoji: 'S' },
+  retour: { label: 'Retour', color: '#10B981', emoji: '↩' },
 };
 
 // Helper to format date
@@ -53,6 +55,7 @@ export default function StudentHistoryScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user } = useAuthStore();
   const { studentsByClass, loadStudentsForClass } = useStudentStore();
+  const { classes } = useClassStore();
   const {
     studentEvents,
     isLoading,
@@ -64,6 +67,7 @@ export default function StudentHistoryScreen() {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [deleteStats, setDeleteStats] = useState<{ eventsCount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Find the student across all classes
   const student = useMemo(() => {
@@ -73,6 +77,33 @@ export default function StudentHistoryScreen() {
     }
     return null;
   }, [studentsByClass, id]);
+
+  // Get class name
+  const className = useMemo(() => {
+    if (!student?.classId) return '';
+    const cls = classes.find((c) => c.id === student.classId);
+    return cls?.name || '';
+  }, [student, classes]);
+
+  // Handle PDF export
+  const handleExportPdf = useCallback(async () => {
+    if (!student || isExporting) return;
+
+    setIsExporting(true);
+    try {
+      await exportStudentHistoryPdf({
+        studentName: student.fullName || student.pseudo,
+        pseudo: student.pseudo,
+        className,
+        events: studentEvents,
+      });
+    } catch (err) {
+      console.error('PDF export error:', err);
+      Alert.alert('Erreur', 'Impossible d\'exporter le PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [student, studentEvents, className, isExporting]);
 
   // Load student history on mount
   useEffect(() => {
@@ -118,6 +149,7 @@ export default function StudentHistoryScreen() {
       absence: 0,
       remarque: 0,
       sortie: 0,
+      retour: 0,
     };
 
     studentEvents.forEach((event) => {
@@ -164,7 +196,21 @@ export default function StudentHistoryScreen() {
         <Text style={styles.title} numberOfLines={1}>
           {studentName}
         </Text>
-        <View style={styles.headerSpacer} />
+        <Pressable
+          style={({ pressed }) => [
+            styles.exportButton,
+            pressed && styles.exportButtonPressed,
+            isExporting && styles.exportButtonDisabled,
+          ]}
+          onPress={handleExportPdf}
+          disabled={isExporting || studentEvents.length === 0}
+        >
+          {isExporting ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          ) : (
+            <Text style={styles.exportButtonText}>PDF</Text>
+          )}
+        </Pressable>
       </View>
 
       {/* Error display */}
@@ -339,6 +385,24 @@ const styles = StyleSheet.create({
   },
   headerSpacer: {
     width: 40,
+  },
+  exportButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: theme.radius.md,
+  },
+  exportButtonPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+  },
+  exportButtonDisabled: {
+    opacity: 0.5,
+  },
+  exportButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: theme.colors.primary,
   },
   errorBanner: {
     backgroundColor: theme.colors.error,
