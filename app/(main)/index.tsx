@@ -230,6 +230,20 @@ export default function HomeScreen() {
             <Text style={styles.quickActionTitle}>Parents</Text>
             <Text style={styles.quickActionSubtitle}>Reunions</Text>
           </Pressable>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.quickActionCard,
+              pressed && styles.quickActionCardPressed,
+            ]}
+            onPress={() => router.push('/(main)/group-session/create')}
+          >
+            <View style={[styles.quickActionIcon, { backgroundColor: theme.colors.warningSoft }]}>
+              <Text style={styles.quickActionIconText}>👥</Text>
+            </View>
+            <Text style={styles.quickActionTitle}>Groupes</Text>
+            <Text style={styles.quickActionSubtitle}>Seance notee</Text>
+          </Pressable>
         </View>
       </View>
 

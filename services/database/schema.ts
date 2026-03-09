@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 /**
  * SQL statements to create all tables
@@ -25,31 +25,17 @@ CREATE TABLE IF NOT EXISTS classes (
   is_deleted INTEGER DEFAULT 0
 );
 
--- Student groups table (îlots)
-CREATE TABLE IF NOT EXISTS student_groups (
-  id TEXT PRIMARY KEY,
-  class_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  color TEXT NOT NULL DEFAULT '#6366f1',
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  synced_at TEXT,
-  FOREIGN KEY (class_id) REFERENCES classes(id)
-);
-
 -- Students table (pseudonymized)
 CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
   pseudo TEXT NOT NULL,
   class_id TEXT NOT NULL,
-  group_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT,
   synced_at TEXT,
   is_deleted INTEGER DEFAULT 0,
-  FOREIGN KEY (class_id) REFERENCES classes(id),
-  FOREIGN KEY (group_id) REFERENCES student_groups(id)
+  FOREIGN KEY (class_id) REFERENCES classes(id)
 );
 
 -- Rooms table
@@ -121,16 +107,83 @@ CREATE TABLE IF NOT EXISTS local_student_mapping (
   FOREIGN KEY (student_id) REFERENCES students(id)
 );
 
+-- ============================================
+-- Group Sessions (Séances de groupe notées)
+-- ============================================
+
+-- Group sessions table (parent table for graded group activities)
+CREATE TABLE IF NOT EXISTS group_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  synced_at TEXT,
+  FOREIGN KEY (class_id) REFERENCES classes(id)
+);
+
+-- Grading criteria for a group session
+CREATE TABLE IF NOT EXISTS grading_criteria (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  max_points REAL NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  synced_at TEXT,
+  FOREIGN KEY (session_id) REFERENCES group_sessions(id) ON DELETE CASCADE
+);
+
+-- Groups within a session
+CREATE TABLE IF NOT EXISTS session_groups (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  conduct_malus REAL NOT NULL DEFAULT 0,
+  synced_at TEXT,
+  FOREIGN KEY (session_id) REFERENCES group_sessions(id) ON DELETE CASCADE
+);
+
+-- Members of a session group
+CREATE TABLE IF NOT EXISTS session_group_members (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  student_id TEXT NOT NULL,
+  synced_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES session_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES students(id),
+  UNIQUE(group_id, student_id)
+);
+
+-- Grades per criteria per group
+CREATE TABLE IF NOT EXISTS group_grades (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  criteria_id TEXT NOT NULL,
+  points_awarded REAL NOT NULL DEFAULT 0,
+  synced_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES session_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (criteria_id) REFERENCES grading_criteria(id) ON DELETE CASCADE,
+  UNIQUE(group_id, criteria_id)
+);
+
 -- Indexes for common queries
-CREATE INDEX IF NOT EXISTS idx_student_groups_class_id ON student_groups(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
-CREATE INDEX IF NOT EXISTS idx_students_group_id ON students(group_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_class_id ON sessions(class_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_student_id ON events(student_id);
 CREATE INDEX IF NOT EXISTS idx_local_mapping_student_id ON local_student_mapping(student_id);
+CREATE INDEX IF NOT EXISTS idx_group_sessions_user_id ON group_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_group_sessions_class_id ON group_sessions(class_id);
+CREATE INDEX IF NOT EXISTS idx_grading_criteria_session_id ON grading_criteria(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_groups_session_id ON session_groups(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_group_members_group_id ON session_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_session_group_members_student_id ON session_group_members(student_id);
+CREATE INDEX IF NOT EXISTS idx_group_grades_group_id ON group_grades(group_id);
+CREATE INDEX IF NOT EXISTS idx_group_grades_criteria_id ON group_grades(criteria_id);
 `;
 
 /**
@@ -153,4 +206,13 @@ export const SORTIE_SUBTYPES = {
   TOILETTES: 'toilettes',
   CONVOCATION: 'convocation',
   EXCLUSION: 'exclusion',
+} as const;
+
+/**
+ * Group session statuses
+ */
+export const GROUP_SESSION_STATUSES = {
+  DRAFT: 'draft',
+  ACTIVE: 'active',
+  COMPLETED: 'completed',
 } as const;

@@ -25,7 +25,6 @@ import {
   usePlanStore,
   useSessionStore,
   useOralEvaluationStore,
-  useGroupStore,
   ORAL_GRADE_LABELS,
   StudentWithMapping,
 } from '../../../stores';
@@ -146,7 +145,6 @@ function NativeSessionScreen() {
   const { user } = useAuthStore();
   const { loadClassById, currentClass } = useClassStore();
   const { studentsByClass, loadStudentsForClass } = useStudentStore();
-  const { groups, loadGroups } = useGroupStore();
   const { loadRoomById, currentRoom } = useRoomStore();
   const { loadPlan, currentPlan } = usePlanStore();
   const {
@@ -512,7 +510,6 @@ function NativeSessionScreen() {
           loadClassById(activeSession.class_id),
           loadRoomById(activeSession.room_id),
           loadStudentsForClass(activeSession.class_id),
-          loadGroups(activeSession.class_id),
           loadPlan(activeSession.class_id, activeSession.room_id),
         ]);
         // Load oral evaluations for the class
@@ -923,7 +920,6 @@ function NativeSessionScreen() {
         const isAbsent = student ? isStudentAbsent(student.id) : false;
         const isOut = student ? isStudentOut(student.id) : false;
         const activeSortie = student && isOut ? getActiveSortie(student.id) : null;
-        const studentGroup = student?.groupId ? groups.find(g => g.id === student.groupId) : null;
 
         cells.push(
           <View
@@ -954,9 +950,6 @@ function NativeSessionScreen() {
               }
             }}
           >
-            {studentGroup && (
-              <View style={[styles.groupIndicator, { backgroundColor: studentGroup.color }]} />
-            )}
             {student ? (
               <View style={styles.cellContent}>
                 <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
@@ -1006,7 +999,7 @@ function NativeSessionScreen() {
         </View>
       </View>
     );
-  }, [gridData, students, eventCountsByStudent, selectedStudent, isStudentAbsent, isStudentOut, getActiveSortie, formatElapsedTime, groups, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
+  }, [gridData, students, eventCountsByStudent, selectedStudent, isStudentAbsent, isStudentOut, getActiveSortie, formatElapsedTime, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
 
   if (isInitializing || !activeSession) {
     return (
@@ -1857,15 +1850,6 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.participation,
     borderWidth: 2,
     backgroundColor: theme.colors.participation + '20',
-  },
-  groupIndicator: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 4,
-    borderTopLeftRadius: theme.radius.sm,
-    borderBottomLeftRadius: theme.radius.sm,
   },
   cellContent: {
     flex: 1,

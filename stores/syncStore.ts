@@ -56,7 +56,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         studentsSync: 0,
         roomsSync: 0,
         plansSync: 0,
-        groupsSync: 0,
+        groupSessionsSync: 0,
+        gradingCriteriaSync: 0,
+        sessionGroupsSync: 0,
+        groupMembersSync: 0,
+        groupGradesSync: 0,
         errors: ['Synchronisation deja en cours'],
       };
     }
@@ -109,7 +113,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         studentsSync: 0,
         roomsSync: 0,
         plansSync: 0,
-        groupsSync: 0,
+        groupSessionsSync: 0,
+        gradingCriteriaSync: 0,
+        sessionGroupsSync: 0,
+        groupMembersSync: 0,
+        groupGradesSync: 0,
         errors: [errorMessage],
       };
     }

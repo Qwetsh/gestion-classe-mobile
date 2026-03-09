@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,18 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { LineChart } from 'react-native-chart-kit';
 import { useParentMeetingStore } from '../../../stores/parentMeetingStore';
 import { ORAL_GRADE_LABELS } from '../../../stores/oralEvaluationStore';
+import { useGroupSessionStore } from '../../../stores';
 import { theme, PERIOD_LABELS_FULL } from '../../../constants';
+
+// Group session grade type
+interface GroupSessionGrade {
+  sessionId: string;
+  sessionName: string;
+  classId: string;
+  completedAt: string;
+  score: number;
+  maxScore: number;
+}
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -39,6 +50,11 @@ export default function StudentDashboardScreen() {
     clearDashboard,
     clearError,
   } = useParentMeetingStore();
+  const { getStudentGrades } = useGroupSessionStore();
+
+  // State for group session grades
+  const [groupGrades, setGroupGrades] = useState<GroupSessionGrade[]>([]);
+  const [isLoadingGroupGrades, setIsLoadingGroupGrades] = useState(false);
 
   // Load dashboard on mount
   useEffect(() => {
@@ -51,6 +67,23 @@ export default function StudentDashboardScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId, selectedPeriod]);
+
+  // Load group session grades
+  useEffect(() => {
+    const loadGroupGrades = async () => {
+      if (!studentId) return;
+      setIsLoadingGroupGrades(true);
+      try {
+        const grades = await getStudentGrades(studentId);
+        setGroupGrades(grades);
+      } catch (err) {
+        console.error('Error loading group grades:', err);
+      } finally {
+        setIsLoadingGroupGrades(false);
+      }
+    };
+    loadGroupGrades();
+  }, [studentId, getStudentGrades]);
 
   const dashboard = currentDashboard;
   const student = dashboard?.student;
@@ -305,6 +338,66 @@ export default function StudentDashboardScreen() {
                 </View>
               )}
             </View>
+          </View>
+
+          {/* Group Session Grades */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionIcon}>👥</Text>
+              <Text style={styles.sectionTitle}>
+                NOTES DE GROUPE ({groupGrades.length})
+              </Text>
+            </View>
+            {isLoadingGroupGrades ? (
+              <View style={styles.groupGradesLoading}>
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              </View>
+            ) : groupGrades.length > 0 ? (
+              <View style={styles.groupGradesCard}>
+                {groupGrades.map((grade, index) => {
+                  const percentage = grade.maxScore > 0
+                    ? Math.round((grade.score / grade.maxScore) * 100)
+                    : 0;
+                  return (
+                    <View
+                      key={grade.sessionId}
+                      style={[
+                        styles.groupGradeItem,
+                        index < groupGrades.length - 1 && styles.groupGradeItemBorder,
+                      ]}
+                    >
+                      <View style={styles.groupGradeHeader}>
+                        <Text style={styles.groupGradeName}>{grade.sessionName}</Text>
+                        <View style={styles.groupGradeScoreContainer}>
+                          <Text style={styles.groupGradeScore}>
+                            {grade.score}/{grade.maxScore}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.groupGradeProgressBar}>
+                        <View
+                          style={[
+                            styles.groupGradeProgressFill,
+                            { width: `${percentage}%` },
+                            percentage >= 70 && styles.groupGradeProgressGood,
+                            percentage < 50 && styles.groupGradeProgressLow,
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.groupGradeDate}>
+                        {formatDate(grade.completedAt)}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <View style={styles.groupGradesEmpty}>
+                <Text style={styles.groupGradesEmptyText}>
+                  Aucune note de groupe
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Remarks */}
@@ -683,6 +776,84 @@ const styles = StyleSheet.create({
     ...theme.shadows.sm,
   },
   remarksEmptyText: {
+    fontSize: 14,
+    color: theme.colors.textTertiary,
+  },
+
+  // Group Grades
+  groupGradesLoading: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    alignItems: 'center',
+    ...theme.shadows.sm,
+  },
+  groupGradesCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    overflow: 'hidden',
+    ...theme.shadows.sm,
+  },
+  groupGradeItem: {
+    padding: theme.spacing.md,
+  },
+  groupGradeItemBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  groupGradeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  groupGradeName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: theme.colors.text,
+    flex: 1,
+  },
+  groupGradeScoreContainer: {
+    backgroundColor: theme.colors.primarySoft,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+  },
+  groupGradeScore: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.colors.primary,
+  },
+  groupGradeProgressBar: {
+    height: 6,
+    backgroundColor: theme.colors.border,
+    borderRadius: 3,
+    marginBottom: theme.spacing.xs,
+    overflow: 'hidden',
+  },
+  groupGradeProgressFill: {
+    height: '100%',
+    backgroundColor: theme.colors.warning,
+    borderRadius: 3,
+  },
+  groupGradeProgressGood: {
+    backgroundColor: theme.colors.success,
+  },
+  groupGradeProgressLow: {
+    backgroundColor: theme.colors.error,
+  },
+  groupGradeDate: {
+    fontSize: 12,
+    color: theme.colors.textTertiary,
+  },
+  groupGradesEmpty: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    alignItems: 'center',
+    ...theme.shadows.sm,
+  },
+  groupGradesEmptyText: {
     fontSize: 14,
     color: theme.colors.textTertiary,
   },

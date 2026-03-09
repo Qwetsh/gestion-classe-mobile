@@ -13,7 +13,11 @@ export interface SyncResult {
   studentsSync: number;
   roomsSync: number;
   plansSync: number;
-  groupsSync: number;
+  groupSessionsSync: number;
+  gradingCriteriaSync: number;
+  sessionGroupsSync: number;
+  groupMembersSync: number;
+  groupGradesSync: number;
   errors: string[];
 }
 
@@ -31,7 +35,11 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM student_groups WHERE synced_at IS NULL)
+      (SELECT COUNT(*) FROM group_sessions WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM grading_criteria WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL)
     ) as total
   `);
 
@@ -50,7 +58,11 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     studentsSync: 0,
     roomsSync: 0,
     plansSync: 0,
-    groupsSync: 0,
+    groupSessionsSync: 0,
+    gradingCriteriaSync: 0,
+    sessionGroupsSync: 0,
+    groupMembersSync: 0,
+    groupGradesSync: 0,
     errors: [],
   };
 
@@ -61,15 +73,12 @@ export async function syncAll(userId: string): Promise<SyncResult> {
   }
 
   try {
-    // Sync in dependency order: classes -> groups -> students -> rooms -> plans -> sessions -> events
+    // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events
 
     // 1. Sync classes
     result.classesSync = await syncClasses(userId);
 
-    // 2. Sync groups (depends on classes)
-    result.groupsSync = await syncGroups(userId);
-
-    // 3. Sync students (depends on classes and groups)
+    // 2. Sync students (depends on classes)
     result.studentsSync = await syncStudents();
 
     // 4. Sync rooms
@@ -83,6 +92,21 @@ export async function syncAll(userId: string): Promise<SyncResult> {
 
     // 7. Sync events
     result.eventsSync = await syncEvents();
+
+    // 8. Sync group sessions (depends on classes)
+    result.groupSessionsSync = await syncGroupSessions();
+
+    // 9. Sync grading criteria (depends on group_sessions)
+    result.gradingCriteriaSync = await syncGradingCriteria();
+
+    // 10. Sync session groups (depends on group_sessions)
+    result.sessionGroupsSync = await syncSessionGroups();
+
+    // 11. Sync group members (depends on session_groups and students)
+    result.groupMembersSync = await syncGroupMembers();
+
+    // 12. Sync group grades (depends on session_groups and grading_criteria)
+    result.groupGradesSync = await syncGroupGrades();
 
     if (__DEV__) {
       console.log('[syncService] Sync complete:', result);
@@ -139,52 +163,6 @@ async function syncClasses(userId: string): Promise<number> {
 }
 
 /**
- * Sync student groups to Supabase
- */
-async function syncGroups(userId: string): Promise<number> {
-  if (!supabase) return 0;
-
-  const unsynced = await queryAll<{
-    id: string;
-    class_id: string;
-    name: string;
-    color: string;
-    created_at: string;
-  }>(`SELECT id, class_id, name, color, created_at FROM student_groups WHERE synced_at IS NULL`);
-
-  if (unsynced.length === 0) return 0;
-
-  const toSync = unsynced.map((g) => ({
-    id: g.id,
-    user_id: userId,
-    class_id: g.class_id,
-    name: g.name,
-    color: g.color,
-    created_at: g.created_at,
-  }));
-
-  const { error } = await supabase
-    .from('student_groups')
-    .upsert(toSync, { onConflict: 'id' });
-
-  if (error) {
-    console.error('[syncService] Groups sync error:', error);
-    throw new Error(`Groups: ${error.message}`);
-  }
-
-  // Mark as synced (batch update)
-  const now = new Date().toISOString();
-  const ids = unsynced.map(g => g.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE student_groups SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
-
-  return unsynced.length;
-}
-
-/**
  * Sync students to Supabase
  */
 async function syncStudents(): Promise<number> {
@@ -194,10 +172,9 @@ async function syncStudents(): Promise<number> {
     id: string;
     user_id: string;
     class_id: string;
-    group_id: string | null;
     pseudo: string;
     created_at: string;
-  }>(`SELECT id, user_id, class_id, group_id, pseudo, created_at FROM students WHERE synced_at IS NULL`);
+  }>(`SELECT id, user_id, class_id, pseudo, created_at FROM students WHERE synced_at IS NULL`);
 
   if (unsynced.length === 0) return 0;
 
@@ -205,7 +182,6 @@ async function syncStudents(): Promise<number> {
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
-    group_id: s.group_id,
     pseudo: s.pseudo,
     created_at: s.created_at,
   }));
@@ -648,6 +624,283 @@ async function syncEvents(): Promise<number> {
 }
 
 /**
+ * Sync group_sessions to Supabase
+ */
+async function syncGroupSessions(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    user_id: string;
+    class_id: string;
+    name: string;
+    status: string;
+    created_at: string;
+    completed_at: string | null;
+  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at FROM group_sessions WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map((gs) => ({
+    id: gs.id,
+    user_id: gs.user_id,
+    class_id: gs.class_id,
+    name: gs.name,
+    status: gs.status,
+    created_at: gs.created_at,
+    completed_at: gs.completed_at,
+  }));
+
+  const { error } = await supabase
+    .from('group_sessions')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Group sessions sync error:', error);
+    throw new Error(`Group sessions: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = unsynced.map(gs => gs.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE group_sessions SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return unsynced.length;
+}
+
+/**
+ * Sync grading_criteria to Supabase
+ */
+async function syncGradingCriteria(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    session_id: string;
+    label: string;
+    max_points: number;
+    display_order: number;
+  }>(`SELECT id, session_id, label, max_points, display_order FROM grading_criteria WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter out criteria whose session hasn't been synced yet
+  const sessionIds = [...new Set(unsynced.map(c => c.session_id))];
+  const { data: syncedSessions } = await supabase
+    .from('group_sessions')
+    .select('id')
+    .in('id', sessionIds);
+  const serverSessionIds = new Set((syncedSessions || []).map(s => s.id));
+
+  const toSync = unsynced
+    .filter(c => serverSessionIds.has(c.session_id))
+    .map((c) => ({
+      id: c.id,
+      session_id: c.session_id,
+      label: c.label,
+      max_points: c.max_points,
+      display_order: c.display_order,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('grading_criteria')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Grading criteria sync error:', error);
+    throw new Error(`Grading criteria: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = toSync.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE grading_criteria SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return toSync.length;
+}
+
+/**
+ * Sync session_groups to Supabase
+ */
+async function syncSessionGroups(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    session_id: string;
+    name: string;
+    conduct_malus: number;
+  }>(`SELECT id, session_id, name, conduct_malus FROM session_groups WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter out groups whose session hasn't been synced yet
+  const sessionIds = [...new Set(unsynced.map(g => g.session_id))];
+  const { data: syncedSessions } = await supabase
+    .from('group_sessions')
+    .select('id')
+    .in('id', sessionIds);
+  const serverSessionIds = new Set((syncedSessions || []).map(s => s.id));
+
+  const toSync = unsynced
+    .filter(g => serverSessionIds.has(g.session_id))
+    .map((g) => ({
+      id: g.id,
+      session_id: g.session_id,
+      name: g.name,
+      conduct_malus: g.conduct_malus,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('session_groups')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Session groups sync error:', error);
+    throw new Error(`Session groups: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = toSync.map(g => g.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE session_groups SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return toSync.length;
+}
+
+/**
+ * Sync session_group_members to Supabase
+ */
+async function syncGroupMembers(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    group_id: string;
+    student_id: string;
+  }>(`SELECT id, group_id, student_id FROM session_group_members WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter out members whose group hasn't been synced yet
+  const groupIds = [...new Set(unsynced.map(m => m.group_id))];
+  const { data: syncedGroups } = await supabase
+    .from('session_groups')
+    .select('id')
+    .in('id', groupIds);
+  const serverGroupIds = new Set((syncedGroups || []).map(g => g.id));
+
+  const toSync = unsynced
+    .filter(m => serverGroupIds.has(m.group_id))
+    .map((m) => ({
+      id: m.id,
+      group_id: m.group_id,
+      student_id: m.student_id,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('session_group_members')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Group members sync error:', error);
+    throw new Error(`Group members: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = toSync.map(m => m.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE session_group_members SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return toSync.length;
+}
+
+/**
+ * Sync group_grades to Supabase
+ */
+async function syncGroupGrades(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    group_id: string;
+    criteria_id: string;
+    points_awarded: number;
+  }>(`SELECT id, group_id, criteria_id, points_awarded FROM group_grades WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter out grades whose group hasn't been synced yet
+  const groupIds = [...new Set(unsynced.map(gr => gr.group_id))];
+  const { data: syncedGroups } = await supabase
+    .from('session_groups')
+    .select('id')
+    .in('id', groupIds);
+  const serverGroupIds = new Set((syncedGroups || []).map(g => g.id));
+
+  // Also filter by criteria synced
+  const criteriaIds = [...new Set(unsynced.map(gr => gr.criteria_id))];
+  const { data: syncedCriteria } = await supabase
+    .from('grading_criteria')
+    .select('id')
+    .in('id', criteriaIds);
+  const serverCriteriaIds = new Set((syncedCriteria || []).map(c => c.id));
+
+  const toSync = unsynced
+    .filter(gr => serverGroupIds.has(gr.group_id) && serverCriteriaIds.has(gr.criteria_id))
+    .map((gr) => ({
+      id: gr.id,
+      group_id: gr.group_id,
+      criteria_id: gr.criteria_id,
+      points_awarded: gr.points_awarded,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('group_grades')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] Group grades sync error:', error);
+    throw new Error(`Group grades: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = toSync.map(gr => gr.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE group_grades SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return toSync.length;
+}
+
+/**
  * Pull data from Supabase to local SQLite
  * This is the reverse sync: server -> mobile
  * Returns counts of synced items and any errors encountered
@@ -655,14 +908,13 @@ async function syncEvents(): Promise<number> {
 export async function pullFromServer(userId: string): Promise<{
   classes: number;
   students: number;
-  groups: number;
   rooms: number;
   plans: number;
   sessions: number;
   events: number;
   errors: string[];
 }> {
-  const result = { classes: 0, students: 0, groups: 0, rooms: 0, plans: 0, sessions: 0, events: 0, errors: [] as string[] };
+  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, errors: [] as string[] };
 
   if (!isSupabaseConfigured || !supabase) {
     if (__DEV__) {
@@ -731,67 +983,10 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
-    // 2. Pull groups from Supabase (before students since students reference groups)
-    // Get all class IDs for this user first
-    const userClasses = await queryAll<{ id: string }>(
-      `SELECT id FROM classes WHERE user_id = ?`,
-      [userId]
-    );
-    const userClassIds = userClasses.map(c => c.id);
-
-    if (userClassIds.length > 0) {
-      const { data: serverGroups, error: groupsError } = await supabase
-        .from('student_groups')
-        .select('id, class_id, name, color, created_at')
-        .in('class_id', userClassIds);
-
-      if (groupsError) {
-        console.error('[syncService] Pull groups error:', groupsError);
-        result.errors.push(`Groups: ${groupsError.message}`);
-      } else if (serverGroups !== null) {
-        const serverGroupIds = new Set(serverGroups.map(g => g.id));
-
-        // Delete local groups that don't exist on server anymore
-        const localGroups = await queryAll<{ id: string; synced_at: string | null }>(
-          `SELECT id, synced_at FROM student_groups WHERE class_id IN (${userClassIds.map(() => '?').join(',')})`,
-          userClassIds
-        );
-        for (const local of localGroups) {
-          if (!serverGroupIds.has(local.id) && local.synced_at !== null) {
-            // Clear group_id from students before deleting the group
-            await executeSql(`UPDATE students SET group_id = NULL WHERE group_id = ?`, [local.id]);
-            await executeSql(`DELETE FROM student_groups WHERE id = ?`, [local.id]);
-            if (__DEV__) {
-              console.log('[syncService] Deleted local group not on server:', local.id);
-            }
-          }
-        }
-
-        // Add new groups from server
-        for (const group of serverGroups) {
-          const existing = await queryAll<{ id: string }>(
-            `SELECT id FROM student_groups WHERE id = ?`,
-            [group.id]
-          );
-
-          if (existing.length === 0) {
-            await executeSql(
-              `INSERT INTO student_groups (id, class_id, user_id, name, color, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [group.id, group.class_id, userId, group.name, group.color, group.created_at, now]
-            );
-            result.groups++;
-            if (__DEV__) {
-              console.log('[syncService] Pulled group:', group.name);
-            }
-          }
-        }
-      }
-    }
-
-    // 3. Pull students from Supabase
+    // 2. Pull students from Supabase
     const { data: serverStudents, error: studentsError } = await supabase
       .from('students')
-      .select('id, user_id, class_id, group_id, pseudo, created_at')
+      .select('id, user_id, class_id, pseudo, created_at')
       .eq('user_id', userId);
 
     if (studentsError) {
@@ -827,24 +1022,18 @@ export async function pullFromServer(userId: string): Promise<{
 
         if (existing.length === 0) {
           await executeSql(
-            `INSERT INTO students (id, user_id, class_id, group_id, pseudo, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [student.id, student.user_id, student.class_id, student.group_id, student.pseudo, student.created_at, now]
+            `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?)`,
+            [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now]
           );
           result.students++;
           if (__DEV__) {
             console.log('[syncService] Pulled student:', student.pseudo);
           }
-        } else {
-          // Update existing student's group_id
-          await executeSql(
-            `UPDATE students SET group_id = ?, synced_at = ? WHERE id = ?`,
-            [student.group_id, now, student.id]
-          );
         }
       }
     }
 
-    // 4. Pull rooms from Supabase
+    // 3. Pull rooms from Supabase
     const { data: serverRooms, error: roomsError } = await supabase
       .from('rooms')
       .select('id, name, grid_rows, grid_cols, disabled_cells, created_at')
@@ -905,7 +1094,7 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
-    // 5. Pull class_room_plans from Supabase
+    // 4. Pull class_room_plans from Supabase
     // Get all class IDs for this user
     const localClasses = await queryAll<{ id: string }>(
       `SELECT id FROM classes WHERE user_id = ?`,
@@ -959,7 +1148,7 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
-    // 6. Pull sessions from Supabase
+    // 5. Pull sessions from Supabase
     const { data: serverSessions, error: sessionsError } = await supabase
       .from('sessions')
       .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at')
@@ -1001,7 +1190,7 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
-    // 7. Pull events from Supabase (for all user's sessions)
+    // 6. Pull events from Supabase (for all user's sessions)
     // Get all session IDs for this user
     const localSessions = await queryAll<{ id: string }>(
       `SELECT id FROM sessions WHERE user_id = ?`,

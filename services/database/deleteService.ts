@@ -189,13 +189,7 @@ export async function deleteClassCompletely(classId: string): Promise<DeleteClas
       params: [classId],
     });
 
-    // 7. Delete student groups
-    statements.push({
-      sql: `DELETE FROM student_groups WHERE class_id = ?`,
-      params: [classId],
-    });
-
-    // 8. Delete class
+    // 7. Delete class
     statements.push({
       sql: `DELETE FROM classes WHERE id = ?`,
       params: [classId],
@@ -218,7 +212,6 @@ export async function deleteClassCompletely(classId: string): Promise<DeleteClas
         await supabase.from('sessions').delete().eq('class_id', classId);
         await supabase.from('class_room_plans').delete().eq('class_id', classId);
         await supabase.from('students').delete().eq('class_id', classId);
-        await supabase.from('student_groups').delete().eq('class_id', classId);
         await supabase.from('classes').delete().eq('id', classId);
         console.log('[deleteService] Deleted class from Supabase:', classId);
       } catch (error) {

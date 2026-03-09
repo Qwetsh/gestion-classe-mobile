@@ -14,6 +14,7 @@ export {
   CREATE_TABLES_SQL,
   EVENT_TYPES,
   SORTIE_SUBTYPES,
+  GROUP_SESSION_STATUSES,
 } from './schema';
 
 // Migrations
@@ -52,20 +53,6 @@ export {
   deleteLocalMappingsByClassId,
   type LocalStudentMapping,
 } from './localMappingRepository';
-
-export {
-  createGroup,
-  getGroupsByClassId,
-  getGroupById,
-  updateGroup,
-  deleteGroup,
-  assignStudentToGroup,
-  getStudentsByGroupId,
-  getUnsyncedGroups,
-  deleteGroupsByClassId,
-  GROUP_COLORS,
-  type StudentGroup,
-} from './groupRepository';
 
 export {
   createRoom,
@@ -137,3 +124,56 @@ export {
   type DeleteClassResult,
   type DeleteAllDataResult,
 } from './deleteService';
+
+// Group Sessions (Séances de groupe notées)
+export {
+  // Group Session CRUD
+  createGroupSession,
+  getGroupSessionsByUserId,
+  getGroupSessionsByClassId,
+  getGroupSessionById,
+  updateGroupSessionStatus,
+  updateGroupSessionName,
+  deleteGroupSession,
+  // Grading Criteria CRUD
+  createGradingCriteria,
+  getCriteriaBySessionId,
+  updateGradingCriteria,
+  deleteGradingCriteria,
+  reorderCriteria,
+  // Session Groups CRUD
+  createSessionGroup,
+  getGroupsBySessionId,
+  getSessionGroupById,
+  updateSessionGroupName,
+  applyGroupMalus,
+  setGroupMalus,
+  deleteSessionGroup,
+  // Group Members CRUD
+  addGroupMember,
+  addGroupMembersBatch,
+  getGroupMembers,
+  getGroupMemberIds,
+  removeGroupMember,
+  clearGroupMembers,
+  // Group Grades CRUD
+  setGroupGrade,
+  getGradesByGroupId,
+  getGrade,
+  getGradesBySessionId,
+  // Computed values
+  calculateGroupScore,
+  calculateMaxScore,
+  getStudentGroupSessionGrades,
+  // Sync helpers
+  getUnsyncedGroupSessions,
+  getUnsyncedGradingCriteria,
+  getUnsyncedSessionGroups,
+  getUnsyncedGroupMembers,
+  getUnsyncedGroupGrades,
+  markGroupSessionsSynced,
+  markGradingCriteriaSynced,
+  markSessionGroupsSynced,
+  markGroupMembersSynced,
+  markGroupGradesSynced,
+} from './groupSessionRepository';

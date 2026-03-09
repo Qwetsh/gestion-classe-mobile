@@ -240,6 +240,151 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 6 -> 7: Remove student_groups feature (replaced by group_sessions)
+  if (fromVersion < 7) {
+    console.log('[Database] Applying migration: Remove student_groups (v7)');
+
+    // ATOMIC: All changes in same transaction
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      // SQLite doesn't support DROP COLUMN, so we need to recreate the table
+      // First check if group_id column exists
+      const hasGroupId = await columnExists('students', 'group_id');
+
+      if (hasGroupId) {
+        // Recreate students table without group_id
+        await db.runAsync(`
+          CREATE TABLE students_new (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            pseudo TEXT NOT NULL,
+            class_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT,
+            synced_at TEXT,
+            is_deleted INTEGER DEFAULT 0,
+            FOREIGN KEY (class_id) REFERENCES classes(id)
+          )
+        `);
+        await db.runAsync(`
+          INSERT INTO students_new (id, user_id, pseudo, class_id, created_at, updated_at, synced_at, is_deleted)
+          SELECT id, user_id, pseudo, class_id, created_at, updated_at, synced_at, is_deleted FROM students
+        `);
+        await db.runAsync('DROP TABLE students');
+        await db.runAsync('ALTER TABLE students_new RENAME TO students');
+        await db.runAsync('CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id)');
+        await db.runAsync('CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id)');
+      }
+
+      // Drop student_groups table and its index
+      await db.runAsync('DROP TABLE IF EXISTS student_groups');
+      await db.runAsync('DROP INDEX IF EXISTS idx_student_groups_class_id');
+      await db.runAsync('DROP INDEX IF EXISTS idx_students_group_id');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [7]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v7 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v7 failed, rolled back:', error);
+      throw error;
+    }
+  }
+
+  // Migration 7 -> 8: Add group_sessions feature (séances de groupe notées)
+  if (fromVersion < 8) {
+    console.log('[Database] Applying migration: Add group_sessions tables (v8)');
+
+    // ATOMIC: All changes in same transaction
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      // Create group_sessions table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS group_sessions (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          class_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          completed_at TEXT,
+          synced_at TEXT,
+          FOREIGN KEY (class_id) REFERENCES classes(id)
+        )
+      `);
+
+      // Create grading_criteria table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS grading_criteria (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          max_points REAL NOT NULL,
+          display_order INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT,
+          FOREIGN KEY (session_id) REFERENCES group_sessions(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Create session_groups table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS session_groups (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          conduct_malus REAL NOT NULL DEFAULT 0,
+          synced_at TEXT,
+          FOREIGN KEY (session_id) REFERENCES group_sessions(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Create session_group_members table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS session_group_members (
+          id TEXT PRIMARY KEY,
+          group_id TEXT NOT NULL,
+          student_id TEXT NOT NULL,
+          synced_at TEXT,
+          FOREIGN KEY (group_id) REFERENCES session_groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (student_id) REFERENCES students(id),
+          UNIQUE(group_id, student_id)
+        )
+      `);
+
+      // Create group_grades table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS group_grades (
+          id TEXT PRIMARY KEY,
+          group_id TEXT NOT NULL,
+          criteria_id TEXT NOT NULL,
+          points_awarded REAL NOT NULL DEFAULT 0,
+          synced_at TEXT,
+          FOREIGN KEY (group_id) REFERENCES session_groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (criteria_id) REFERENCES grading_criteria(id) ON DELETE CASCADE,
+          UNIQUE(group_id, criteria_id)
+        )
+      `);
+
+      // Create indexes
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_sessions_user_id ON group_sessions(user_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_sessions_class_id ON group_sessions(class_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_grading_criteria_session_id ON grading_criteria(session_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_session_groups_session_id ON session_groups(session_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_session_group_members_group_id ON session_group_members(group_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_session_group_members_student_id ON session_group_members(student_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_grades_group_id ON group_grades(group_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_grades_criteria_id ON group_grades(criteria_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [8]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v8 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v8 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -251,15 +396,19 @@ export async function resetDatabase(): Promise<void> {
 
   const db = await getDatabase();
 
-  // Drop all tables
+  // Drop all tables (in dependency order)
   const tables = [
+    'group_grades',
+    'session_group_members',
+    'session_groups',
+    'grading_criteria',
+    'group_sessions',
     'local_student_mapping',
     'events',
     'sessions',
     'class_room_plans',
     'rooms',
     'students',
-    'student_groups',
     'classes',
     'schema_version',
   ];
@@ -281,12 +430,16 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
   const tables = [
     'classes',
     'students',
-    'student_groups',
     'rooms',
     'class_room_plans',
     'sessions',
     'events',
     'local_student_mapping',
+    'group_sessions',
+    'grading_criteria',
+    'session_groups',
+    'session_group_members',
+    'group_grades',
   ];
 
   const stats: Record<string, number> = {};

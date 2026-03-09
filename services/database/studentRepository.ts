@@ -10,7 +10,6 @@ interface StudentRow {
   user_id: string;
   pseudo: string;
   class_id: string;
-  group_id: string | null;
   created_at: string;
   updated_at: string | null;
   synced_at: string | null;
@@ -25,7 +24,6 @@ function rowToStudent(row: StudentRow): Student {
     id: row.id,
     pseudo: row.pseudo,
     classId: row.class_id,
-    groupId: row.group_id,
     createdAt: row.created_at,
   };
 }
