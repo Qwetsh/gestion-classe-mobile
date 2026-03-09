@@ -112,28 +112,6 @@ interface GroupSessionState {
 // Helper Functions
 // ============================================
 
-async function loadGroupDetails(groupId: string): Promise<SessionGroupWithDetails> {
-  const [memberIds, grades, score] = await Promise.all([
-    getGroupMemberIds(groupId),
-    getGradesByGroupId(groupId),
-    calculateGroupScore(groupId),
-  ]);
-
-  // We need the base group info
-  const groups = await getGroupsBySessionId(''); // This won't work, need different approach
-
-  return {
-    id: groupId,
-    sessionId: '',
-    name: '',
-    conductMalus: 0,
-    syncedAt: null,
-    memberIds,
-    grades,
-    totalScore: score,
-  };
-}
-
 async function loadFullSessionState(sessionId: string): Promise<ActiveSessionState | null> {
   const session = await getGroupSessionById(sessionId);
   if (!session) return null;
