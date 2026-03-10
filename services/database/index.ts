@@ -177,3 +177,23 @@ export {
   markGroupMembersSynced,
   markGroupGradesSynced,
 } from './groupSessionRepository';
+
+// TP Templates (modèles de TP)
+export {
+  createTpTemplate,
+  getTpTemplatesByUserId,
+  getTpTemplateById,
+  getTpTemplateWithCriteria,
+  getTpTemplatesWithCriteria,
+  updateTpTemplateName,
+  deleteTpTemplate,
+  createTpTemplateCriteria,
+  createTpTemplateCriteriaBatch,
+  getTpTemplateCriteria,
+  updateTpTemplateCriteria,
+  deleteTpTemplateCriteria,
+  replaceTpTemplateCriteria,
+  type TpTemplate,
+  type TpTemplateCriteria,
+  type TpTemplateWithCriteria,
+} from './tpTemplateRepository';

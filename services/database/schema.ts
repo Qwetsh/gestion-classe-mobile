@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * SQL statements to create all tables
@@ -168,6 +168,30 @@ CREATE TABLE IF NOT EXISTS group_grades (
   UNIQUE(group_id, criteria_id)
 );
 
+-- ============================================
+-- TP Templates (modèles de TP)
+-- ============================================
+
+-- TP templates table
+CREATE TABLE IF NOT EXISTS tp_templates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT
+);
+
+-- TP template criteria
+CREATE TABLE IF NOT EXISTS tp_template_criteria (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  max_points REAL NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  synced_at TEXT,
+  FOREIGN KEY (template_id) REFERENCES tp_templates(id) ON DELETE CASCADE
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
@@ -184,6 +208,8 @@ CREATE INDEX IF NOT EXISTS idx_session_group_members_group_id ON session_group_m
 CREATE INDEX IF NOT EXISTS idx_session_group_members_student_id ON session_group_members(student_id);
 CREATE INDEX IF NOT EXISTS idx_group_grades_group_id ON group_grades(group_id);
 CREATE INDEX IF NOT EXISTS idx_group_grades_criteria_id ON group_grades(criteria_id);
+CREATE INDEX IF NOT EXISTS idx_tp_templates_user_id ON tp_templates(user_id);
+CREATE INDEX IF NOT EXISTS idx_tp_template_criteria_template_id ON tp_template_criteria(template_id);
 `;
 
 /**

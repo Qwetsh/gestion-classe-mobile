@@ -61,6 +61,8 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         sessionGroupsSync: 0,
         groupMembersSync: 0,
         groupGradesSync: 0,
+        tpTemplatesSync: 0,
+        tpTemplateCriteriaSync: 0,
         errors: ['Synchronisation deja en cours'],
       };
     }
@@ -118,6 +120,8 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         sessionGroupsSync: 0,
         groupMembersSync: 0,
         groupGradesSync: 0,
+        tpTemplatesSync: 0,
+        tpTemplateCriteriaSync: 0,
         errors: [errorMessage],
       };
     }

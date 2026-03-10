@@ -18,6 +18,8 @@ export interface SyncResult {
   sessionGroupsSync: number;
   groupMembersSync: number;
   groupGradesSync: number;
+  tpTemplatesSync: number;
+  tpTemplateCriteriaSync: number;
   errors: string[];
 }
 
@@ -39,7 +41,9 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM grading_criteria WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL)
+      (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM tp_templates WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL)
     ) as total
   `);
 
@@ -63,6 +67,8 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     sessionGroupsSync: 0,
     groupMembersSync: 0,
     groupGradesSync: 0,
+    tpTemplatesSync: 0,
+    tpTemplateCriteriaSync: 0,
     errors: [],
   };
 
@@ -107,6 +113,12 @@ export async function syncAll(userId: string): Promise<SyncResult> {
 
     // 12. Sync group grades (depends on session_groups and grading_criteria)
     result.groupGradesSync = await syncGroupGrades();
+
+    // 13. Sync TP templates
+    result.tpTemplatesSync = await syncTpTemplates(userId);
+
+    // 14. Sync TP template criteria (depends on tp_templates)
+    result.tpTemplateCriteriaSync = await syncTpTemplateCriteria();
 
     if (__DEV__) {
       console.log('[syncService] Sync complete:', result);
@@ -901,6 +913,105 @@ async function syncGroupGrades(): Promise<number> {
 }
 
 /**
+ * Sync tp_templates to Supabase
+ */
+async function syncTpTemplates(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    name: string;
+    created_at: string;
+  }>(`SELECT id, name, created_at FROM tp_templates WHERE user_id = ? AND synced_at IS NULL`, [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map((t) => ({
+    id: t.id,
+    user_id: userId,
+    name: t.name,
+    created_at: t.created_at,
+  }));
+
+  const { error } = await supabase
+    .from('tp_templates')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] TP templates sync error:', error);
+    throw new Error(`TP templates: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = unsynced.map(t => t.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE tp_templates SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return unsynced.length;
+}
+
+/**
+ * Sync tp_template_criteria to Supabase
+ */
+async function syncTpTemplateCriteria(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string;
+    template_id: string;
+    label: string;
+    max_points: number;
+    display_order: number;
+  }>(`SELECT id, template_id, label, max_points, display_order FROM tp_template_criteria WHERE synced_at IS NULL`);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter out criteria whose template hasn't been synced yet
+  const templateIds = [...new Set(unsynced.map(c => c.template_id))];
+  const { data: syncedTemplates } = await supabase
+    .from('tp_templates')
+    .select('id')
+    .in('id', templateIds);
+  const serverTemplateIds = new Set((syncedTemplates || []).map(t => t.id));
+
+  const toSync = unsynced
+    .filter(c => serverTemplateIds.has(c.template_id))
+    .map((c) => ({
+      id: c.id,
+      template_id: c.template_id,
+      label: c.label,
+      max_points: c.max_points,
+      display_order: c.display_order,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('tp_template_criteria')
+    .upsert(toSync, { onConflict: 'id' });
+
+  if (error) {
+    console.error('[syncService] TP template criteria sync error:', error);
+    throw new Error(`TP template criteria: ${error.message}`);
+  }
+
+  // Mark as synced
+  const now = new Date().toISOString();
+  const ids = toSync.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(
+    `UPDATE tp_template_criteria SET synced_at = ? WHERE id IN (${placeholders})`,
+    [now, ...ids]
+  );
+
+  return toSync.length;
+}
+
+/**
  * Pull data from Supabase to local SQLite
  * This is the reverse sync: server -> mobile
  * Returns counts of synced items and any errors encountered
@@ -912,9 +1023,10 @@ export async function pullFromServer(userId: string): Promise<{
   plans: number;
   sessions: number;
   events: number;
+  tpTemplates: number;
   errors: string[];
 }> {
-  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, errors: [] as string[] };
+  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, tpTemplates: 0, errors: [] as string[] };
 
   if (!isSupabaseConfigured || !supabase) {
     if (__DEV__) {
@@ -1262,6 +1374,64 @@ export async function pullFromServer(userId: string): Promise<{
         result.events = eventsInserted;
         if (__DEV__) {
           console.log('[syncService] Pulled events:', eventsInserted, 'skipped:', eventsSkipped);
+        }
+      }
+    }
+
+    // 7. Pull TP templates from Supabase
+    const { data: serverTpTemplates, error: tpTemplatesError } = await supabase
+      .from('tp_templates')
+      .select('id, name, created_at')
+      .eq('user_id', userId);
+
+    if (tpTemplatesError) {
+      console.error('[syncService] Pull TP templates error:', tpTemplatesError);
+      result.errors.push(`TP Templates: ${tpTemplatesError.message}`);
+    } else if (serverTpTemplates && serverTpTemplates.length > 0) {
+      for (const template of serverTpTemplates) {
+        const existing = await queryAll<{ id: string }>(
+          `SELECT id FROM tp_templates WHERE id = ?`,
+          [template.id]
+        );
+
+        if (existing.length === 0) {
+          await executeSql(
+            `INSERT INTO tp_templates (id, user_id, name, created_at, synced_at) VALUES (?, ?, ?, ?, ?)`,
+            [template.id, userId, template.name, template.created_at, now]
+          );
+          result.tpTemplates++;
+          if (__DEV__) {
+            console.log('[syncService] Pulled TP template:', template.name);
+          }
+        }
+      }
+
+      // 8. Pull TP template criteria
+      const templateIds = serverTpTemplates.map(t => t.id);
+      const { data: serverCriteria, error: criteriaError } = await supabase
+        .from('tp_template_criteria')
+        .select('id, template_id, label, max_points, display_order')
+        .in('template_id', templateIds);
+
+      if (criteriaError) {
+        console.error('[syncService] Pull TP criteria error:', criteriaError);
+        result.errors.push(`TP Criteria: ${criteriaError.message}`);
+      } else if (serverCriteria && serverCriteria.length > 0) {
+        for (const crit of serverCriteria) {
+          const existing = await queryAll<{ id: string }>(
+            `SELECT id FROM tp_template_criteria WHERE id = ?`,
+            [crit.id]
+          );
+
+          if (existing.length === 0) {
+            await executeSql(
+              `INSERT INTO tp_template_criteria (id, template_id, label, max_points, display_order, synced_at) VALUES (?, ?, ?, ?, ?, ?)`,
+              [crit.id, crit.template_id, crit.label, crit.max_points, crit.display_order, now]
+            );
+            if (__DEV__) {
+              console.log('[syncService] Pulled TP criteria:', crit.label);
+            }
+          }
         }
       }
     }

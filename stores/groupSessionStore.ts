@@ -35,6 +35,10 @@ import {
   calculateGroupScore,
   calculateMaxScore,
   getStudentGroupSessionGrades,
+  // TP Templates
+  getTpTemplatesWithCriteria,
+  getTpTemplateWithCriteria,
+  type TpTemplateWithCriteria,
 } from '../services/database';
 
 // ============================================
@@ -106,6 +110,14 @@ interface GroupSessionState {
     score: number;
     maxScore: number;
   }>>;
+
+  // TP Templates
+  loadTpTemplates: (userId: string) => Promise<TpTemplateWithCriteria[]>;
+  applyTpTemplate: (templateId: string) => Promise<void>;
+
+  // Group creation helpers
+  copyGroupsFromPreviousSession: (classId: string) => Promise<boolean>;
+  createRandomGroups: (studentIds: string[], studentsPerGroup: number) => Promise<void>;
 }
 
 // ============================================
@@ -642,5 +654,158 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
 
   getStudentGrades: async (studentId: string) => {
     return getStudentGroupSessionGrades(studentId);
+  },
+
+  // ============================================
+  // TP Templates
+  // ============================================
+
+  loadTpTemplates: async (userId: string) => {
+    return getTpTemplatesWithCriteria(userId);
+  },
+
+  applyTpTemplate: async (templateId: string) => {
+    const { activeSession } = get();
+    if (!activeSession) return;
+
+    try {
+      const template = await getTpTemplateWithCriteria(templateId);
+      if (!template) return;
+
+      // Add each criteria from the template to the session
+      for (let i = 0; i < template.criteria.length; i++) {
+        const tc = template.criteria[i];
+        const criteria = await createGradingCriteria(
+          activeSession.session.id,
+          tc.label,
+          tc.maxPoints,
+          i
+        );
+
+        // Update local state
+        const currentState = get().activeSession;
+        if (currentState) {
+          set({
+            activeSession: {
+              ...currentState,
+              criteria: [...currentState.criteria, criteria],
+              maxPossibleScore: currentState.maxPossibleScore + tc.maxPoints,
+            },
+          });
+        }
+      }
+    } catch (error) {
+      console.error('[groupSessionStore] Apply template error:', error);
+    }
+  },
+
+  // ============================================
+  // Group Creation Helpers
+  // ============================================
+
+  copyGroupsFromPreviousSession: async (classId: string) => {
+    const { activeSession } = get();
+    if (!activeSession) return false;
+
+    try {
+      // Find the most recent completed session for this class
+      const previousSessions = await getGroupSessionsByClassId(classId);
+      const previousSession = previousSessions
+        .filter(s => s.status === 'completed' && s.id !== activeSession.session.id)
+        .sort((a, b) => {
+          const dateA = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+          const dateB = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+          return dateB - dateA;
+        })[0];
+
+      if (!previousSession) return false;
+
+      // Get groups and members from previous session
+      const previousGroups = await getGroupsBySessionId(previousSession.id);
+      if (previousGroups.length === 0) return false;
+
+      // Copy each group
+      for (const pg of previousGroups) {
+        const memberIds = await getGroupMemberIds(pg.id);
+
+        // Create new group
+        const newGroup = await createSessionGroup(activeSession.session.id, pg.name);
+
+        // Add members
+        if (memberIds.length > 0) {
+          await addGroupMembersBatch(newGroup.id, memberIds);
+        }
+
+        // Update local state
+        const currentState = get().activeSession;
+        if (currentState) {
+          const groupWithDetails: SessionGroupWithDetails = {
+            ...newGroup,
+            memberIds,
+            grades: [],
+            totalScore: 0,
+          };
+          set({
+            activeSession: {
+              ...currentState,
+              groups: [...currentState.groups, groupWithDetails],
+            },
+          });
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.error('[groupSessionStore] Copy groups error:', error);
+      return false;
+    }
+  },
+
+  createRandomGroups: async (studentIds: string[], studentsPerGroup: number) => {
+    const { activeSession } = get();
+    if (!activeSession || studentIds.length === 0 || studentsPerGroup < 1) return;
+
+    try {
+      // Shuffle students
+      const shuffled = [...studentIds].sort(() => Math.random() - 0.5);
+
+      // Calculate number of groups
+      const numGroups = Math.ceil(shuffled.length / studentsPerGroup);
+
+      // Create groups
+      for (let i = 0; i < numGroups; i++) {
+        const groupName = `Groupe ${activeSession.groups.length + i + 1}`;
+        const startIdx = i * studentsPerGroup;
+        const endIdx = Math.min(startIdx + studentsPerGroup, shuffled.length);
+        const memberIds = shuffled.slice(startIdx, endIdx);
+
+        // Create group
+        const newGroup = await createSessionGroup(activeSession.session.id, groupName);
+
+        // Add members
+        if (memberIds.length > 0) {
+          await addGroupMembersBatch(newGroup.id, memberIds);
+        }
+
+        // Update local state
+        const currentState = get().activeSession;
+        if (currentState) {
+          const groupWithDetails: SessionGroupWithDetails = {
+            ...newGroup,
+            memberIds,
+            grades: [],
+            totalScore: 0,
+          };
+          set({
+            activeSession: {
+              ...currentState,
+              groups: [...currentState.groups, groupWithDetails],
+            },
+          });
+        }
+      }
+    } catch (error) {
+      console.error('[groupSessionStore] Random groups error:', error);
+    }
   },
 }));

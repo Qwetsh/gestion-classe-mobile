@@ -385,6 +385,51 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 8 -> 9: Add TP templates feature
+  if (fromVersion < 9) {
+    console.log('[Database] Applying migration: Add TP templates tables (v9)');
+
+    // ATOMIC: All changes in same transaction
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      // Create tp_templates table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS tp_templates (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT
+        )
+      `);
+
+      // Create tp_template_criteria table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS tp_template_criteria (
+          id TEXT PRIMARY KEY,
+          template_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          max_points REAL NOT NULL,
+          display_order INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT,
+          FOREIGN KEY (template_id) REFERENCES tp_templates(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Create indexes
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_tp_templates_user_id ON tp_templates(user_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_tp_template_criteria_template_id ON tp_template_criteria(template_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [9]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v9 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v9 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -398,6 +443,8 @@ export async function resetDatabase(): Promise<void> {
 
   // Drop all tables (in dependency order)
   const tables = [
+    'tp_template_criteria',
+    'tp_templates',
     'group_grades',
     'session_group_members',
     'session_groups',
@@ -440,6 +487,8 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'session_groups',
     'session_group_members',
     'group_grades',
+    'tp_templates',
+    'tp_template_criteria',
   ];
 
   const stats: Record<string, number> = {};
