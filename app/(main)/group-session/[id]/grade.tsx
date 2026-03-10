@@ -334,7 +334,7 @@ export default function GradeGroupSessionScreen() {
           <ScrollView style={styles.criteriaSection} showsVerticalScrollIndicator={false}>
             {criteria.map(crit => (
               <CriteriaSlider
-                key={crit.id}
+                key={`${currentGroup.id}-${crit.id}`}
                 criteria={crit}
                 value={getGradeForCriteria(crit.id)}
                 onChange={(value) => handleGradeChange(crit.id, value)}
