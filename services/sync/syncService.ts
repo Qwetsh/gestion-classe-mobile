@@ -1222,24 +1222,46 @@ export async function pullFromServer(userId: string): Promise<{
         console.error('[syncService] Pull events error:', eventsError);
         result.errors.push(`Events: ${eventsError.message}`);
       } else if (serverEvents && serverEvents.length > 0) {
+        let eventsInserted = 0;
+        let eventsSkipped = 0;
         for (const event of serverEvents) {
-          // Check if exists locally
-          const existing = await queryAll<{ id: string }>(
-            `SELECT id FROM events WHERE id = ?`,
-            [event.id]
-          );
-
-          if (existing.length === 0) {
-            // Insert new event
-            await executeSql(
-              `INSERT INTO events (id, session_id, student_id, type, subtype, note, photo_path, timestamp, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [event.id, event.session_id, event.student_id, event.type, event.subtype, event.note, event.photo_path, event.timestamp, now]
+          try {
+            // Check if exists locally
+            const existing = await queryAll<{ id: string }>(
+              `SELECT id FROM events WHERE id = ?`,
+              [event.id]
             );
-            result.events++;
+
+            if (existing.length === 0) {
+              // Verify student exists locally (FK constraint)
+              const studentExists = await queryAll<{ id: string }>(
+                `SELECT id FROM students WHERE id = ?`,
+                [event.student_id]
+              );
+
+              if (studentExists.length === 0) {
+                // Student doesn't exist locally, skip this event
+                eventsSkipped++;
+                if (__DEV__) {
+                  console.warn('[syncService] Skipping event - student not found locally:', event.student_id);
+                }
+                continue;
+              }
+
+              // Insert new event
+              await executeSql(
+                `INSERT INTO events (id, session_id, student_id, type, subtype, note, photo_path, timestamp, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [event.id, event.session_id, event.student_id, event.type, event.subtype, event.note, event.photo_path, event.timestamp, now]
+              );
+              eventsInserted++;
+            }
+          } catch (err) {
+            console.error('[syncService] Error inserting event:', event.id, err);
           }
         }
+        result.events = eventsInserted;
         if (__DEV__) {
-          console.log('[syncService] Pulled events:', result.events);
+          console.log('[syncService] Pulled events:', eventsInserted, 'skipped:', eventsSkipped);
         }
       }
     }
