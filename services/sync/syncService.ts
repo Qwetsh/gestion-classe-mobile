@@ -1015,20 +1015,34 @@ export async function pullFromServer(userId: string): Promise<{
 
       // Add new students from server
       for (const student of serverStudents) {
-        const existing = await queryAll<{ id: string }>(
-          `SELECT id FROM students WHERE id = ?`,
-          [student.id]
-        );
-
-        if (existing.length === 0) {
-          await executeSql(
-            `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?)`,
-            [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now]
+        try {
+          const existing = await queryAll<{ id: string }>(
+            `SELECT id FROM students WHERE id = ?`,
+            [student.id]
           );
-          result.students++;
-          if (__DEV__) {
-            console.log('[syncService] Pulled student:', student.pseudo);
+
+          if (existing.length === 0) {
+            await executeSql(
+              `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)`,
+              [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now]
+            );
+            result.students++;
+            if (__DEV__) {
+              console.log('[syncService] Pulled student:', student.pseudo);
+            }
+          } else {
+            // Student exists but might have is_deleted = 1, reset it
+            await executeSql(
+              `UPDATE students SET is_deleted = 0, synced_at = ? WHERE id = ?`,
+              [now, student.id]
+            );
+            if (__DEV__) {
+              console.log('[syncService] Restored student:', student.pseudo);
+            }
           }
+        } catch (err) {
+          console.error('[syncService] Error inserting student:', student.pseudo, err);
+          result.errors.push(`Student ${student.pseudo}: ${err instanceof Error ? err.message : 'Unknown error'}`);
         }
       }
     }
