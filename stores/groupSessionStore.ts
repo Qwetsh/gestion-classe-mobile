@@ -661,7 +661,12 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
   // ============================================
 
   loadTpTemplates: async (userId: string) => {
-    return getTpTemplatesWithCriteria(userId);
+    try {
+      return await getTpTemplatesWithCriteria(userId);
+    } catch (error) {
+      console.error('[groupSessionStore] Load templates error:', error);
+      return [];
+    }
   },
 
   applyTpTemplate: async (templateId: string) => {

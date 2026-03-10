@@ -74,7 +74,12 @@ export default function CreateGroupSessionScreen() {
   useEffect(() => {
     if (user?.id) {
       loadClasses(user.id);
-      loadTpTemplates(user.id).then(templates => setTpTemplates(templates));
+      loadTpTemplates(user.id)
+        .then(templates => setTpTemplates(templates))
+        .catch(err => {
+          console.error('[CreateGroupSession] Failed to load templates:', err);
+          setTpTemplates([]);
+        });
     }
   }, [user?.id, loadClasses, loadTpTemplates]);
 
