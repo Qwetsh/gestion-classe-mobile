@@ -15,7 +15,7 @@ import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { theme } from '../../../constants/theme';
 import { useAuthStore, useClassStore, useStudentStore, useGroupSessionStore, type StudentWithMapping } from '../../../stores';
-import { type TpTemplateWithCriteria } from '../../../services/database';
+import { type TpTemplateWithCriteria, getActiveGroupSession } from '../../../services/database';
 
 type CreationStep = 'config' | 'groups' | 'criteria';
 
@@ -64,6 +64,31 @@ export default function CreateGroupSessionScreen() {
 
   // Loading states
   const [isCreating, setIsCreating] = useState(false);
+  const [isCheckingActive, setIsCheckingActive] = useState(true);
+
+  // Check for active session on mount and redirect if found
+  useEffect(() => {
+    const checkActiveSession = async () => {
+      if (!user?.id) {
+        setIsCheckingActive(false);
+        return;
+      }
+
+      try {
+        const activeSession = await getActiveGroupSession(user.id);
+        // Only redirect for truly active sessions (not draft)
+        if (activeSession && activeSession.status === 'active') {
+          router.replace(`/(main)/group-session/${activeSession.id}/grade`);
+          return;
+        }
+      } catch (error) {
+        console.error('[CreateGroupSession] Error checking active session:', error);
+      }
+      setIsCheckingActive(false);
+    };
+
+    checkActiveSession();
+  }, [user?.id]);
 
   // Get students for selected class
   const students = useMemo(() => {
@@ -623,6 +648,17 @@ export default function CreateGroupSessionScreen() {
     </KeyboardAvoidingView>
   );
 
+  // Show loading while checking for active session
+  if (isCheckingActive) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Chargement...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       {/* Header */}
@@ -725,6 +761,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: theme.colors.background,
+  },
+
+  // Loading
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: theme.colors.textSecondary,
   },
 
   // Header

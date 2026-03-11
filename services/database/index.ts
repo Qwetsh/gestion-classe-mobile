@@ -130,6 +130,7 @@ export {
   // Group Session CRUD
   createGroupSession,
   getGroupSessionsByUserId,
+  getActiveGroupSession,
   getGroupSessionsByClassId,
   getGroupSessionById,
   updateGroupSessionStatus,

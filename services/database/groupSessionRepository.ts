@@ -162,6 +162,20 @@ export async function getGroupSessionsByUserId(userId: string): Promise<GroupSes
 }
 
 /**
+ * Get active group session for a user (status = 'active' or 'draft')
+ * Returns the most recent one if multiple exist
+ */
+export async function getActiveGroupSession(userId: string): Promise<GroupSession | null> {
+  const row = await queryFirst<GroupSessionRow>(
+    `SELECT * FROM group_sessions
+     WHERE user_id = ? AND status IN ('active', 'draft')
+     ORDER BY created_at DESC LIMIT 1`,
+    [userId]
+  );
+  return row ? rowToGroupSession(row) : null;
+}
+
+/**
  * Get all group sessions for a class
  */
 export async function getGroupSessionsByClassId(classId: string): Promise<GroupSession[]> {
