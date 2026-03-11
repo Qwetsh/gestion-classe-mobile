@@ -39,6 +39,24 @@ function formatDate(dateString: string): string {
   });
 }
 
+// Get period date range (same logic as parentMeetingStore)
+function getPeriodDates(period: string): { start: Date; end: Date } {
+  const now = new Date();
+  const year = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+
+  switch (period) {
+    case 'T1':
+      return { start: new Date(year, 8, 1), end: new Date(year, 11, 31) };
+    case 'T2':
+      return { start: new Date(year + 1, 0, 1), end: new Date(year + 1, 2, 31) };
+    case 'T3':
+      return { start: new Date(year + 1, 3, 1), end: new Date(year + 1, 6, 31) };
+    case 'year':
+    default:
+      return { start: new Date(year, 8, 1), end: new Date(year + 1, 6, 31) };
+  }
+}
+
 export default function StudentDashboardScreen() {
   const { studentId } = useLocalSearchParams<{ studentId: string }>();
   const {
@@ -68,14 +86,22 @@ export default function StudentDashboardScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId, selectedPeriod]);
 
-  // Load group session grades
+  // Load group session grades filtered by period
   useEffect(() => {
     const loadGroupGrades = async () => {
       if (!studentId) return;
       setIsLoadingGroupGrades(true);
       try {
-        const grades = await getStudentGrades(studentId);
-        setGroupGrades(grades);
+        const allGrades = await getStudentGrades(studentId);
+
+        // Filter by selected period
+        const { start, end } = getPeriodDates(selectedPeriod);
+        const filteredGrades = allGrades.filter(grade => {
+          const gradeDate = new Date(grade.completedAt);
+          return gradeDate >= start && gradeDate <= end;
+        });
+
+        setGroupGrades(filteredGrades);
       } catch (err) {
         console.error('Error loading group grades:', err);
       } finally {
@@ -83,7 +109,7 @@ export default function StudentDashboardScreen() {
       }
     };
     loadGroupGrades();
-  }, [studentId, getStudentGrades]);
+  }, [studentId, selectedPeriod, getStudentGrades]);
 
   const dashboard = currentDashboard;
   const student = dashboard?.student;
