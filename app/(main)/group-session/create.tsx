@@ -291,14 +291,21 @@ export default function CreateGroupSessionScreen() {
     setSelectedTemplateId(templateId);
 
     if (templateId) {
-      // Apply template criteria
+      // Apply template criteria (deduplicate by label in case of sync issues)
       const template = tpTemplates.find(t => t.id === templateId);
       if (template) {
-        const criteriaFromTemplate = template.criteria.map(c => ({
-          id: generateId(),
-          label: c.label,
-          maxPoints: c.maxPoints,
-        }));
+        const seenLabels = new Set<string>();
+        const criteriaFromTemplate = template.criteria
+          .filter(c => {
+            if (seenLabels.has(c.label)) return false;
+            seenLabels.add(c.label);
+            return true;
+          })
+          .map(c => ({
+            id: generateId(),
+            label: c.label,
+            maxPoints: c.maxPoints,
+          }));
         setTempCriteria(criteriaFromTemplate);
       }
     } else {
