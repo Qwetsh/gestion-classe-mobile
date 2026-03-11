@@ -15,7 +15,7 @@ import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { theme } from '../../../constants/theme';
 import { useAuthStore, useClassStore, useStudentStore, useGroupSessionStore, type StudentWithMapping } from '../../../stores';
-import { type TpTemplateWithCriteria, getActiveGroupSession } from '../../../services/database';
+import { type TpTemplateWithCriteria, getActiveGroupSession, getGroupSessionsByClassId, getGroupsBySessionId, getGroupMemberIds } from '../../../services/database';
 
 type CreationStep = 'config' | 'groups' | 'criteria';
 
@@ -61,6 +61,13 @@ export default function CreateGroupSessionScreen() {
   // Random groups modal
   const [showRandomModal, setShowRandomModal] = useState(false);
   const [studentsPerGroup, setStudentsPerGroup] = useState('3');
+
+  // Previous groups modal
+  const [showPreviousGroupsModal, setShowPreviousGroupsModal] = useState(false);
+  const [previousGroupsData, setPreviousGroupsData] = useState<{
+    sessionName: string;
+    groups: { name: string; memberIds: string[] }[];
+  } | null>(null);
 
   // Loading states
   const [isCreating, setIsCreating] = useState(false);
@@ -114,6 +121,49 @@ export default function CreateGroupSessionScreen() {
       loadStudentsForClass(selectedClassId);
     }
   }, [selectedClassId, loadStudentsForClass]);
+
+  // Check for previous sessions when class is selected
+  useEffect(() => {
+    const checkPreviousSessions = async () => {
+      if (!selectedClassId) {
+        setPreviousGroupsData(null);
+        return;
+      }
+
+      try {
+        const sessions = await getGroupSessionsByClassId(selectedClassId);
+        const completedSession = sessions
+          .filter(s => s.status === 'completed')
+          .sort((a, b) => {
+            const dateA = a.completedAt ? new Date(a.completedAt).getTime() : 0;
+            const dateB = b.completedAt ? new Date(b.completedAt).getTime() : 0;
+            return dateB - dateA;
+          })[0];
+
+        if (completedSession) {
+          const groups = await getGroupsBySessionId(completedSession.id);
+          if (groups.length > 0) {
+            const groupsWithMembers = await Promise.all(
+              groups.map(async (g) => ({
+                name: g.name,
+                memberIds: await getGroupMemberIds(g.id),
+              }))
+            );
+            setPreviousGroupsData({
+              sessionName: completedSession.name,
+              groups: groupsWithMembers,
+            });
+            // Show modal to propose copying groups
+            setShowPreviousGroupsModal(true);
+          }
+        }
+      } catch (error) {
+        console.error('[CreateGroupSession] Error checking previous sessions:', error);
+      }
+    };
+
+    checkPreviousSessions();
+  }, [selectedClassId]);
 
   // Initialize unassigned students when students load
   useEffect(() => {
@@ -258,23 +308,34 @@ export default function CreateGroupSessionScreen() {
   };
 
   // Copy groups from previous session
-  const handleCopyPreviousGroups = async () => {
-    if (!selectedClassId) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const handleCopyPreviousGroups = () => {
+    if (!previousGroupsData) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // Clear existing groups first
-    for (const group of tempGroups) {
-      setUnassignedStudentIds(prev => [...prev, ...group.memberIds]);
-    }
-    setTempGroups([]);
+    // Filter out students that don't exist anymore (removed from class)
+    const currentStudentIds = new Set(students.map((s: StudentWithMapping) => s.id));
 
-    // We need to create a temp session to use the store function
-    // For now, just load previous session groups manually
-    const previousSessions = await useGroupSessionStore.getState().sessions;
-    // This is a simplified version - the store function needs the session to be active
-    // Let's just import the database function directly
+    const newGroups: TempGroup[] = previousGroupsData.groups.map((g, index) => ({
+      id: generateId(),
+      name: g.name,
+      memberIds: g.memberIds.filter(id => currentStudentIds.has(id)),
+    }));
 
-    Alert.alert('Info', 'Pour reprendre la configuration précédente, les groupes seront copiés de la dernière séance terminée de cette classe.');
+    // Find students that were in groups but no longer exist
+    const assignedStudentIds = new Set(newGroups.flatMap(g => g.memberIds));
+    const unassigned = students
+      .filter((s: StudentWithMapping) => !assignedStudentIds.has(s.id))
+      .map((s: StudentWithMapping) => s.id);
+
+    setTempGroups(newGroups);
+    setUnassignedStudentIds(unassigned);
+    setShowPreviousGroupsModal(false);
+    setSelectedGroupIndex(0);
+  };
+
+  // Decline copying previous groups
+  const handleDeclinePreviousGroups = () => {
+    setShowPreviousGroupsModal(false);
   };
 
   // Handle random groups
@@ -748,6 +809,42 @@ export default function CreateGroupSessionScreen() {
                 onPress={handleCreateRandomGroups}
               >
                 <Text style={styles.modalConfirmText}>Créer</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* Previous groups modal */}
+      {showPreviousGroupsModal && previousGroupsData && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modal}>
+            <Text style={styles.modalTitle}>Reprendre les groupes ?</Text>
+            <Text style={styles.modalSubtitle}>
+              Des groupes existent de la séance "{previousGroupsData.sessionName}"
+            </Text>
+
+            <View style={styles.previousGroupsList}>
+              {previousGroupsData.groups.map((g, index) => (
+                <View key={index} style={styles.previousGroupItem}>
+                  <Text style={styles.previousGroupName}>{g.name}</Text>
+                  <Text style={styles.previousGroupCount}>{g.memberIds.length} élèves</Text>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.modalButtons}>
+              <Pressable
+                style={styles.modalCancelButton}
+                onPress={handleDeclinePreviousGroups}
+              >
+                <Text style={styles.modalCancelText}>Non, créer</Text>
+              </Pressable>
+              <Pressable
+                style={styles.modalConfirmButton}
+                onPress={handleCopyPreviousGroups}
+              >
+                <Text style={styles.modalConfirmText}>Oui, reprendre</Text>
               </Pressable>
             </View>
           </View>
@@ -1276,5 +1373,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: theme.colors.textInverse,
+  },
+
+  // Previous groups modal
+  previousGroupsList: {
+    marginBottom: theme.spacing.lg,
+  },
+  previousGroupItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.md,
+    marginBottom: theme.spacing.xs,
+  },
+  previousGroupName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: theme.colors.text,
+  },
+  previousGroupCount: {
+    fontSize: 12,
+    color: theme.colors.textSecondary,
   },
 });
