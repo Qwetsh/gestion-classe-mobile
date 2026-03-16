@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { Platform } from 'react-native';
-import * as Device from 'expo-device';
 import {
   signUp as supabaseSignUp,
   signIn as supabaseSignIn,
@@ -10,31 +9,41 @@ import {
 } from '../services/supabase';
 import { supabase } from '../services/supabase';
 
-function getDeviceInfo(): string {
-  const parts = [
-    Platform.OS,
-    Platform.Version,
-    Device.modelName,
-    Device.manufacturer,
-    Device.osName,
-    Device.osVersion,
-  ].filter(Boolean);
-  return parts.join(' / ');
+async function getDeviceInfo(): Promise<string> {
+  try {
+    const Device = await import('expo-device');
+    const parts = [
+      Platform.OS,
+      String(Platform.Version),
+      Device.modelName,
+      Device.manufacturer,
+      Device.osName,
+      Device.osVersion,
+    ].filter(Boolean);
+    return parts.join(' / ') || Platform.OS;
+  } catch {
+    return Platform.OS;
+  }
 }
 
-function trackDevice(user: AuthUser) {
-  if (!supabase) return;
-  supabase.rpc('track_user_activity', {
-    p_user_id: user.id,
-    p_user_email: user.email,
-    p_device_info: getDeviceInfo(),
-  }).catch(() => {});
-  supabase.rpc('log_device_connection', {
-    p_user_id: user.id,
-    p_user_email: user.email,
-    p_device_info: getDeviceInfo(),
-    p_platform: 'mobile',
-  }).catch(() => {});
+async function trackDevice(user: AuthUser) {
+  try {
+    if (!supabase) return;
+    const deviceInfo = await getDeviceInfo();
+    supabase.rpc('track_user_activity', {
+      p_user_id: user.id,
+      p_user_email: user.email,
+      p_device_info: deviceInfo,
+    }).catch(() => {});
+    supabase.rpc('log_device_connection', {
+      p_user_id: user.id,
+      p_user_email: user.email,
+      p_device_info: deviceInfo,
+      p_platform: 'mobile',
+    }).catch(() => {});
+  } catch {
+    // Never block auth flow
+  }
 }
 
 interface AuthState {

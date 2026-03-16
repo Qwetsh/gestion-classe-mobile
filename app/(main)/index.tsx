@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { useAuthStore, useClassStore, useSessionStore, useSyncStore } from '../../stores';
 import { theme } from '../../constants/theme';
-import { SyncButton, FeedbackButton } from '../../components';
+import { SyncButton } from '../../components';
 
 export default function HomeScreen() {
   const { user, signOut, isLoading: authLoading } = useAuthStore();
@@ -252,8 +252,7 @@ export default function HomeScreen() {
         <SyncButton />
       </View>
 
-      {/* Feedback FAB */}
-      <FeedbackButton />
+      {/* TODO: FeedbackButton re-add after debug */}
     </SafeAreaView>
   );
 }
