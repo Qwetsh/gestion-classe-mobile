@@ -63,18 +63,18 @@ export function FeedbackButton() {
 
   return (
     <>
-      {/* Floating button */}
+      {/* Footer button */}
       <Pressable
-        style={({ pressed }) => [styles.fab, pressed && styles.fabPressed]}
+        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
         onPress={() => setShowModal(true)}
       >
         <LinearGradient
           colors={theme.gradients.primary}
           start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.fabGradient}
+          end={{ x: 1, y: 0 }}
+          style={styles.buttonGradient}
         >
-          <Text style={styles.fabText}>💬</Text>
+          <Text style={styles.buttonText}>💬  Envoyer un retour</Text>
         </LinearGradient>
       </Pressable>
 
@@ -163,7 +163,7 @@ export function FeedbackButton() {
                   </View>
 
                   {/* Footer */}
-                  <View style={styles.footer}>
+                  <View style={styles.modalFooter}>
                     <Pressable style={styles.cancelBtn} onPress={handleClose}>
                       <Text style={styles.cancelBtnText}>Annuler</Text>
                     </Pressable>
@@ -200,29 +200,24 @@ export function FeedbackButton() {
 }
 
 const styles = StyleSheet.create({
-  // FAB
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    ...theme.shadows.md,
-    zIndex: 40,
+  // Footer button
+  button: {
+    borderRadius: theme.radius.xl,
+    overflow: 'hidden',
+    ...theme.shadows.sm,
   },
-  fabPressed: {
-    transform: [{ scale: 1.1 }],
+  buttonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
   },
-  fabGradient: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: 'center',
+  buttonGradient: {
+    paddingVertical: theme.spacing.md,
     alignItems: 'center',
   },
-  fabText: {
-    fontSize: 24,
+  buttonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: theme.colors.textInverse,
   },
 
   // Modal
@@ -326,8 +321,8 @@ const styles = StyleSheet.create({
     minHeight: 120,
   },
 
-  // Footer
-  footer: {
+  // Modal footer
+  modalFooter: {
     flexDirection: 'row',
     padding: 16,
     gap: 12,

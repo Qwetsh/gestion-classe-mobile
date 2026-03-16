@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { useAuthStore, useClassStore, useSessionStore, useSyncStore } from '../../stores';
 import { theme } from '../../constants/theme';
-import { SyncButton, FeedbackButton } from '../../components';
+import { FeedbackButton, AnnouncementBanner } from '../../components';
 
 export default function HomeScreen() {
   const { user, signOut, isLoading: authLoading } = useAuthStore();
@@ -112,6 +112,11 @@ export default function HomeScreen() {
             <Text style={styles.profileButtonText}>👤</Text>
           )}
         </Pressable>
+      </View>
+
+      {/* Announcements */}
+      <View style={styles.announcements}>
+        <AnnouncementBanner />
       </View>
 
       {/* Main Content */}
@@ -249,11 +254,8 @@ export default function HomeScreen() {
 
       {/* Footer */}
       <View style={styles.footer}>
-        <SyncButton />
+        <FeedbackButton />
       </View>
-
-      {/* Feedback FAB */}
-      <FeedbackButton />
     </SafeAreaView>
   );
 }
@@ -298,6 +300,11 @@ const styles = StyleSheet.create({
   },
   profileButtonText: {
     fontSize: 20,
+  },
+
+  // Announcements
+  announcements: {
+    paddingHorizontal: theme.spacing.lg,
   },
 
   // Main Content
