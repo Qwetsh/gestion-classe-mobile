@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { Platform } from 'react-native';
+import * as Device from 'expo-device';
 import {
   signUp as supabaseSignUp,
   signIn as supabaseSignIn,
@@ -6,6 +8,34 @@ import {
   getCurrentUser,
   type AuthUser,
 } from '../services/supabase';
+import { supabase } from '../services/supabase';
+
+function getDeviceInfo(): string {
+  const parts = [
+    Platform.OS,
+    Platform.Version,
+    Device.modelName,
+    Device.manufacturer,
+    Device.osName,
+    Device.osVersion,
+  ].filter(Boolean);
+  return parts.join(' / ');
+}
+
+function trackDevice(user: AuthUser) {
+  if (!supabase) return;
+  supabase.rpc('track_user_activity', {
+    p_user_id: user.id,
+    p_user_email: user.email,
+    p_device_info: getDeviceInfo(),
+  }).catch(() => {});
+  supabase.rpc('log_device_connection', {
+    p_user_id: user.id,
+    p_user_email: user.email,
+    p_device_info: getDeviceInfo(),
+    p_platform: 'mobile',
+  }).catch(() => {});
+}
 
 interface AuthState {
   // State
@@ -44,6 +74,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         isLoading: false,
         error: null,
       });
+      trackDevice(result.data);
       return true;
     } else {
       set({
@@ -67,6 +98,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         isLoading: false,
         error: null,
       });
+      trackDevice(result.data);
       return true;
     } else {
       set({
@@ -104,6 +136,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         isLoading: false,
         isInitialized: true,
       });
+      trackDevice(result.data);
     } else {
       set({
         isAuthenticated: false,
