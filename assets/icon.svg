@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.95"/>
+      <stop offset="100%" style="stop-color:#E0E7FF;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="center" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#4F46E5"/>
+    </linearGradient>
+    <!-- Soft glow -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softShadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#4F46E5" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+
+  <!-- Subtle grid pattern (classroom reference) -->
+  <g opacity="0.06">
+    <line x1="256" y1="0" x2="256" y2="1024" stroke="white" stroke-width="2"/>
+    <line x1="512" y1="0" x2="512" y2="1024" stroke="white" stroke-width="2"/>
+    <line x1="768" y1="0" x2="768" y2="1024" stroke="white" stroke-width="2"/>
+    <line x1="0" y1="256" x2="1024" y2="256" stroke="white" stroke-width="2"/>
+    <line x1="0" y1="512" x2="1024" y2="512" stroke="white" stroke-width="2"/>
+    <line x1="0" y1="768" x2="1024" y2="768" stroke="white" stroke-width="2"/>
+  </g>
+
+  <!-- Outer ring (radial menu representation) -->
+  <circle cx="512" cy="480" r="300" fill="none" stroke="url(#ring)" stroke-width="48" opacity="0.25" filter="url(#softShadow)"/>
+
+  <!-- Radial menu segments - 5 action dots around the ring -->
+  <!-- Participation (green) - top -->
+  <circle cx="512" cy="180" r="42" fill="#34D399" opacity="0.95" filter="url(#glow)"/>
+  <text x="512" y="194" text-anchor="middle" fill="white" font-size="36" font-weight="bold">+</text>
+
+  <!-- Bavardage (orange) - top right -->
+  <circle cx="772" cy="330" r="42" fill="#FB923C" opacity="0.95" filter="url(#glow)"/>
+  <text x="772" y="344" text-anchor="middle" fill="white" font-size="36" font-weight="bold">-</text>
+
+  <!-- Absence (red) - bottom right -->
+  <circle cx="720" cy="630" r="42" fill="#F87171" opacity="0.95" filter="url(#glow)"/>
+  <text x="720" y="642" text-anchor="middle" fill="white" font-size="28" font-weight="bold">A</text>
+
+  <!-- Sortie (blue) - bottom left -->
+  <circle cx="304" cy="630" r="42" fill="#60A5FA" opacity="0.95" filter="url(#glow)"/>
+  <path d="M290 630 L318 630 M304 616 L304 644" stroke="white" stroke-width="4" stroke-linecap="round" transform="rotate(45,304,630)" opacity="0"/>
+  <text x="304" y="642" text-anchor="middle" fill="white" font-size="28" font-weight="bold">S</text>
+
+  <!-- Remarque (purple) - top left -->
+  <circle cx="252" cy="330" r="42" fill="#C084FC" opacity="0.95" filter="url(#glow)"/>
+  <text x="252" y="344" text-anchor="middle" fill="white" font-size="28" font-weight="bold">R</text>
+
+  <!-- Center circle (student avatar placeholder) -->
+  <circle cx="512" cy="480" r="110" fill="url(#center)" filter="url(#softShadow)"/>
+  <circle cx="512" cy="480" r="106" fill="white" opacity="0.15"/>
+
+  <!-- Student silhouette in center -->
+  <circle cx="512" cy="445" r="36" fill="white" opacity="0.9"/>
+  <path d="M460 520 Q460 485 512 485 Q564 485 564 520 L564 530 Q564 540 554 540 L470 540 Q460 540 460 530 Z" fill="white" opacity="0.9"/>
+
+  <!-- App name at bottom -->
+  <text x="512" y="870" text-anchor="middle" fill="white" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="800" letter-spacing="4" opacity="0.95">CLASSE</text>
+  <text x="512" y="930" text-anchor="middle" fill="white" font-family="system-ui, -apple-system, sans-serif" font-size="40" font-weight="400" letter-spacing="8" opacity="0.6">GESTION</text>
+</svg>

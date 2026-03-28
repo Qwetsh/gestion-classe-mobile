@@ -15,6 +15,9 @@ export {
   EVENT_TYPES,
   SORTIE_SUBTYPES,
   GROUP_SESSION_STATUSES,
+  STAMP_CARD_STATUSES,
+  DEFAULT_STAMP_CATEGORIES,
+  DEFAULT_BONUSES,
 } from './schema';
 
 // Migrations
@@ -200,3 +203,51 @@ export {
   type TpTemplateCriteria,
   type TpTemplateWithCriteria,
 } from './tpTemplateRepository';
+
+// Stamp Cards (Carte à tampons / Récompenses)
+export {
+  // Seed
+  seedDefaultStampData,
+  // Categories CRUD
+  getStampCategories,
+  createStampCategory,
+  updateStampCategory,
+  deleteStampCategory,
+  // Bonuses CRUD
+  getBonuses,
+  createBonus,
+  updateBonus,
+  deleteBonus,
+  // Cards
+  getOrCreateActiveCard,
+  getActiveCardWithStamps,
+  getCompletedCards,
+  getAllActiveCards,
+  // Stamps
+  awardStamp,
+  removeLastStamp,
+  // Bonus selections
+  selectBonus,
+  markBonusUsed,
+  getPendingBonusSelections,
+  // Sync helpers
+  getUnsyncedStampCategories,
+  getUnsyncedBonuses,
+  getUnsyncedStampCards,
+  getUnsyncedStamps,
+  getUnsyncedBonusSelections,
+  markStampCategoriesSynced,
+  markBonusesSynced,
+  markStampCardsSynced,
+  markStampsSynced,
+  markBonusSelectionsSynced,
+  // Types
+  type StampCategory,
+  type Bonus,
+  type StampCard,
+  type Stamp,
+  type BonusSelection,
+  type StampWithCategory,
+  type StampCardWithStamps,
+  type CompletedCardSummary,
+} from './stampRepository';

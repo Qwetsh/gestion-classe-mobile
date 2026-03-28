@@ -19,9 +19,11 @@ export interface RadialMenuSelection {
   itemId: string;
   parentId?: string; // For submenu items
   label: string;
+  isBonus?: boolean; // true when participation held long enough for bonus
 }
 
 const SUBMENU_HOVER_DELAY = 300;
+const BONUS_FILL_DURATION = 1500; // ms to fill the arc for bonus
 
 export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => void) {
   const [menuState, setMenuState] = useState<MenuState>('closed');
@@ -82,6 +84,11 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   const submenuScale = useRef(new Animated.Value(0)).current;
   const submenuOpacity = useRef(new Animated.Value(0)).current;
 
+  // Bonus fill progress for participation long-press (0 → 1)
+  const bonusFillProgress = useRef(new Animated.Value(0)).current;
+  const bonusFillAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+  const bonusFilledRef = useRef(false);
+
   // Keep refs in sync with state
   useEffect(() => {
     menuStateRef.current = menuState;
@@ -94,6 +101,31 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   useEffect(() => {
     activeSubmenuRef.current = activeSubmenu;
   }, [activeSubmenu]);
+
+  const startBonusFill = useCallback(() => {
+    bonusFillProgress.setValue(0);
+    bonusFilledRef.current = false;
+    bonusFillAnimRef.current = Animated.timing(bonusFillProgress, {
+      toValue: 1,
+      duration: BONUS_FILL_DURATION,
+      useNativeDriver: false, // needed for non-transform/opacity props
+    });
+    bonusFillAnimRef.current.start(({ finished }) => {
+      if (finished) {
+        bonusFilledRef.current = true;
+        triggerSuccessFeedback();
+      }
+    });
+  }, [bonusFillProgress]);
+
+  const stopBonusFill = useCallback(() => {
+    if (bonusFillAnimRef.current) {
+      bonusFillAnimRef.current.stop();
+      bonusFillAnimRef.current = null;
+    }
+    bonusFillProgress.setValue(0);
+    bonusFilledRef.current = false;
+  }, [bonusFillProgress]);
 
   const clearSubmenuTimeout = useCallback(() => {
     if (submenuTimeoutRef.current) {
@@ -142,6 +174,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
 
   const closeMenu = useCallback(() => {
     clearSubmenuTimeout();
+    stopBonusFill();
 
     // Clear any existing close timeout
     if (closeMenuTimeoutRef.current) {
@@ -186,7 +219,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
       lastHoveredIdRef.current = null;
       closeMenuTimeoutRef.current = null;
     }, 150);
-  }, [menuScale, menuOpacity, submenuScale, submenuOpacity, clearSubmenuTimeout]);
+  }, [menuScale, menuOpacity, submenuScale, submenuOpacity, clearSubmenuTimeout, stopBonusFill]);
 
   const openSubmenu = useCallback((item: MenuItemType) => {
     setActiveSubmenu(item);
@@ -279,11 +312,21 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     const item = getItemAtPosition(touchX, touchY, currentItems, centerX, centerY, radius);
 
     if (item && item.id !== lastHoveredIdRef.current) {
+      // Leaving previous item - stop bonus fill if it was participation
+      if (lastHoveredIdRef.current === 'participation') {
+        stopBonusFill();
+      }
+
       lastHoveredIdRef.current = item.id;
       setHoveredItem(item);
       triggerLightFeedback();
 
       clearSubmenuTimeout();
+
+      // Start bonus fill when hovering on participation
+      if (item.id === 'participation' && currentMenuState === 'open') {
+        startBonusFill();
+      }
 
       if (item.subItems && item.subItems.length > 0 && currentMenuState === 'open') {
         submenuTimeoutRef.current = setTimeout(() => {
@@ -291,11 +334,14 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
         }, SUBMENU_HOVER_DELAY);
       }
     } else if (!item && lastHoveredIdRef.current) {
+      if (lastHoveredIdRef.current === 'participation') {
+        stopBonusFill();
+      }
       lastHoveredIdRef.current = null;
       setHoveredItem(null);
       clearSubmenuTimeout();
     }
-  }, [getItemAtPosition, openSubmenu, clearSubmenuTimeout]);
+  }, [getItemAtPosition, openSubmenu, clearSubmenuTimeout, startBonusFill, stopBonusFill]);
 
   const handleSelection = useCallback((touchX: number, touchY: number) => {
     const currentMenuState = menuStateRef.current;
@@ -333,14 +379,18 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
         return;
       }
 
+      const isBonus = item.id === 'participation' && bonusFilledRef.current;
+
       const selection: RadialMenuSelection = {
         itemId: item.id,
         parentId: currentMenuState === 'submenu' ? currentActiveSubmenu?.id : undefined,
         label: currentMenuState === 'submenu' && currentActiveSubmenu
           ? `${currentActiveSubmenu.label} > ${item.label}`
           : item.label,
+        isBonus,
       };
 
+      stopBonusFill();
       setSelectedItem(item);
       triggerSuccessFeedback();
 
@@ -351,9 +401,10 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
 
       closeMenu();
     } else {
+      stopBonusFill();
       closeMenu();
     }
-  }, [getItemAtPosition, openSubmenu, closeMenu, clearSubmenuTimeout]);
+  }, [getItemAtPosition, openSubmenu, closeMenu, clearSubmenuTimeout, stopBonusFill]);
 
   return {
     menuState,
@@ -366,6 +417,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     menuOpacity,
     submenuScale,
     submenuOpacity,
+    bonusFillProgress,
     openMenu,
     closeMenu,
     handleTouchMove,

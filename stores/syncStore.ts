@@ -63,6 +63,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         groupGradesSync: 0,
         tpTemplatesSync: 0,
         tpTemplateCriteriaSync: 0,
+        stampCategoriesSync: 0,
+        bonusesSync: 0,
+        stampCardsSync: 0,
+        stampsSync: 0,
+        bonusSelectionsSync: 0,
         errors: ['Synchronisation deja en cours'],
       };
     }
@@ -122,6 +127,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         groupGradesSync: 0,
         tpTemplatesSync: 0,
         tpTemplateCriteriaSync: 0,
+        stampCategoriesSync: 0,
+        bonusesSync: 0,
+        stampCardsSync: 0,
+        stampsSync: 0,
+        bonusSelectionsSync: 0,
         errors: [errorMessage],
       };
     }

@@ -30,9 +30,9 @@ export function RadialMenuItem({
 
   useEffect(() => {
     Animated.spring(hoverScale, {
-      toValue: isHovered ? 1.3 : 1,
-      damping: 15,
-      stiffness: 300,
+      toValue: isHovered ? 1.2 : 1,
+      damping: 18,
+      stiffness: 280,
       useNativeDriver: true,
     }).start();
   }, [isHovered, hoverScale]);
@@ -70,18 +70,25 @@ export function RadialMenuItem({
         styles.itemContainer,
         animatedStyle,
         {
-          backgroundColor: isHovered ? item.color : `${item.color}99`,
-          borderColor: isHovered ? '#FFFFFF' : 'transparent',
-          borderWidth: isHovered ? 4 : 0,
-          // Add shadow when hovered
-          shadowOpacity: isHovered ? 0.5 : 0.25,
-          shadowRadius: isHovered ? 8 : 4,
-          elevation: isHovered ? 10 : 5,
+          backgroundColor: isHovered ? item.color : `${item.color}20`,
+          borderColor: isHovered ? `${item.color}` : 'rgba(255,255,255,0.15)',
+          borderWidth: 1.5,
+          shadowColor: isHovered ? item.color : '#000',
+          shadowOpacity: isHovered ? 0.4 : 0.1,
+          shadowRadius: isHovered ? 12 : 4,
+          elevation: isHovered ? 8 : 3,
         },
       ]}
     >
       <Text style={[styles.icon, isHovered && styles.iconHovered]}>{item.icon}</Text>
-      <Text style={[styles.label, isHovered && styles.labelHovered]} numberOfLines={1}>
+      <Text
+        style={[
+          styles.label,
+          isHovered && styles.labelHovered,
+          { color: isHovered ? '#FFFFFF' : 'rgba(255,255,255,0.9)' },
+        ]}
+        numberOfLines={1}
+      >
         {item.label}
       </Text>
       {item.subItems && (
@@ -101,25 +108,23 @@ const styles = StyleSheet.create({
     borderRadius: ITEM_SIZE / 2,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
   },
   icon: {
-    fontSize: 24,
+    fontSize: 22,
     marginBottom: 2,
   },
   iconHovered: {
-    fontSize: 28,
+    fontSize: 26,
   },
   label: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
-    color: '#FFFFFF',
     textAlign: 'center',
     maxWidth: ITEM_SIZE - 8,
   },
   labelHovered: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 'bold',
   },
   submenuIndicator: {
@@ -129,12 +134,12 @@ const styles = StyleSheet.create({
     width: 16,
     height: 16,
     borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.3)',
+    backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   submenuIndicatorHovered: {
-    backgroundColor: 'rgba(255,255,255,0.6)',
+    backgroundColor: 'rgba(255,255,255,0.5)',
   },
   submenuArrow: {
     fontSize: 14,

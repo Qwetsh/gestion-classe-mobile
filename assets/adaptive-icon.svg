@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff;stop-opacity:0.95"/>
+      <stop offset="100%" style="stop-color:#E0E7FF;stop-opacity:0.9"/>
+    </linearGradient>
+    <linearGradient id="center" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#4F46E5"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="softShadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#4F46E5" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Transparent background - Android provides its own -->
+  <!-- Content centered with safe zone margins (inner 66% = ~338px margin) -->
+
+  <!-- Outer ring -->
+  <circle cx="512" cy="512" r="280" fill="none" stroke="url(#ring)" stroke-width="44" opacity="0.3" filter="url(#softShadow)"/>
+
+  <!-- 5 action dots -->
+  <circle cx="512" cy="232" r="38" fill="#34D399" opacity="0.95" filter="url(#glow)"/>
+  <text x="512" y="245" text-anchor="middle" fill="white" font-size="32" font-weight="bold">+</text>
+
+  <circle cx="778" cy="380" r="38" fill="#FB923C" opacity="0.95" filter="url(#glow)"/>
+  <text x="778" y="393" text-anchor="middle" fill="white" font-size="32" font-weight="bold">-</text>
+
+  <circle cx="676" cy="680" r="38" fill="#F87171" opacity="0.95" filter="url(#glow)"/>
+  <text x="676" y="692" text-anchor="middle" fill="white" font-size="26" font-weight="bold">A</text>
+
+  <circle cx="348" cy="680" r="38" fill="#60A5FA" opacity="0.95" filter="url(#glow)"/>
+  <text x="348" y="692" text-anchor="middle" fill="white" font-size="26" font-weight="bold">S</text>
+
+  <circle cx="246" cy="380" r="38" fill="#C084FC" opacity="0.95" filter="url(#glow)"/>
+  <text x="246" y="393" text-anchor="middle" fill="white" font-size="26" font-weight="bold">R</text>
+
+  <!-- Center circle -->
+  <circle cx="512" cy="512" r="100" fill="url(#center)" filter="url(#softShadow)"/>
+  <circle cx="512" cy="512" r="96" fill="white" opacity="0.15"/>
+
+  <!-- Student silhouette -->
+  <circle cx="512" cy="480" r="32" fill="white" opacity="0.9"/>
+  <path d="M466 548 Q466 516 512 516 Q558 516 558 548 L558 556 Q558 564 550 564 L474 564 Q466 564 466 556 Z" fill="white" opacity="0.9"/>
+</svg>

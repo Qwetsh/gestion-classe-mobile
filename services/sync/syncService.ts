@@ -20,6 +20,11 @@ export interface SyncResult {
   groupGradesSync: number;
   tpTemplatesSync: number;
   tpTemplateCriteriaSync: number;
+  stampCategoriesSync: number;
+  bonusesSync: number;
+  stampCardsSync: number;
+  stampsSync: number;
+  bonusSelectionsSync: number;
   errors: string[];
 }
 
@@ -43,7 +48,12 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM tp_templates WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL)
+      (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM stamp_categories WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM bonuses WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM stamp_cards WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM stamps WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM bonus_selections WHERE synced_at IS NULL)
     ) as total
   `);
 
@@ -69,6 +79,11 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     groupGradesSync: 0,
     tpTemplatesSync: 0,
     tpTemplateCriteriaSync: 0,
+    stampCategoriesSync: 0,
+    bonusesSync: 0,
+    stampCardsSync: 0,
+    stampsSync: 0,
+    bonusSelectionsSync: 0,
     errors: [],
   };
 
@@ -119,6 +134,21 @@ export async function syncAll(userId: string): Promise<SyncResult> {
 
     // 14. Sync TP template criteria (depends on tp_templates)
     result.tpTemplateCriteriaSync = await syncTpTemplateCriteria();
+
+    // 15. Sync stamp categories
+    result.stampCategoriesSync = await syncStampCategories(userId);
+
+    // 16. Sync bonuses
+    result.bonusesSync = await syncBonuses(userId);
+
+    // 17. Sync stamp cards (depends on students)
+    result.stampCardsSync = await syncStampCards(userId);
+
+    // 18. Sync stamps (depends on stamp_cards and stamp_categories)
+    result.stampsSync = await syncStamps(userId);
+
+    // 19. Sync bonus selections (depends on stamp_cards and bonuses)
+    result.bonusSelectionsSync = await syncBonusSelections(userId);
 
     if (__DEV__) {
       console.log('[syncService] Sync complete:', result);
@@ -1012,6 +1042,144 @@ async function syncTpTemplateCriteria(): Promise<number> {
   );
 
   return toSync.length;
+}
+
+// ============================================
+// Stamp Cards sync functions
+// ============================================
+
+async function syncStampCategories(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; label: string; icon: string; color: string; display_order: number; is_active: number; created_at: string;
+  }>('SELECT id, label, icon, color, display_order, is_active, created_at FROM stamp_categories WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map(c => ({
+    id: c.id, user_id: userId, label: c.label, icon: c.icon, color: c.color,
+    display_order: c.display_order, is_active: c.is_active === 1, created_at: c.created_at,
+  }));
+
+  const { error } = await supabase.from('stamp_categories').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Stamp categories sync error:', error); throw new Error(`Stamp categories: ${error.message}`); }
+
+  const now = new Date().toISOString();
+  const ids = unsynced.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE stamp_categories SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  return unsynced.length;
+}
+
+async function syncBonuses(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; label: string; display_order: number; is_active: number; created_at: string;
+  }>('SELECT id, label, display_order, is_active, created_at FROM bonuses WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map(b => ({
+    id: b.id, user_id: userId, label: b.label,
+    display_order: b.display_order, is_active: b.is_active === 1, created_at: b.created_at,
+  }));
+
+  const { error } = await supabase.from('bonuses').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Bonuses sync error:', error); throw new Error(`Bonuses: ${error.message}`); }
+
+  const now = new Date().toISOString();
+  const ids = unsynced.map(b => b.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE bonuses SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  return unsynced.length;
+}
+
+async function syncStampCards(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; student_id: string; card_number: number; status: string; completed_at: string | null; created_at: string;
+  }>('SELECT id, student_id, card_number, status, completed_at, created_at FROM stamp_cards WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map(c => ({
+    id: c.id, student_id: c.student_id, user_id: userId,
+    card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+  }));
+
+  const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
+
+  const now = new Date().toISOString();
+  const ids = unsynced.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  return unsynced.length;
+}
+
+async function syncStamps(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; card_id: string; student_id: string; category_id: string | null; slot_number: number; awarded_at: string;
+  }>('SELECT id, card_id, student_id, category_id, slot_number, awarded_at FROM stamps WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  // Filter: only sync stamps whose card is already synced on server
+  const cardIds = [...new Set(unsynced.map(s => s.card_id))];
+  const { data: syncedCards } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
+  const serverCardIds = new Set((syncedCards || []).map(c => c.id));
+
+  const toSync = unsynced
+    .filter(s => serverCardIds.has(s.card_id))
+    .map(s => ({
+      id: s.id, card_id: s.card_id, student_id: s.student_id, user_id: userId,
+      category_id: s.category_id, slot_number: s.slot_number, awarded_at: s.awarded_at,
+    }));
+
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase.from('stamps').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Stamps sync error:', error); throw new Error(`Stamps: ${error.message}`); }
+
+  const now = new Date().toISOString();
+  const ids = toSync.map(s => s.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE stamps SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  return toSync.length;
+}
+
+async function syncBonusSelections(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; card_id: string; bonus_id: string | null; student_id: string; selected_at: string; used_at: string | null;
+  }>('SELECT id, card_id, bonus_id, student_id, selected_at, used_at FROM bonus_selections WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  if (unsynced.length === 0) return 0;
+
+  const toSync = unsynced.map(bs => ({
+    id: bs.id, card_id: bs.card_id, bonus_id: bs.bonus_id, student_id: bs.student_id, user_id: userId,
+    selected_at: bs.selected_at, used_at: bs.used_at,
+  }));
+
+  const { error } = await supabase.from('bonus_selections').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Bonus selections sync error:', error); throw new Error(`Bonus selections: ${error.message}`); }
+
+  const now = new Date().toISOString();
+  const ids = unsynced.map(bs => bs.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE bonus_selections SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  return unsynced.length;
 }
 
 /**

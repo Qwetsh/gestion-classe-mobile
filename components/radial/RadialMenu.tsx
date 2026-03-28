@@ -3,6 +3,7 @@ import { StyleSheet, View, Animated } from 'react-native';
 import { MENU_ITEMS, MenuItemType, MENU_RADIUS } from '../../constants/menuItems';
 import { RadialMenuItem } from './RadialMenuItem';
 import { SubMenu } from './SubMenu';
+import { SegmentedRing } from './SegmentedRing';
 import { MenuState, EdgeProximity } from '../../hooks/useRadialMenu';
 
 interface RadialMenuProps {
@@ -16,6 +17,7 @@ interface RadialMenuProps {
   menuOpacity: Animated.Value;
   submenuScale: Animated.Value;
   submenuOpacity: Animated.Value;
+  bonusFillProgress: Animated.Value;
 }
 
 export function RadialMenu({
@@ -29,8 +31,15 @@ export function RadialMenu({
   menuOpacity,
   submenuScale,
   submenuOpacity,
+  bonusFillProgress,
 }: RadialMenuProps) {
   if (!visible && menuState === 'closed') return null;
+
+  const hoveredIndex = hoveredItem
+    ? MENU_ITEMS.findIndex((item) => item.id === hoveredItem.id)
+    : activeSubmenu
+      ? MENU_ITEMS.findIndex((item) => item.id === activeSubmenu.id)
+      : null;
 
   return (
     <Animated.View
@@ -49,7 +58,12 @@ export function RadialMenu({
           },
         ]}
       >
-        <View style={styles.centerDot} />
+        <SegmentedRing
+          menuScale={menuScale}
+          menuOpacity={menuOpacity}
+          hoveredIndex={hoveredIndex != null && hoveredIndex >= 0 ? hoveredIndex : null}
+          bonusFillProgress={bonusFillProgress}
+        />
 
         {MENU_ITEMS.map((item, index) => (
           <RadialMenuItem
@@ -85,20 +99,11 @@ export function RadialMenu({
 const styles = StyleSheet.create({
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
   },
   menuContainer: {
     position: 'absolute',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  centerDot: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    borderWidth: 2,
-    borderColor: 'rgba(0, 0, 0, 0.3)',
   },
 });

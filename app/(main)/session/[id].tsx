@@ -26,6 +26,7 @@ import {
   useSessionStore,
   useOralEvaluationStore,
   useGroupSessionStore,
+  useStampStore,
   ORAL_GRADE_LABELS,
   StudentWithMapping,
   type ActiveSessionState,
@@ -180,6 +181,9 @@ function NativeSessionScreen() {
     resetClassEvaluations,
   } = useOralEvaluationStore();
 
+  // Stamp store
+  const { categories: stampCategories, loadCategories: loadStampCategories, doAwardStamp } = useStampStore();
+
   // View mode toggle (plan de classe vs groupes)
   const [viewMode, setViewMode] = useState<'plan' | 'groups'>('plan');
   const [linkedGroupSession, setLinkedGroupSession] = useState<ActiveSessionState | null>(null);
@@ -203,6 +207,11 @@ function NativeSessionScreen() {
   const [showRemarqueModal, setShowRemarqueModal] = useState(false);
   const [remarqueText, setRemarqueText] = useState('');
   const [remarquePhotoUri, setRemarquePhotoUri] = useState<string | null>(null);
+
+  // Bonus participation modal
+  const [showBonusModal, setShowBonusModal] = useState(false);
+  const [bonusPoints, setBonusPoints] = useState('3');
+  const [bonusReason, setBonusReason] = useState('');
   const [timerTick, setTimerTick] = useState(0); // For updating sortie timers
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoQuality, setPhotoQuality] = useState<PhotoQuality>('minimal');
@@ -227,6 +236,12 @@ function NativeSessionScreen() {
   const [deleteStudent, setDeleteStudent] = useState<StudentWithMapping | null>(null);
   const [studentEvents, setStudentEvents] = useState<Event[]>([]);
   const [isDeletingEvent, setIsDeletingEvent] = useState(false);
+
+  // Stamp modal state
+  const [showStampModal, setShowStampModal] = useState(false);
+  const [stampStudent, setStampStudent] = useState<StudentWithMapping | null>(null);
+  const lastTapTimeRef = useRef<Record<string, number>>({});
+  const DOUBLE_TAP_DELAY = 300; // ms between taps for double-tap
 
   // Progress circle state
   const [showProgress, setShowProgress] = useState(false);
@@ -358,6 +373,13 @@ function NativeSessionScreen() {
 
     switch (itemId) {
       case 'participation':
+        if (selection.isBonus) {
+          // Show bonus modal instead of adding 1pt
+          setBonusPoints('3');
+          setBonusReason('');
+          setShowBonusModal(true);
+          return; // Don't clear selectedStudent yet
+        }
         await addEvent(selectedStudent.id, EVENT_TYPES.PARTICIPATION);
         break;
       case 'bavardage':
@@ -389,6 +411,7 @@ function NativeSessionScreen() {
     menuOpacity,
     submenuScale,
     submenuOpacity,
+    bonusFillProgress,
     openMenu,
     closeMenu,
     handleTouchMove,
@@ -455,6 +478,18 @@ function NativeSessionScreen() {
       return;
     }
 
+    // Double-tap detection for stamp attribution
+    const now = Date.now();
+    const lastTap = lastTapTimeRef.current[student.id] || 0;
+    if (now - lastTap < DOUBLE_TAP_DELAY) {
+      // Double-tap detected! Open stamp selector
+      lastTapTimeRef.current[student.id] = 0; // Reset
+      setStampStudent(student);
+      setShowStampModal(true);
+      return;
+    }
+    lastTapTimeRef.current[student.id] = now;
+
     // Convert to container-relative coordinates for visual positioning
     const containerPos = toContainerCoords(pageX, pageY);
 
@@ -474,6 +509,8 @@ function NativeSessionScreen() {
     longPressTimerRef.current = setTimeout(() => {
       // Check if still mounted before updating state
       if (!isMountedRef.current) return;
+      // Clear double-tap timer since we're doing a long press
+      lastTapTimeRef.current[student.id] = 0;
       setShowProgress(false);
       setSelectedStudent(student);
       menuOpenRef.current = true;
@@ -522,6 +559,8 @@ function NativeSessionScreen() {
       if (!activeSession) {
         await loadActiveSession(user.id);
       }
+      // Pre-load stamp categories
+      loadStampCategories(user.id);
       setIsInitializing(false);
     };
     loadData();
@@ -1267,6 +1306,7 @@ function NativeSessionScreen() {
           menuOpacity={menuOpacity}
           submenuScale={submenuScale}
           submenuOpacity={submenuOpacity}
+          bonusFillProgress={bonusFillProgress}
         />
 
         {selectedStudent && menuState !== 'closed' && (
@@ -1404,6 +1444,110 @@ function NativeSessionScreen() {
                 ) : (
                   <Text style={styles.confirmButtonText}>Enregistrer</Text>
                 )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Bonus Participation Modal */}
+      <Modal
+        visible={showBonusModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setShowBonusModal(false);
+          setSelectedStudent(null);
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setShowBonusModal(false);
+              setSelectedStudent(null);
+            }}
+          />
+          <View style={styles.modalContent}>
+            <View style={styles.bonusHeader}>
+              <Text style={styles.bonusEmoji}>🌟</Text>
+              <Text style={styles.modalTitle}>
+                Bonus - {selectedStudent ? getDisplayName(selectedStudent) : ''}
+              </Text>
+            </View>
+
+            <Text style={styles.bonusLabel}>Nombre de points</Text>
+            <View style={styles.bonusPointsRow}>
+              {[2, 3, 5, 10].map((n) => (
+                <Pressable
+                  key={n}
+                  style={[
+                    styles.bonusPointChip,
+                    bonusPoints === String(n) && styles.bonusPointChipActive,
+                  ]}
+                  onPress={() => setBonusPoints(String(n))}
+                >
+                  <Text
+                    style={[
+                      styles.bonusPointChipText,
+                      bonusPoints === String(n) && styles.bonusPointChipTextActive,
+                    ]}
+                  >
+                    +{n}
+                  </Text>
+                </Pressable>
+              ))}
+              <TextInput
+                style={styles.bonusPointInput}
+                value={bonusPoints}
+                onChangeText={(text) => setBonusPoints(text.replace(/[^0-9]/g, ''))}
+                keyboardType="numeric"
+                maxLength={2}
+              />
+            </View>
+
+            <Text style={styles.bonusLabel}>Raison</Text>
+            <TextInput
+              style={styles.remarqueInput}
+              placeholder="Ex: Expose remarquable, aide aux camarades..."
+              placeholderTextColor={theme.colors.textTertiary}
+              value={bonusReason}
+              onChangeText={setBonusReason}
+              multiline
+              numberOfLines={2}
+              autoFocus
+            />
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelButton}
+                onPress={() => {
+                  setShowBonusModal(false);
+                  setSelectedStudent(null);
+                }}
+              >
+                <Text style={styles.modalCancelButtonText}>Annuler</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.confirmButton, { backgroundColor: '#34D399' }]}
+                onPress={async () => {
+                  if (!selectedStudent) return;
+                  const pts = Math.max(1, parseInt(bonusPoints) || 1);
+                  const reason = bonusReason.trim() ? `Bonus: ${bonusReason.trim()}` : 'Bonus';
+                  // Create N participation events with the reason
+                  for (let i = 0; i < pts; i++) {
+                    await addEvent(selectedStudent.id, EVENT_TYPES.PARTICIPATION, undefined, reason);
+                  }
+                  setShowBonusModal(false);
+                  setSelectedStudent(null);
+                }}
+              >
+                <Text style={styles.confirmButtonText}>
+                  Valider +{bonusPoints || '0'} pts
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -1773,6 +1917,97 @@ function NativeSessionScreen() {
         onResetMalus={handleResetMalus}
         onClose={handleCloseGrading}
       />
+
+      {/* Stamp Category Selector Modal (double-tap) */}
+      <Modal
+        visible={showStampModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          setShowStampModal(false);
+          setStampStudent(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <Pressable
+            style={styles.modalBackdrop}
+            onPress={() => {
+              setShowStampModal(false);
+              setStampStudent(null);
+            }}
+          />
+          <View style={[styles.modalContent, { maxHeight: '70%' }]}>
+            <Text style={styles.modalTitle}>
+              Tampon — {stampStudent?.fullName || stampStudent?.pseudo}
+            </Text>
+            <ScrollView style={{ maxHeight: 400 }} showsVerticalScrollIndicator={false}>
+              {stampCategories.map((cat) => (
+                <Pressable
+                  key={cat.id}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    padding: 12,
+                    marginBottom: 6,
+                    borderRadius: 12,
+                    backgroundColor: theme.colors.surface,
+                    borderWidth: 1,
+                    borderColor: theme.colors.border,
+                  }}
+                  onPress={async () => {
+                    if (!user?.id || !stampStudent) return;
+                    try {
+                      const result = await doAwardStamp(user.id, stampStudent.id, cat.id);
+                      setShowStampModal(false);
+                      setStampStudent(null);
+                      if (result.cardComplete) {
+                        Alert.alert(
+                          'Carte complete !',
+                          `${stampStudent.fullName || stampStudent.pseudo} a rempli sa carte n°${result.cardNumber}. L'eleve peut choisir son bonus.`
+                        );
+                      } else {
+                        Alert.alert('Tampon attribue', `${cat.icon} ${result.stampCount}/10`);
+                      }
+                    } catch (err) {
+                      Alert.alert('Erreur', err instanceof Error ? err.message : 'Erreur');
+                    }
+                  }}
+                >
+                  <View style={{
+                    width: 40, height: 40, borderRadius: 10,
+                    backgroundColor: cat.color + '20',
+                    alignItems: 'center', justifyContent: 'center',
+                    marginRight: 12,
+                  }}>
+                    <Text style={{ fontSize: 20 }}>{cat.icon}</Text>
+                  </View>
+                  <Text style={{
+                    flex: 1, fontSize: 14, fontWeight: '500',
+                    color: theme.colors.text,
+                  }} numberOfLines={1}>
+                    {cat.label}
+                  </Text>
+                  <View style={{
+                    width: 12, height: 12, borderRadius: 6,
+                    backgroundColor: cat.color,
+                  }} />
+                </Pressable>
+              ))}
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelButton}
+                onPress={() => {
+                  setShowStampModal(false);
+                  setStampStudent(null);
+                }}
+              >
+                <Text style={styles.modalCancelButtonText}>Annuler</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2162,6 +2397,55 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: theme.colors.text,
     marginBottom: theme.spacing.md,
+  },
+  bonusHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
+  },
+  bonusEmoji: {
+    fontSize: 28,
+  },
+  bonusLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.sm,
+  },
+  bonusPointsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+  },
+  bonusPointChip: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.surfaceSecondary,
+  },
+  bonusPointChipActive: {
+    backgroundColor: '#34D399',
+  },
+  bonusPointChipText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: theme.colors.text,
+  },
+  bonusPointChipTextActive: {
+    color: '#FFFFFF',
+  },
+  bonusPointInput: {
+    width: 48,
+    height: 36,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.colors.text,
   },
   remarqueInput: {
     backgroundColor: theme.colors.background,

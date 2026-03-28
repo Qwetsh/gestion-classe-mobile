@@ -453,6 +453,111 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+  // Migration 10 -> 11: Add stamp cards system (récompenses)
+  if (fromVersion < 11) {
+    console.log('[Database] Applying migration: Add stamp cards tables (v11)');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      // Create stamp_categories table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS stamp_categories (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          icon TEXT NOT NULL,
+          color TEXT NOT NULL,
+          display_order INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT
+        )
+      `);
+
+      // Create bonuses table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS bonuses (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          display_order INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT
+        )
+      `);
+
+      // Create stamp_cards table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS stamp_cards (
+          id TEXT PRIMARY KEY,
+          student_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          card_number INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'active',
+          completed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT,
+          FOREIGN KEY (student_id) REFERENCES students(id),
+          UNIQUE(student_id, card_number)
+        )
+      `);
+
+      // Create stamps table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS stamps (
+          id TEXT PRIMARY KEY,
+          card_id TEXT NOT NULL,
+          student_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          category_id TEXT,
+          slot_number INTEGER NOT NULL,
+          awarded_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT,
+          FOREIGN KEY (card_id) REFERENCES stamp_cards(id) ON DELETE CASCADE,
+          FOREIGN KEY (student_id) REFERENCES students(id),
+          FOREIGN KEY (category_id) REFERENCES stamp_categories(id),
+          UNIQUE(card_id, slot_number)
+        )
+      `);
+
+      // Create bonus_selections table
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS bonus_selections (
+          id TEXT PRIMARY KEY,
+          card_id TEXT NOT NULL UNIQUE,
+          bonus_id TEXT,
+          student_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          selected_at TEXT NOT NULL DEFAULT (datetime('now')),
+          used_at TEXT,
+          synced_at TEXT,
+          FOREIGN KEY (card_id) REFERENCES stamp_cards(id) ON DELETE CASCADE,
+          FOREIGN KEY (bonus_id) REFERENCES bonuses(id),
+          FOREIGN KEY (student_id) REFERENCES students(id)
+        )
+      `);
+
+      // Create indexes
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamp_categories_user_id ON stamp_categories(user_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_bonuses_user_id ON bonuses(user_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamp_cards_student_id ON stamp_cards(student_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamp_cards_user_id ON stamp_cards(user_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamps_card_id ON stamps(card_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamps_student_id ON stamps(student_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_stamps_category_id ON stamps(category_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_bonus_selections_card_id ON bonus_selections(card_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_bonus_selections_student_id ON bonus_selections(student_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [11]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v11 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v11 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -466,6 +571,11 @@ export async function resetDatabase(): Promise<void> {
 
   // Drop all tables (in dependency order)
   const tables = [
+    'bonus_selections',
+    'stamps',
+    'stamp_cards',
+    'bonuses',
+    'stamp_categories',
     'tp_template_criteria',
     'tp_templates',
     'group_grades',
@@ -512,6 +622,11 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'group_grades',
     'tp_templates',
     'tp_template_criteria',
+    'stamp_categories',
+    'bonuses',
+    'stamp_cards',
+    'stamps',
+    'bonus_selections',
   ];
 
   const stats: Record<string, number> = {};

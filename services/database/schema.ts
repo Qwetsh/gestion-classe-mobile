@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * SQL statements to create all tables
@@ -194,6 +194,79 @@ CREATE TABLE IF NOT EXISTS tp_template_criteria (
   FOREIGN KEY (template_id) REFERENCES tp_templates(id) ON DELETE CASCADE
 );
 
+-- ============================================
+-- Stamp Cards (Carte à tampons / Récompenses)
+-- ============================================
+
+-- Catégories de tampons (raisons d'attribution)
+CREATE TABLE IF NOT EXISTS stamp_categories (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  color TEXT NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT
+);
+
+-- Bonus (récompenses quand carte complète)
+CREATE TABLE IF NOT EXISTS bonuses (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT
+);
+
+-- Cartes à tampons (une carte = 10 emplacements)
+CREATE TABLE IF NOT EXISTS stamp_cards (
+  id TEXT PRIMARY KEY,
+  student_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  card_number INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (student_id) REFERENCES students(id),
+  UNIQUE(student_id, card_number)
+);
+
+-- Tampons individuels (sur une carte)
+CREATE TABLE IF NOT EXISTS stamps (
+  id TEXT PRIMARY KEY,
+  card_id TEXT NOT NULL,
+  student_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  category_id TEXT,
+  slot_number INTEGER NOT NULL,
+  awarded_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (card_id) REFERENCES stamp_cards(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES students(id),
+  FOREIGN KEY (category_id) REFERENCES stamp_categories(id),
+  UNIQUE(card_id, slot_number)
+);
+
+-- Sélection de bonus par l'élève
+CREATE TABLE IF NOT EXISTS bonus_selections (
+  id TEXT PRIMARY KEY,
+  card_id TEXT NOT NULL UNIQUE,
+  bonus_id TEXT,
+  student_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  selected_at TEXT NOT NULL DEFAULT (datetime('now')),
+  used_at TEXT,
+  synced_at TEXT,
+  FOREIGN KEY (card_id) REFERENCES stamp_cards(id) ON DELETE CASCADE,
+  FOREIGN KEY (bonus_id) REFERENCES bonuses(id),
+  FOREIGN KEY (student_id) REFERENCES students(id)
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
@@ -212,6 +285,15 @@ CREATE INDEX IF NOT EXISTS idx_group_grades_group_id ON group_grades(group_id);
 CREATE INDEX IF NOT EXISTS idx_group_grades_criteria_id ON group_grades(criteria_id);
 CREATE INDEX IF NOT EXISTS idx_tp_templates_user_id ON tp_templates(user_id);
 CREATE INDEX IF NOT EXISTS idx_tp_template_criteria_template_id ON tp_template_criteria(template_id);
+CREATE INDEX IF NOT EXISTS idx_stamp_categories_user_id ON stamp_categories(user_id);
+CREATE INDEX IF NOT EXISTS idx_bonuses_user_id ON bonuses(user_id);
+CREATE INDEX IF NOT EXISTS idx_stamp_cards_student_id ON stamp_cards(student_id);
+CREATE INDEX IF NOT EXISTS idx_stamp_cards_user_id ON stamp_cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_stamps_card_id ON stamps(card_id);
+CREATE INDEX IF NOT EXISTS idx_stamps_student_id ON stamps(student_id);
+CREATE INDEX IF NOT EXISTS idx_stamps_category_id ON stamps(category_id);
+CREATE INDEX IF NOT EXISTS idx_bonus_selections_card_id ON bonus_selections(card_id);
+CREATE INDEX IF NOT EXISTS idx_bonus_selections_student_id ON bonus_selections(student_id);
 `;
 
 /**
@@ -244,3 +326,50 @@ export const GROUP_SESSION_STATUSES = {
   ACTIVE: 'active',
   COMPLETED: 'completed',
 } as const;
+
+/**
+ * Stamp card statuses
+ */
+export const STAMP_CARD_STATUSES = {
+  ACTIVE: 'active',
+  COMPLETED: 'completed',
+} as const;
+
+/**
+ * Default stamp categories (seeded on first use)
+ */
+export const DEFAULT_STAMP_CATEGORIES = [
+  { label: 'Aider/Encourager un camarade', icon: '🤝', color: '#4CAF50' },
+  { label: 'Utilisation d\'outils', icon: '🔧', color: '#2196F3' },
+  { label: 'Participation remarquable', icon: '✋', color: '#FF9800' },
+  { label: 'Comportement remarquable', icon: '⭐', color: '#FFC107' },
+  { label: 'Accepter une responsabilité', icon: '🎯', color: '#9C27B0' },
+  { label: 'Écriture remarquable', icon: '✍️', color: '#3F51B5' },
+  { label: 'Créativité remarquable', icon: '🎨', color: '#E91E63' },
+  { label: 'Travail supplémentaire', icon: '📚', color: '#795548' },
+  { label: 'Avis constructif', icon: '💡', color: '#FFEB3B' },
+  { label: 'Serviabilité', icon: '🤲', color: '#00BCD4' },
+  { label: 'Rappel utile', icon: '🔔', color: '#FF5722' },
+  { label: 'Mémoire remarquable', icon: '🧠', color: '#673AB7' },
+  { label: 'Oral remarquable', icon: '🎤', color: '#F44336' },
+  { label: 'Rédaction remarquable', icon: '📝', color: '#009688' },
+  { label: 'Orthographe remarquable', icon: '📖', color: '#8BC34A' },
+  { label: 'Lecture remarquable', icon: '📗', color: '#CDDC39' },
+  { label: 'Rattrapage du cours', icon: '🔄', color: '#607D8B' },
+  { label: 'Autonomie', icon: '🦾', color: '#FF6F00' },
+  { label: 'Travail de groupe remarquable', icon: '👥', color: '#1565C0' },
+] as const;
+
+/**
+ * Default bonuses (seeded on first use)
+ */
+export const DEFAULT_BONUSES = [
+  'Choisir sa place de la semaine',
+  '+1 pt sur la note de son choix',
+  'Rendre un devoir une semaine plus tard',
+  '−1 faute en devoir de langue',
+  '+1 indice en évaluation',
+  'Pas de cours à écrire la semaine',
+  'Pas de prise de parole de la semaine',
+  'Un article de papeterie au choix',
+] as const;

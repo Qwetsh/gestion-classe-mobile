@@ -11,13 +11,14 @@ import {
   Alert,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useHistoryStore, useStudentStore, useAuthStore, useClassStore } from '../../../../stores';
+import { useHistoryStore, useStudentStore, useAuthStore, useClassStore, useStampStore } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
 import {
   type Event,
   type EventType,
   getStudentDeleteStats,
   deleteStudentCompletely,
+  type CompletedCardSummary,
 } from '../../../../services/database';
 import { PhotoPicker } from '../../../../components';
 import { exportStudentHistoryPdf } from '../../../../services/pdfExport';
@@ -68,6 +69,9 @@ export default function StudentHistoryScreen() {
   const [deleteStats, setDeleteStats] = useState<{ eventsCount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [completedCards, setCompletedCards] = useState<CompletedCardSummary[]>([]);
+
+  const { activeCards, loadActiveCard, getCompletedCardsForStudent } = useStampStore();
 
   // Find the student across all classes
   const student = useMemo(() => {
@@ -111,6 +115,15 @@ export default function StudentHistoryScreen() {
       loadStudentHistory(id);
     }
   }, [id]);
+
+  // Load stamp data
+  const activeCard = id ? activeCards[id] : undefined;
+  useEffect(() => {
+    if (id && user) {
+      loadActiveCard(user.id, id);
+      getCompletedCardsForStudent(id).then(setCompletedCards);
+    }
+  }, [id, user]);
 
   // Handle delete button press
   const handleDeletePress = async () => {
@@ -258,6 +271,90 @@ export default function StudentHistoryScreen() {
                 );
               })}
             </View>
+          </View>
+
+          {/* Stamp Card Section */}
+          <View style={styles.stampSection}>
+            <Text style={styles.sectionTitle}>Carte a tampons</Text>
+            {activeCard ? (
+              <View style={styles.stampCardContainer}>
+                <View style={styles.stampCardHeader}>
+                  <Text style={styles.stampCardTitle}>
+                    Carte n°{activeCard.card_number}
+                  </Text>
+                  <View style={[
+                    styles.stampCountBadge,
+                    activeCard.stamp_count >= 10 && styles.stampCountComplete,
+                  ]}>
+                    <Text style={[
+                      styles.stampCountText,
+                      activeCard.stamp_count >= 10 && styles.stampCountTextComplete,
+                    ]}>
+                      {activeCard.stamp_count}/10
+                    </Text>
+                  </View>
+                </View>
+                {/* Progress bar */}
+                <View style={styles.stampProgressBg}>
+                  <View style={[
+                    styles.stampProgressFill,
+                    {
+                      width: `${Math.min(100, (activeCard.stamp_count / 10) * 100)}%` as any,
+                      backgroundColor: activeCard.stamp_count >= 10 ? '#22c55e' : '#f59e0b',
+                    },
+                  ]} />
+                </View>
+                {/* Stamp grid */}
+                <View style={styles.stampGrid}>
+                  {Array.from({ length: 10 }, (_, i) => {
+                    const stamp = activeCard.stamps.find(s => s.slot_number === i + 1);
+                    return (
+                      <View
+                        key={i}
+                        style={[
+                          styles.stampSlot,
+                          stamp ? {
+                            backgroundColor: `${stamp.category_color || '#f59e0b'}20`,
+                            borderColor: `${stamp.category_color || '#f59e0b'}60`,
+                            borderStyle: 'solid' as const,
+                          } : {},
+                        ]}
+                      >
+                        <Text style={styles.stampSlotText}>
+                          {stamp ? (stamp.category_icon || '⭐') : '🔒'}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : (
+              <View style={styles.stampEmpty}>
+                <Text style={styles.stampEmptyIcon}>⭐</Text>
+                <Text style={styles.stampEmptyText}>Pas encore de carte</Text>
+              </View>
+            )}
+
+            {/* Completed cards */}
+            {completedCards.length > 0 && (
+              <View style={styles.completedCardsContainer}>
+                <Text style={styles.completedCardsTitle}>
+                  Cartes terminees ({completedCards.length})
+                </Text>
+                {completedCards.map(card => (
+                  <View key={card.id} style={styles.completedCardRow}>
+                    <Text style={styles.completedCardLabel}>
+                      Carte n°{card.card_number}
+                    </Text>
+                    <Text style={styles.completedCardBonus}>
+                      {card.bonus_label
+                        ? `🎁 ${card.bonus_label} ${card.bonus_used ? '✓' : '⏳'}`
+                        : 'Pas de bonus'}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
 
           {/* Events List */}
@@ -546,6 +643,114 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   eventTime: {
+    fontSize: 11,
+    color: theme.colors.textTertiary,
+  },
+
+  // Stamp card section
+  stampSection: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
+    ...theme.shadows.sm,
+  },
+  stampCardContainer: {},
+  stampCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  stampCardTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: theme.colors.text,
+  },
+  stampCountBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: theme.radius.full,
+    backgroundColor: '#3b82f620',
+  },
+  stampCountComplete: {
+    backgroundColor: '#22c55e20',
+  },
+  stampCountText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#60a5fa',
+  },
+  stampCountTextComplete: {
+    color: '#22c55e',
+  },
+  stampProgressBg: {
+    height: 6,
+    backgroundColor: theme.colors.background,
+    borderRadius: 3,
+    overflow: 'hidden' as const,
+    marginBottom: theme.spacing.md,
+  },
+  stampProgressFill: {
+    height: '100%' as any,
+    borderRadius: 3,
+  },
+  stampGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'center',
+  },
+  stampSlot: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: theme.colors.border,
+    borderStyle: 'dashed' as const,
+    backgroundColor: theme.colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stampSlotText: {
+    fontSize: 20,
+  },
+  stampEmpty: {
+    alignItems: 'center',
+    padding: theme.spacing.lg,
+  },
+  stampEmptyIcon: {
+    fontSize: 28,
+    marginBottom: theme.spacing.xs,
+  },
+  stampEmptyText: {
+    color: theme.colors.textTertiary,
+    fontSize: 13,
+  },
+  completedCardsContainer: {
+    marginTop: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  completedCardsTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.sm,
+  },
+  completedCardRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  completedCardLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: theme.colors.text,
+  },
+  completedCardBonus: {
     fontSize: 11,
     color: theme.colors.textTertiary,
   },

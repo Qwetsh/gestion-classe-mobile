@@ -108,6 +108,62 @@ export interface GroupGrade {
   syncedAt: string | null;
 }
 
+// ============================================
+// Stamp Cards (Carte à tampons / Récompenses)
+// ============================================
+
+export type StampCardStatus = 'active' | 'completed';
+
+export interface StampCategory {
+  id: string;
+  userId: string;
+  label: string;
+  icon: string;
+  color: string;
+  displayOrder: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface BonusReward {
+  id: string;
+  userId: string;
+  label: string;
+  displayOrder: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface StampCard {
+  id: string;
+  studentId: string;
+  userId: string;
+  cardNumber: number;
+  status: StampCardStatus;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface StampItem {
+  id: string;
+  cardId: string;
+  studentId: string;
+  userId: string;
+  categoryId: string | null;
+  slotNumber: number;
+  awardedAt: string;
+}
+
+export interface BonusSelection {
+  id: string;
+  cardId: string;
+  bonusId: string | null;
+  studentId: string;
+  userId: string;
+  selectedAt: string;
+  usedAt: string | null;
+}
+
 // Computed types for UI
 export interface SessionGroupWithMembers extends SessionGroup {
   members: Student[];
