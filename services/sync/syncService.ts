@@ -1107,18 +1107,69 @@ async function syncStampCards(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map(c => ({
-    id: c.id, student_id: c.student_id, user_id: userId,
-    card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
-  }));
+  // Check for existing server cards to avoid UNIQUE(student_id, card_number) conflicts
+  // This happens when web "Initialiser les cartes" creates cards before mobile syncs
+  const studentIds = [...new Set(unsynced.map(c => c.student_id))];
+  const { data: serverCards } = await supabase
+    .from('stamp_cards')
+    .select('id, student_id, card_number')
+    .in('student_id', studentIds);
 
-  const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
+  const serverCardMap = new Map<string, string>(); // "studentId:cardNumber" -> serverId
+  for (const sc of (serverCards || [])) {
+    serverCardMap.set(`${sc.student_id}:${sc.card_number}`, sc.id);
+  }
 
+  const toSync: any[] = [];
   const now = new Date().toISOString();
-  const ids = unsynced.map(c => c.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+
+  for (const c of unsynced) {
+    const key = `${c.student_id}:${c.card_number}`;
+    const existingServerId = serverCardMap.get(key);
+
+    if (existingServerId && existingServerId !== c.id) {
+      // Server already has a card for this student+card_number with a different ID
+      // Remap local card_id and stamps to use the server's ID
+      console.log(`[syncService] Remapping local card ${c.id} -> server card ${existingServerId} for student ${c.student_id}`);
+      await executeSql('UPDATE stamps SET card_id = ? WHERE card_id = ?', [existingServerId, c.id]);
+      await executeSql('UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', [existingServerId, c.id]);
+      await executeSql('DELETE FROM stamp_cards WHERE id = ?', [c.id]);
+      await executeSql(
+        `INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [existingServerId, c.student_id, userId, c.card_number, c.status, c.completed_at, c.created_at, now]
+      );
+      // Update server card status if mobile has a newer status (e.g. completed)
+      if (c.status === 'completed' || c.completed_at) {
+        toSync.push({
+          id: existingServerId, student_id: c.student_id, user_id: userId,
+          card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+        });
+      }
+    } else {
+      // No conflict — sync normally
+      toSync.push({
+        id: c.id, student_id: c.student_id, user_id: userId,
+        card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+      });
+    }
+  }
+
+  if (toSync.length > 0) {
+    const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
+    if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
+  }
+
+  // Mark all original unsynced cards as synced (including remapped ones)
+  const allLocalIds = await queryAll<{ id: string }>(
+    `SELECT id FROM stamp_cards WHERE user_id = ? AND synced_at IS NULL`,
+    [userId]
+  );
+  if (allLocalIds.length > 0) {
+    const ids = allLocalIds.map(c => c.id);
+    const placeholders = ids.map(() => '?').join(',');
+    await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  }
 
   return unsynced.length;
 }
