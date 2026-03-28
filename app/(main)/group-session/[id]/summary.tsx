@@ -17,6 +17,7 @@ export default function GroupSessionSummaryScreen() {
   const {
     activeSession,
     loadSession,
+    clearActiveSession,
     getGroupScore,
     getMaxScore,
   } = useGroupSessionStore();
@@ -56,11 +57,13 @@ export default function GroupSessionSummaryScreen() {
 
   const handleGoHome = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    clearActiveSession();
     router.replace('/(main)');
   };
 
   const handleViewHistory = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    clearActiveSession();
     router.push('/(main)/history');
   };
 

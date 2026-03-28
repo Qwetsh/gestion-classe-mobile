@@ -9,11 +9,30 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, Link } from 'expo-router';
+import Svg, { Path } from 'react-native-svg';
 import { useAuthStore } from '../../stores';
 import { theme } from '../../constants/theme';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const HEADER_HEIGHT = 280;
+const CURVE_HEIGHT = 40;
+
+function CurvedSeparator() {
+  return (
+    <View style={styles.curveContainer}>
+      <Svg width={SCREEN_WIDTH} height={CURVE_HEIGHT} viewBox={`0 0 ${SCREEN_WIDTH} ${CURVE_HEIGHT}`}>
+        <Path
+          d={`M0,0 L0,0 Q${SCREEN_WIDTH / 2},${CURVE_HEIGHT * 2} ${SCREEN_WIDTH},0 L${SCREEN_WIDTH},${CURVE_HEIGHT} L0,${CURVE_HEIGHT} Z`}
+          fill={theme.colors.background}
+        />
+      </Svg>
+    </View>
+  );
+}
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -52,112 +71,123 @@ export default function LoginScreen() {
   const displayError = validationError || error;
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
+    <View style={styles.container}>
+      {/* Gradient Header Background */}
+      <LinearGradient
+        colors={['#4F46E5', '#7C3AED', '#9333EA']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.headerGradient}
+      />
+      <CurvedSeparator />
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
       >
-        <View style={styles.header}>
-          <View style={styles.logoContainer}>
-            <LinearGradient
-              colors={theme.gradients.primary}
-              style={styles.logoGradient}
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Header on gradient */}
+          <View style={styles.header}>
+            <View style={styles.logoContainer}>
+              <View style={styles.logoCircle}>
+                <Text style={styles.logoText}>GC</Text>
+              </View>
+            </View>
+            <Text style={styles.title}>Bienvenue</Text>
+            <Text style={styles.subtitle}>
+              Connectez-vous pour accéder à vos classes
+            </Text>
+          </View>
+
+          {/* Form on white background */}
+          <View style={styles.form}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, displayError && styles.inputError]}
+                  placeholder="votre@email.fr"
+                  placeholderTextColor={theme.colors.textTertiary}
+                  value={email}
+                  onChangeText={(text) => {
+                    setEmail(text);
+                    setValidationError(null);
+                    clearError();
+                  }}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoComplete="email"
+                  editable={!isLoading}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Mot de passe</Text>
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.input, displayError && styles.inputError]}
+                  placeholder="Votre mot de passe"
+                  placeholderTextColor={theme.colors.textTertiary}
+                  value={password}
+                  onChangeText={(text) => {
+                    setPassword(text);
+                    setValidationError(null);
+                    clearError();
+                  }}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoComplete="password"
+                  editable={!isLoading}
+                />
+              </View>
+            </View>
+
+            {displayError && (
+              <View style={styles.errorContainer}>
+                <Text style={styles.errorText}>{displayError}</Text>
+              </View>
+            )}
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.button,
+                isLoading && styles.buttonDisabled,
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={handleLogin}
+              disabled={isLoading}
             >
-              <Text style={styles.logoText}>GC</Text>
-            </LinearGradient>
-          </View>
-          <Text style={styles.title}>Bienvenue</Text>
-          <Text style={styles.subtitle}>
-            Connectez-vous pour acceder a vos classes
-          </Text>
-        </View>
+              <LinearGradient
+                colors={['#4F46E5', '#7C3AED']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.buttonGradient}
+              >
+                {isLoading ? (
+                  <ActivityIndicator color={theme.colors.textInverse} />
+                ) : (
+                  <Text style={styles.buttonText}>Se connecter</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
 
-        <View style={styles.form}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Email</Text>
-            <View style={styles.inputContainer}>
-              <TextInput
-                style={[styles.input, displayError && styles.inputError]}
-                placeholder="votre@email.fr"
-                placeholderTextColor={theme.colors.textTertiary}
-                value={email}
-                onChangeText={(text) => {
-                  setEmail(text);
-                  setValidationError(null);
-                  clearError();
-                }}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoComplete="email"
-                editable={!isLoading}
-              />
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Pas encore de compte ? </Text>
+              <Link href="/(auth)/register" asChild>
+                <Pressable disabled={isLoading}>
+                  <Text style={styles.footerLink}>S'inscrire</Text>
+                </Pressable>
+              </Link>
             </View>
           </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Mot de passe</Text>
-            <View style={styles.inputContainer}>
-              <TextInput
-                style={[styles.input, displayError && styles.inputError]}
-                placeholder="Votre mot de passe"
-                placeholderTextColor={theme.colors.textTertiary}
-                value={password}
-                onChangeText={(text) => {
-                  setPassword(text);
-                  setValidationError(null);
-                  clearError();
-                }}
-                secureTextEntry
-                autoCapitalize="none"
-                autoComplete="password"
-                editable={!isLoading}
-              />
-            </View>
-          </View>
-
-          {displayError && (
-            <View style={styles.errorContainer}>
-              <Text style={styles.errorText}>{displayError}</Text>
-            </View>
-          )}
-
-          <Pressable
-            style={({ pressed }) => [
-              styles.button,
-              isLoading && styles.buttonDisabled,
-              pressed && styles.buttonPressed,
-            ]}
-            onPress={handleLogin}
-            disabled={isLoading}
-          >
-            <LinearGradient
-              colors={theme.gradients.primary}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.buttonGradient}
-            >
-              {isLoading ? (
-                <ActivityIndicator color={theme.colors.textInverse} />
-              ) : (
-                <Text style={styles.buttonText}>Se connecter</Text>
-              )}
-            </LinearGradient>
-          </Pressable>
-
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Pas encore de compte ? </Text>
-            <Link href="/(auth)/register" asChild>
-              <Pressable disabled={isLoading}>
-                <Text style={styles.footerLink}>S'inscrire</Text>
-              </Pressable>
-            </Link>
-          </View>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -166,47 +196,67 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  headerGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: HEADER_HEIGHT,
+  },
+  curveContainer: {
+    position: 'absolute',
+    top: HEADER_HEIGHT - CURVE_HEIGHT,
+    left: 0,
+    right: 0,
+    zIndex: 1,
+  },
+  keyboardView: {
+    flex: 1,
+  },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: 'center',
-    padding: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.lg,
   },
   header: {
     alignItems: 'center',
-    marginBottom: theme.spacing.xl,
+    paddingTop: Platform.OS === 'ios' ? 80 : 60,
+    paddingBottom: theme.spacing.xl,
   },
   logoContainer: {
     marginBottom: theme.spacing.lg,
   },
-  logoGradient: {
-    width: 80,
-    height: 80,
-    borderRadius: theme.radius.xl,
+  logoCircle: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: 'rgba(255,255,255,0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-    ...theme.shadows.primary,
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.3)',
   },
   logoText: {
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '700',
-    color: theme.colors.textInverse,
+    color: '#FFFFFF',
   },
   title: {
     fontSize: 32,
     fontWeight: '700',
-    color: theme.colors.text,
+    color: '#FFFFFF',
     marginBottom: theme.spacing.xs,
     letterSpacing: -0.5,
   },
   subtitle: {
     fontSize: 16,
-    color: theme.colors.textSecondary,
+    color: 'rgba(255,255,255,0.8)',
     textAlign: 'center',
   },
   form: {
     width: '100%',
     maxWidth: 400,
     alignSelf: 'center',
+    marginTop: theme.spacing.lg,
   },
   inputGroup: {
     marginBottom: theme.spacing.lg,

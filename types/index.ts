@@ -73,6 +73,7 @@ export interface GroupSession {
   createdAt: string;
   completedAt: string | null;
   syncedAt: string | null;
+  linkedSessionId: string | null;
 }
 
 export interface GradingCriteria {

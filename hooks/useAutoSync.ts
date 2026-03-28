@@ -1,10 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { useAuthStore, useNetworkStore, useSyncStore, useSessionStore } from '../stores';
+import { useAuthStore, useNetworkStore, useSyncStore, useSessionStore, useGroupSessionStore } from '../stores';
 
 /**
  * Hook that handles automatic synchronization:
  * 1. When network status changes from offline to online
- * 2. When a session ends
+ * 2. When a session ends (regular or group)
  *
  * Uses refs to track state and prevent race conditions with isSyncing
  */
@@ -13,11 +13,14 @@ export function useAutoSync() {
   const { isConnected, isInternetReachable } = useNetworkStore();
   const { sync, isSyncing, refreshUnsyncedCount } = useSyncStore();
   const { isSessionActive } = useSessionStore();
+  const groupActiveSession = useGroupSessionStore((s) => s.activeSession);
 
   // Track previous network state
   const wasOffline = useRef<boolean | null>(null);
   // Track previous session state
   const wasSessionActive = useRef<boolean>(false);
+  // Track previous group session status
+  const wasGroupSessionActive = useRef<boolean>(false);
   // Track if a sync is pending to prevent duplicate triggers
   const syncPending = useRef<boolean>(false);
   // Track active timers for cleanup
@@ -97,6 +100,26 @@ export function useAutoSync() {
 
     wasSessionActive.current = isSessionActive;
   }, [isSessionActive, user?.id, isConnected, isInternetReachable, triggerSync]);
+
+  // Auto-sync when group session ends (status changes from 'active' to 'completed')
+  useEffect(() => {
+    const isGroupActive = groupActiveSession?.session.status === 'active';
+
+    if (wasGroupSessionActive.current && !isGroupActive && user?.id) {
+      const isOnline = isConnected === true && isInternetReachable !== false;
+      if (isOnline) {
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+        }
+
+        timerRef.current = setTimeout(() => {
+          triggerSync(user.id, 'Group session ended');
+        }, 500);
+      }
+    }
+
+    wasGroupSessionActive.current = isGroupActive;
+  }, [groupActiveSession?.session.status, user?.id, isConnected, isInternetReachable, triggerSync]);
 
   // Refresh unsynced count when user changes or on mount
   useEffect(() => {

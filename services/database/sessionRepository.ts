@@ -1,5 +1,5 @@
 import * as Crypto from 'expo-crypto';
-import { executeSql, queryAll, queryFirst } from './client';
+import { executeSql, executeTransaction, queryAll, queryFirst } from './client';
 
 export interface Session {
   id: string;
@@ -187,16 +187,12 @@ export async function deleteSession(id: string): Promise<void> {
     console.log('[sessionRepository] deleteSession called with id:', id);
   }
 
-  // Delete events first (foreign key)
-  await executeSql(
-    `DELETE FROM events WHERE session_id = ?`,
-    [id]
-  );
-
-  await executeSql(
-    `DELETE FROM sessions WHERE id = ?`,
-    [id]
-  );
+  // Atomic deletion: events + linked group sessions + session
+  await executeTransaction([
+    { sql: `DELETE FROM events WHERE session_id = ?`, params: [id] },
+    { sql: `DELETE FROM group_sessions WHERE linked_session_id = ?`, params: [id] },
+    { sql: `DELETE FROM sessions WHERE id = ?`, params: [id] },
+  ]);
 
   if (__DEV__) {
     console.log('[sessionRepository] Session deleted:', id);

@@ -430,6 +430,29 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 9 -> 10: Add linked_session_id to group_sessions
+  if (fromVersion < 10) {
+    console.log('[Database] Applying migration: Add linked_session_id to group_sessions (v10)');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      const hasColumn = await columnExists('group_sessions', 'linked_session_id');
+      if (!hasColumn) {
+        await db.runAsync(`ALTER TABLE group_sessions ADD COLUMN linked_session_id TEXT REFERENCES sessions(id)`);
+      }
+
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_sessions_linked_session_id ON group_sessions(linked_session_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [10]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v10 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v10 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**

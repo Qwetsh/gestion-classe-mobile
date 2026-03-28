@@ -1,7 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withDelay,
+  runOnJS,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { supabase } from '../services/supabase';
 import { theme } from '../constants/theme';
+
+const AUTO_DISMISS_MS = 5000;
+const SWIPE_THRESHOLD = 80;
 
 interface Announcement {
   id: string;
@@ -14,6 +25,75 @@ const typeConfig = {
   warning: { bg: '#fef3c7', color: '#d97706', icon: '⚠️' },
   success: { bg: theme.colors.participationSoft, color: theme.colors.participation, icon: '✅' },
 };
+
+function AnnouncementItem({
+  announcement,
+  onDismiss,
+}: {
+  announcement: Announcement;
+  onDismiss: (id: string) => void;
+}) {
+  const config = typeConfig[announcement.type];
+  const translateX = useSharedValue(0);
+  const opacity = useSharedValue(1);
+
+  const dismiss = useCallback(() => {
+    onDismiss(announcement.id);
+  }, [announcement.id, onDismiss]);
+
+  const animateOut = useCallback((direction: number) => {
+    translateX.value = withTiming(direction * 300, { duration: 200 });
+    opacity.value = withTiming(0, { duration: 200 }, () => {
+      runOnJS(dismiss)();
+    });
+  }, [translateX, opacity, dismiss]);
+
+  // Auto-dismiss after 5s
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      animateOut(1);
+    }, AUTO_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [animateOut]);
+
+  const panGesture = Gesture.Pan()
+    .activeOffsetX([-15, 15])
+    .onUpdate((e) => {
+      translateX.value = e.translationX;
+    })
+    .onEnd((e) => {
+      if (Math.abs(e.translationX) > SWIPE_THRESHOLD) {
+        const direction = e.translationX > 0 ? 1 : -1;
+        translateX.value = withTiming(direction * 300, { duration: 150 });
+        opacity.value = withTiming(0, { duration: 150 }, () => {
+          runOnJS(dismiss)();
+        });
+      } else {
+        translateX.value = withTiming(0, { duration: 150 });
+      }
+    });
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+    opacity: opacity.value,
+  }));
+
+  return (
+    <GestureDetector gesture={panGesture}>
+      <Animated.View style={[styles.banner, { backgroundColor: config.bg }, animatedStyle]}>
+        <Text style={[styles.text, { color: config.color }]}>
+          {config.icon}  {announcement.message}
+        </Text>
+        <Pressable
+          onPress={() => animateOut(1)}
+          hitSlop={8}
+        >
+          <Text style={[styles.dismiss, { color: config.color }]}>✕</Text>
+        </Pressable>
+      </Animated.View>
+    </GestureDetector>
+  );
+}
 
 export function AnnouncementBanner() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -31,27 +111,22 @@ export function AnnouncementBanner() {
       });
   }, []);
 
+  const handleDismiss = useCallback((id: string) => {
+    setDismissed(prev => new Set(prev).add(id));
+  }, []);
+
   const visible = announcements.filter(a => !dismissed.has(a.id));
   if (visible.length === 0) return null;
 
   return (
     <View style={styles.container}>
-      {visible.map(a => {
-        const config = typeConfig[a.type];
-        return (
-          <View key={a.id} style={[styles.banner, { backgroundColor: config.bg }]}>
-            <Text style={[styles.text, { color: config.color }]}>
-              {config.icon}  {a.message}
-            </Text>
-            <Pressable
-              onPress={() => setDismissed(prev => new Set(prev).add(a.id))}
-              hitSlop={8}
-            >
-              <Text style={[styles.dismiss, { color: config.color }]}>✕</Text>
-            </Pressable>
-          </View>
-        );
-      })}
+      {visible.map(a => (
+        <AnnouncementItem
+          key={a.id}
+          announcement={a}
+          onDismiss={handleDismiss}
+        />
+      ))}
     </View>
   );
 }

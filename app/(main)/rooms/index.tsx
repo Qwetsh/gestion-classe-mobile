@@ -8,7 +8,7 @@ import {
   FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, Stack } from 'expo-router';
+import { router } from 'expo-router';
 import { useAuthStore, useRoomStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
 import { Room } from '../../../services/database';
@@ -54,7 +54,7 @@ export default function RoomsScreen() {
       <View style={styles.roomInfo}>
         <Text style={styles.roomName}>{item.name}</Text>
         <Text style={styles.roomGrid}>
-          {item.grid_rows} rangees × {item.grid_cols} colonnes
+          {item.grid_rows} rangées × {item.grid_cols} colonnes
         </Text>
       </View>
       <View style={styles.chevronContainer}>
@@ -70,37 +70,16 @@ export default function RoomsScreen() {
       </View>
       <Text style={styles.placeholderTitle}>Aucune salle</Text>
       <Text style={styles.placeholderText}>
-        Creez vos salles depuis l'application web, puis synchronisez.
+        Créez vos salles depuis l'application web, puis synchronisez.
       </Text>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: 'Mes Salles',
-          headerStyle: { backgroundColor: theme.colors.background },
-          headerTintColor: theme.colors.text,
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontWeight: '700',
-            fontSize: 18,
-          },
-          headerLeft: () => (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Retour</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <View style={styles.screenHeader}>
+        <Text style={styles.screenTitle}>Mes salles</Text>
+      </View>
       <View style={styles.content}>
         {isLoading && rooms.length === 0 ? (
           <View style={styles.loadingContainer}>
@@ -139,18 +118,15 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
-  backButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+  screenHeader: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
   },
-  backButtonPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-  },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 16,
-    fontWeight: '600',
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: theme.colors.text,
+    letterSpacing: -0.5,
   },
   loadingContainer: {
     flex: 1,

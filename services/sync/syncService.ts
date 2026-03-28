@@ -641,6 +641,7 @@ async function syncEvents(): Promise<number> {
 async function syncGroupSessions(): Promise<number> {
   if (!supabase) return 0;
 
+  // Only sync completed sessions to avoid showing incomplete data on the web
   const unsynced = await queryAll<{
     id: string;
     user_id: string;
@@ -649,7 +650,8 @@ async function syncGroupSessions(): Promise<number> {
     status: string;
     created_at: string;
     completed_at: string | null;
-  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at FROM group_sessions WHERE synced_at IS NULL`);
+    linked_session_id: string | null;
+  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id FROM group_sessions WHERE synced_at IS NULL AND status = 'completed'`);
 
   if (unsynced.length === 0) return 0;
 
@@ -661,6 +663,7 @@ async function syncGroupSessions(): Promise<number> {
     status: gs.status,
     created_at: gs.created_at,
     completed_at: gs.completed_at,
+    linked_session_id: gs.linked_session_id,
   }));
 
   const { error } = await supabase
@@ -1431,6 +1434,144 @@ export async function pullFromServer(userId: string): Promise<{
             if (__DEV__) {
               console.log('[syncService] Pulled TP criteria:', crit.label);
             }
+          }
+        }
+      }
+    }
+
+    // 9. Pull group sessions from Supabase
+    const { data: serverGroupSessions, error: groupSessionsError } = await supabase
+      .from('group_sessions')
+      .select('id, user_id, class_id, name, status, created_at, completed_at, linked_session_id')
+      .eq('user_id', userId);
+
+    if (groupSessionsError) {
+      console.error('[syncService] Pull group sessions error:', groupSessionsError);
+      result.errors.push(`Group Sessions: ${groupSessionsError.message}`);
+    } else if (serverGroupSessions && serverGroupSessions.length > 0) {
+      for (const gs of serverGroupSessions) {
+        const existing = await queryAll<{ id: string }>(
+          `SELECT id FROM group_sessions WHERE id = ?`,
+          [gs.id]
+        );
+
+        if (existing.length === 0) {
+          await executeSql(
+            `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [gs.id, gs.user_id, gs.class_id, gs.name, gs.status, gs.created_at, gs.completed_at, gs.linked_session_id, now]
+          );
+          if (__DEV__) {
+            console.log('[syncService] Pulled group session:', gs.name);
+          }
+        }
+      }
+
+      // 10. Pull grading criteria for pulled group sessions
+      const gsIds = serverGroupSessions.map(gs => gs.id);
+      const { data: serverCriteriaGS, error: criteriaGSError } = await supabase
+        .from('grading_criteria')
+        .select('id, session_id, label, max_points, display_order')
+        .in('session_id', gsIds);
+
+      if (criteriaGSError) {
+        console.error('[syncService] Pull grading criteria error:', criteriaGSError);
+        result.errors.push(`Grading Criteria: ${criteriaGSError.message}`);
+      } else if (serverCriteriaGS && serverCriteriaGS.length > 0) {
+        for (const crit of serverCriteriaGS) {
+          const existing = await queryAll<{ id: string }>(
+            `SELECT id FROM grading_criteria WHERE id = ?`,
+            [crit.id]
+          );
+          if (existing.length === 0) {
+            await executeSql(
+              `INSERT INTO grading_criteria (id, session_id, label, max_points, display_order, synced_at) VALUES (?, ?, ?, ?, ?, ?)`,
+              [crit.id, crit.session_id, crit.label, crit.max_points, crit.display_order, now]
+            );
+            if (__DEV__) {
+              console.log('[syncService] Pulled grading criteria:', crit.label);
+            }
+          }
+        }
+      }
+
+      // 11. Pull session groups
+      const { data: serverGroups, error: groupsError } = await supabase
+        .from('session_groups')
+        .select('id, session_id, name, conduct_malus')
+        .in('session_id', gsIds);
+
+      if (groupsError) {
+        console.error('[syncService] Pull session groups error:', groupsError);
+        result.errors.push(`Session Groups: ${groupsError.message}`);
+      } else if (serverGroups && serverGroups.length > 0) {
+        for (const grp of serverGroups) {
+          const existing = await queryAll<{ id: string }>(
+            `SELECT id FROM session_groups WHERE id = ?`,
+            [grp.id]
+          );
+          if (existing.length === 0) {
+            await executeSql(
+              `INSERT INTO session_groups (id, session_id, name, conduct_malus, synced_at) VALUES (?, ?, ?, ?, ?)`,
+              [grp.id, grp.session_id, grp.name, grp.conduct_malus, now]
+            );
+            if (__DEV__) {
+              console.log('[syncService] Pulled session group:', grp.name);
+            }
+          }
+        }
+
+        // 12. Pull group members
+        const groupIds = serverGroups.map(g => g.id);
+        const { data: serverMembers, error: membersError } = await supabase
+          .from('session_group_members')
+          .select('id, group_id, student_id')
+          .in('group_id', groupIds);
+
+        if (membersError) {
+          console.error('[syncService] Pull group members error:', membersError);
+          result.errors.push(`Group Members: ${membersError.message}`);
+        } else if (serverMembers && serverMembers.length > 0) {
+          for (const mem of serverMembers) {
+            const existing = await queryAll<{ id: string }>(
+              `SELECT id FROM session_group_members WHERE id = ?`,
+              [mem.id]
+            );
+            if (existing.length === 0) {
+              await executeSql(
+                `INSERT INTO session_group_members (id, group_id, student_id, synced_at) VALUES (?, ?, ?, ?)`,
+                [mem.id, mem.group_id, mem.student_id, now]
+              );
+            }
+          }
+          if (__DEV__) {
+            console.log('[syncService] Pulled', serverMembers.length, 'group members');
+          }
+        }
+
+        // 13. Pull group grades
+        const { data: serverGrades, error: gradesError } = await supabase
+          .from('group_grades')
+          .select('id, group_id, criteria_id, points_awarded')
+          .in('group_id', groupIds);
+
+        if (gradesError) {
+          console.error('[syncService] Pull group grades error:', gradesError);
+          result.errors.push(`Group Grades: ${gradesError.message}`);
+        } else if (serverGrades && serverGrades.length > 0) {
+          for (const grade of serverGrades) {
+            const existing = await queryAll<{ id: string }>(
+              `SELECT id FROM group_grades WHERE id = ?`,
+              [grade.id]
+            );
+            if (existing.length === 0) {
+              await executeSql(
+                `INSERT INTO group_grades (id, group_id, criteria_id, points_awarded, synced_at) VALUES (?, ?, ?, ?, ?)`,
+                [grade.id, grade.group_id, grade.criteria_id, grade.points_awarded, now]
+              );
+            }
+          }
+          if (__DEV__) {
+            console.log('[syncService] Pulled', serverGrades.length, 'group grades');
           }
         }
       }

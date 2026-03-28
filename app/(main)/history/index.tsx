@@ -12,10 +12,10 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, Stack } from 'expo-router';
+import { router } from 'expo-router';
 import { useAuthStore, useClassStore, useRoomStore, useHistoryStore, useSyncStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
-import { type Session, deleteSession } from '../../../services/database';
+import { type Session, deleteSession, getGroupSessionByLinkedSessionId } from '../../../services/database';
 
 // Helper to format duration
 function formatDuration(startedAt: string, endedAt: string | null): string {
@@ -208,15 +208,21 @@ export default function HistoryScreen() {
     setSelectedClassId(classId);
   };
 
-  const handleDeleteSession = (session: Session) => {
+  const handleDeleteSession = async (session: Session) => {
     if (isDeleting) return;
 
     const className = classMap.get(session.class_id) || 'Classe inconnue';
     const dateStr = formatDate(session.started_at);
 
+    // Check if there's a linked group session
+    const linkedGS = await getGroupSessionByLinkedSessionId(session.id);
+    const groupWarning = linkedGS
+      ? `\n\nLa séance de groupe « ${linkedGS.name} » liée sera aussi supprimée (groupes, notes, critères).`
+      : '';
+
     Alert.alert(
       'Supprimer la séance',
-      `Voulez-vous vraiment supprimer la séance du ${dateStr} (${className}) ?\n\nTous les événements (participations, bavardages, etc.) seront également supprimés.`,
+      `Voulez-vous vraiment supprimer la séance du ${dateStr} (${className}) ?\n\nTous les événements (participations, bavardages, etc.) seront également supprimés.${groupWarning}`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -293,7 +299,7 @@ export default function HistoryScreen() {
             </View>
             <View style={styles.metaDivider} />
             <View style={styles.metaItem}>
-              <Text style={styles.metaLabel}>Duree</Text>
+              <Text style={styles.metaLabel}>Durée</Text>
               <Text style={styles.metaValue}>{duration}</Text>
             </View>
           </View>
@@ -311,14 +317,14 @@ export default function HistoryScreen() {
         <Text style={styles.placeholderEmoji}>📋</Text>
       </View>
       <Text style={styles.placeholderTitle}>
-        {searchQuery ? 'Aucun resultat' : 'Aucune seance'}
+        {searchQuery ? 'Aucun résultat' : 'Aucune séance'}
       </Text>
       <Text style={styles.placeholderText}>
         {searchQuery
-          ? `Aucune seance ne correspond a "${searchQuery}"`
+          ? `Aucune séance ne correspond à "${searchQuery}"`
           : selectedClassId
-            ? 'Aucune seance pour cette classe'
-            : 'Vos seances terminees apparaitront ici'}
+            ? 'Aucune séance pour cette classe'
+            : 'Vos séances terminées apparaîtront ici'}
       </Text>
     </View>
   );
@@ -328,30 +334,9 @@ export default function HistoryScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: 'Historique',
-          headerStyle: { backgroundColor: theme.colors.background },
-          headerTintColor: theme.colors.text,
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontWeight: '700',
-            fontSize: 18,
-          },
-          headerLeft: () => (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Retour</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <View style={styles.screenHeader}>
+        <Text style={styles.screenTitle}>Historique</Text>
+      </View>
 
       {/* Search Bar */}
       <View style={styles.searchContainer}>
@@ -359,7 +344,7 @@ export default function HistoryScreen() {
           <Text style={styles.searchIcon}>🔍</Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Rechercher (classe, salle, theme)..."
+            placeholder="Rechercher (classe, salle, thème)..."
             placeholderTextColor={theme.colors.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -465,7 +450,7 @@ export default function HistoryScreen() {
             filteredSessions.length > 0 ? (
               <View style={styles.listHeaderContainer}>
                 <Text style={styles.listHeader}>
-                  {filteredSessions.length} seance{filteredSessions.length > 1 ? 's' : ''}
+                  {filteredSessions.length} séance{filteredSessions.length > 1 ? 's' : ''}
                   {searchQuery ? ` pour "${searchQuery}"` : ''}
                 </Text>
               </View>
@@ -482,18 +467,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  backButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+  screenHeader: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
   },
-  backButtonPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-  },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 16,
-    fontWeight: '600',
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: theme.colors.text,
+    letterSpacing: -0.5,
   },
   searchContainer: {
     paddingHorizontal: theme.spacing.lg,

@@ -131,6 +131,8 @@ export {
   createGroupSession,
   getGroupSessionsByUserId,
   getActiveGroupSession,
+  getGroupSessionByLinkedSessionId,
+  getPreviousGroupsForClass,
   getGroupSessionsByClassId,
   getGroupSessionById,
   updateGroupSessionStatus,

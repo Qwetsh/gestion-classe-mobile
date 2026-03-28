@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { theme } from '../../../constants/theme';
 import { useAuthStore, useClassStore, useStudentStore, useGroupSessionStore, type StudentWithMapping } from '../../../stores';
@@ -35,7 +35,7 @@ export default function CreateGroupSessionScreen() {
   const { user } = useAuthStore();
   const { classes, loadClasses } = useClassStore();
   const { studentsByClass, loadStudentsForClass } = useStudentStore();
-  const { createSession, addGroup, addCriteria, setGroupMembers, startSession, loadTpTemplates, copyGroupsFromPreviousSession, createRandomGroups } = useGroupSessionStore();
+  const { createSession, addGroup, addCriteria, setGroupMembers, startSession, loadTpTemplates, copyGroupsFromPreviousSession, createRandomGroups, clearActiveSession } = useGroupSessionStore();
 
   // Current step
   const [step, setStep] = useState<CreationStep>('config');
@@ -73,29 +73,38 @@ export default function CreateGroupSessionScreen() {
   const [isCreating, setIsCreating] = useState(false);
   const [isCheckingActive, setIsCheckingActive] = useState(true);
 
-  // Check for active session on mount and redirect if found
-  useEffect(() => {
-    const checkActiveSession = async () => {
-      if (!user?.id) {
-        setIsCheckingActive(false);
-        return;
-      }
-
-      try {
-        const activeSession = await getActiveGroupSession(user.id);
-        // Only redirect for truly active sessions (not draft)
-        if (activeSession && activeSession.status === 'active') {
-          router.replace(`/(main)/group-session/${activeSession.id}/grade`);
+  // Check for active/draft session on mount AND on focus (back navigation)
+  useFocusEffect(
+    useCallback(() => {
+      const checkActiveSession = async () => {
+        if (!user?.id) {
+          setIsCheckingActive(false);
           return;
         }
-      } catch (error) {
-        console.error('[CreateGroupSession] Error checking active session:', error);
-      }
-      setIsCheckingActive(false);
-    };
 
-    checkActiveSession();
-  }, [user?.id]);
+        try {
+          const existingSession = await getActiveGroupSession(user.id);
+          if (existingSession) {
+            if (existingSession.status === 'active') {
+              // Resume active grading session
+              router.replace(`/(main)/group-session/${existingSession.id}/grade`);
+              return;
+            }
+            if (existingSession.status === 'draft') {
+              // Clean up orphan draft sessions (leftover from incomplete creation)
+              const { deleteGroupSession } = await import('../../../services/database');
+              await deleteGroupSession(existingSession.id);
+            }
+          }
+        } catch (error) {
+          console.error('[CreateGroupSession] Error checking active session:', error);
+        }
+        setIsCheckingActive(false);
+      };
+
+      checkActiveSession();
+    }, [user?.id])
+  );
 
   // Get students for selected class
   const students = useMemo(() => {
@@ -387,6 +396,9 @@ export default function CreateGroupSessionScreen() {
     setIsCreating(true);
     try {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // 0. Clear any previous session state
+      clearActiveSession();
 
       // 1. Create the session
       await createSession(user.id, selectedClassId, sessionName.trim());

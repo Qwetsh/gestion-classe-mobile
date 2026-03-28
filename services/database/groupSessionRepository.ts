@@ -22,6 +22,7 @@ interface GroupSessionRow {
   created_at: string;
   completed_at: string | null;
   synced_at: string | null;
+  linked_session_id: string | null;
 }
 
 interface GradingCriteriaRow {
@@ -70,6 +71,7 @@ function rowToGroupSession(row: GroupSessionRow): GroupSession {
     createdAt: row.created_at,
     completedAt: row.completed_at,
     syncedAt: row.synced_at,
+    linkedSessionId: row.linked_session_id,
   };
 }
 
@@ -123,15 +125,16 @@ function rowToGroupGrade(row: GroupGradeRow): GroupGrade {
 export async function createGroupSession(
   userId: string,
   classId: string,
-  name: string
+  name: string,
+  linkedSessionId?: string
 ): Promise<GroupSession> {
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
   await executeSql(
-    `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at)
-     VALUES (?, ?, ?, ?, 'draft', ?)`,
-    [id, userId, classId, name.trim(), now]
+    `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, linked_session_id)
+     VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
+    [id, userId, classId, name.trim(), now, linkedSessionId ?? null]
   );
 
   if (__DEV__) {
@@ -147,6 +150,7 @@ export async function createGroupSession(
     createdAt: now,
     completedAt: null,
     syncedAt: null,
+    linkedSessionId: linkedSessionId ?? null,
   };
 }
 
@@ -171,6 +175,17 @@ export async function getActiveGroupSession(userId: string): Promise<GroupSessio
      WHERE user_id = ? AND status IN ('active', 'draft')
      ORDER BY created_at DESC LIMIT 1`,
     [userId]
+  );
+  return row ? rowToGroupSession(row) : null;
+}
+
+/**
+ * Get group session linked to a regular session
+ */
+export async function getGroupSessionByLinkedSessionId(linkedSessionId: string): Promise<GroupSession | null> {
+  const row = await queryFirst<GroupSessionRow>(
+    `SELECT * FROM group_sessions WHERE linked_session_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [linkedSessionId]
   );
   return row ? rowToGroupSession(row) : null;
 }
@@ -466,6 +481,38 @@ export async function getGroupMemberIds(groupId: string): Promise<string[]> {
     [groupId]
   );
   return rows.map((r) => r.student_id);
+}
+
+/**
+ * Get previous groups from the most recent group session of a class
+ * Returns group names and their member IDs for reuse
+ */
+export async function getPreviousGroupsForClass(classId: string): Promise<{ name: string; memberIds: string[] }[] | null> {
+  // Find the most recent completed/active group session for this class
+  const session = await queryFirst<GroupSessionRow>(
+    `SELECT * FROM group_sessions WHERE class_id = ? ORDER BY created_at DESC LIMIT 1`,
+    [classId]
+  );
+  if (!session) return null;
+
+  const groups = await queryAll<SessionGroupRow>(
+    `SELECT * FROM session_groups WHERE session_id = ? ORDER BY name`,
+    [session.id]
+  );
+  if (groups.length === 0) return null;
+
+  const result: { name: string; memberIds: string[] }[] = [];
+  for (const group of groups) {
+    const memberRows = await queryAll<{ student_id: string }>(
+      `SELECT student_id FROM session_group_members WHERE group_id = ?`,
+      [group.id]
+    );
+    result.push({
+      name: group.name,
+      memberIds: memberRows.map((r) => r.student_id),
+    });
+  }
+  return result;
 }
 
 /**

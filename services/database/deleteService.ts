@@ -61,6 +61,10 @@ export async function deleteStudentCompletely(studentId: string): Promise<Delete
         params: [studentId],
       },
       {
+        sql: `DELETE FROM session_group_members WHERE student_id = ?`,
+        params: [studentId],
+      },
+      {
         sql: `DELETE FROM local_student_mapping WHERE student_id = ?`,
         params: [studentId],
       },

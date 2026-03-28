@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, Stack } from 'expo-router';
+import { router, Stack, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   useAuthStore,
@@ -30,15 +30,19 @@ export default function StartSessionScreen() {
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [topic, setTopic] = useState('');
 
-  // Load data on mount
-  useEffect(() => {
-    if (user?.id) {
-      loadClasses(user.id);
-      loadRooms(user.id);
-      // Check for existing active session
-      loadActiveSession(user.id);
-    }
-  }, [user?.id, loadClasses, loadRooms, loadActiveSession]);
+  // Reset selections and reload data each time screen gets focus
+  useFocusEffect(
+    useCallback(() => {
+      setSelectedClass(null);
+      setSelectedRoom(null);
+      setTopic('');
+      if (user?.id) {
+        loadClasses(user.id);
+        loadRooms(user.id);
+        loadActiveSession(user.id);
+      }
+    }, [user?.id, loadClasses, loadRooms, loadActiveSession])
+  );
 
   // Memoize displayed classes to avoid recalculation on each render
   const displayedClasses = useMemo(() => {
@@ -74,7 +78,7 @@ export default function StartSessionScreen() {
       <Stack.Screen
         options={{
           headerShown: true,
-          title: 'Nouvelle seance',
+          title: 'Nouvelle séance',
           headerStyle: { backgroundColor: theme.colors.background },
           headerTintColor: theme.colors.text,
           headerShadowVisible: false,
@@ -178,7 +182,7 @@ export default function StartSessionScreen() {
             ) : rooms.length === 0 ? (
               <View style={styles.emptyState}>
                 <Text style={styles.emptyEmoji}>🏫</Text>
-                <Text style={styles.emptyText}>Aucune salle configuree</Text>
+                <Text style={styles.emptyText}>Aucune salle configurée</Text>
                 <Pressable
                   style={styles.linkButton}
                   onPress={() => router.push('/(main)/rooms')}
@@ -231,13 +235,13 @@ export default function StartSessionScreen() {
               <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.remarqueSoft }]}>
                 <Text style={styles.sectionIcon}>📝</Text>
               </View>
-              <Text style={styles.sectionTitle}>Theme de la seance</Text>
+              <Text style={styles.sectionTitle}>Thème de la séance</Text>
               <Text style={styles.optionalBadge}>Optionnel</Text>
             </View>
             <View style={styles.topicInputContainer}>
               <TextInput
                 style={styles.topicInput}
-                placeholder="Ex: Chapitre 3 - Les fonctions lineaires..."
+                placeholder="Ex: Chapitre 3 - Les fonctions linéaires..."
                 placeholderTextColor={theme.colors.textTertiary}
                 value={topic}
                 onChangeText={setTopic}
@@ -256,7 +260,7 @@ export default function StartSessionScreen() {
         <View style={styles.footer}>
           {selectedClass && selectedRoom && (
             <View style={styles.selectionSummaryCard}>
-              <Text style={styles.selectionSummaryLabel}>Selection</Text>
+              <Text style={styles.selectionSummaryLabel}>Sélection</Text>
               <Text style={styles.selectionSummary}>
                 {selectedClass.name} • {selectedRoom.name}
               </Text>
@@ -283,14 +287,14 @@ export default function StartSessionScreen() {
                 ) : (
                   <>
                     <Text style={styles.startButtonIcon}>▶</Text>
-                    <Text style={styles.startButtonText}>Demarrer la seance</Text>
+                    <Text style={styles.startButtonText}>Démarrer la séance</Text>
                   </>
                 )}
               </LinearGradient>
             ) : (
               <View style={styles.startButtonDisabledInner}>
                 <Text style={styles.startButtonIcon}>▶</Text>
-                <Text style={styles.startButtonTextDisabled}>Selectionnez une classe et une salle</Text>
+                <Text style={styles.startButtonTextDisabled}>Sélectionnez une classe et une salle</Text>
               </View>
             )}
           </Pressable>

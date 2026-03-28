@@ -8,7 +8,7 @@ import {
   FlatList,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, Stack } from 'expo-router';
+import { router } from 'expo-router';
 import { useAuthStore, useClassStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
 import { Class } from '../../../types';
@@ -43,7 +43,7 @@ export default function ClassesListScreen() {
       <View style={styles.classInfo}>
         <Text style={styles.className}>{item.name}</Text>
         <Text style={styles.classDate}>
-          Creee le {new Date(item.createdAt).toLocaleDateString('fr-FR')}
+          Créée le {new Date(item.createdAt).toLocaleDateString('fr-FR')}
         </Text>
       </View>
       <View style={styles.chevronContainer}>
@@ -70,37 +70,16 @@ export default function ClassesListScreen() {
       </View>
       <Text style={styles.placeholderTitle}>Aucune classe</Text>
       <Text style={styles.placeholderText}>
-        Creez vos classes depuis l'application web, puis synchronisez.
+        Créez vos classes depuis l'application web, puis synchronisez.
       </Text>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: 'Mes classes',
-          headerStyle: { backgroundColor: theme.colors.background },
-          headerTintColor: theme.colors.text,
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontWeight: '700',
-            fontSize: 18,
-          },
-          headerLeft: () => (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Retour</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <View style={styles.screenHeader}>
+        <Text style={styles.screenTitle}>Mes classes</Text>
+      </View>
       <View style={styles.container}>
         {classesLoading && classes.length === 0 ? (
           <View style={styles.loadingContainer}>
@@ -140,18 +119,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  backButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+  screenHeader: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
   },
-  backButtonPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-  },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 16,
-    fontWeight: '600',
+  screenTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: theme.colors.text,
+    letterSpacing: -0.5,
   },
   loadingContainer: {
     flex: 1,

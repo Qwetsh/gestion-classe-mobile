@@ -25,9 +25,16 @@ import {
   usePlanStore,
   useSessionStore,
   useOralEvaluationStore,
+  useGroupSessionStore,
   ORAL_GRADE_LABELS,
   StudentWithMapping,
+  type ActiveSessionState,
 } from '../../../stores';
+import { getGroupSessionByLinkedSessionId } from '../../../services/database';
+import { SessionGroupView } from '../../../components/groups/SessionGroupView';
+import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOverlay';
+import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
+import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
 import { theme } from '../../../constants/theme';
 import { getStudentAtPosition, EVENT_TYPES, SortieSubtype, Event, deleteEvent, getStudentEventsInSession } from '../../../services/database';
 import {
@@ -172,6 +179,24 @@ function NativeSessionScreen() {
     getEvaluatedCount,
     resetClassEvaluations,
   } = useOralEvaluationStore();
+
+  // View mode toggle (plan de classe vs groupes)
+  const [viewMode, setViewMode] = useState<'plan' | 'groups'>('plan');
+  const [linkedGroupSession, setLinkedGroupSession] = useState<ActiveSessionState | null>(null);
+  const [isLoadingGroups, setIsLoadingGroups] = useState(false);
+  const [hasLoadedGroups, setHasLoadedGroups] = useState(false);
+  const [gradingGroup, setGradingGroup] = useState<SessionGroupWithDetails | null>(null);
+  const [showGroupConfig, setShowGroupConfig] = useState(false);
+
+  // Reset group state when navigating to a different session
+  useEffect(() => {
+    setViewMode('plan');
+    setLinkedGroupSession(null);
+    setIsLoadingGroups(false);
+    setHasLoadedGroups(false);
+    setGradingGroup(null);
+    setShowGroupConfig(false);
+  }, [id]);
 
   const [isInitializing, setIsInitializing] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState<StudentWithMapping | null>(null);
@@ -409,6 +434,7 @@ function NativeSessionScreen() {
 
   // Handle touch start on a student cell
   const handleTouchStart = (student: StudentWithMapping, pageX: number, pageY: number) => {
+    if (viewMode !== 'plan') return;
     clearLongPressTimer();
 
     // Check if student is absent - show cancel dialog instead of radial menu
@@ -543,6 +569,14 @@ function NativeSessionScreen() {
           text: 'Terminer',
           style: 'destructive',
           onPress: async () => {
+            // Complete linked group session first (so grades get synced)
+            if (linkedGroupSession) {
+              try {
+                await useGroupSessionStore.getState().completeSession();
+              } catch (err) {
+                console.error('[Session] Failed to complete linked group session:', err);
+              }
+            }
             await endCurrentSession();
             router.replace('/(main)/');
           },
@@ -550,6 +584,88 @@ function NativeSessionScreen() {
       ]
     );
   };
+
+  const handleSwitchToGroups = useCallback(async () => {
+    setViewMode('groups');
+    if (!hasLoadedGroups && activeSession?.id) {
+      setIsLoadingGroups(true);
+      try {
+        const gs = await getGroupSessionByLinkedSessionId(activeSession.id);
+        if (gs) {
+          await useGroupSessionStore.getState().loadSession(gs.id);
+          const loaded = useGroupSessionStore.getState().activeSession;
+          // Only use if it actually matches this session
+          if (loaded && loaded.session.id === gs.id) {
+            setLinkedGroupSession({
+              ...loaded,
+              groups: loaded.groups.map(g => ({ ...g, grades: [...g.grades] })),
+            });
+          }
+        } else {
+          // No linked group session — ensure clean state
+          setLinkedGroupSession(null);
+        }
+      } catch (err) {
+        console.error('[Session] Failed to load linked groups:', err);
+        setLinkedGroupSession(null);
+      } finally {
+        setIsLoadingGroups(false);
+        setHasLoadedGroups(true);
+      }
+    }
+  }, [activeSession?.id, hasLoadedGroups]);
+
+  // Refresh linked group session data from store (after grading changes)
+  // Deep copy groups to ensure React detects changes in grades/malus
+  const refreshLinkedGroupSession = useCallback(() => {
+    const current = useGroupSessionStore.getState().activeSession;
+    if (current) {
+      setLinkedGroupSession({
+        ...current,
+        groups: current.groups.map(g => ({ ...g, grades: [...g.grades] })),
+      });
+    }
+  }, []);
+
+  const handleGroupPress = useCallback((group: SessionGroupWithDetails) => {
+    setGradingGroup(group);
+  }, []);
+
+  const handleGradeChange = useCallback(async (groupId: string, criteriaId: string, points: number) => {
+    await useGroupSessionStore.getState().setGrade(groupId, criteriaId, points);
+    refreshLinkedGroupSession();
+  }, [refreshLinkedGroupSession]);
+
+  const handleApplyMalus = useCallback(async (groupId: string) => {
+    await useGroupSessionStore.getState().applyMalus(groupId, 1);
+    refreshLinkedGroupSession();
+  }, [refreshLinkedGroupSession]);
+
+  const handleResetMalus = useCallback(async (groupId: string) => {
+    await useGroupSessionStore.getState().resetMalus(groupId);
+    refreshLinkedGroupSession();
+  }, [refreshLinkedGroupSession]);
+
+  const handleCloseGrading = useCallback(() => {
+    setGradingGroup(null);
+  }, []);
+
+  const handleOpenGroupConfig = useCallback(() => {
+    setShowGroupConfig(true);
+  }, []);
+
+  const handleGroupConfigComplete = useCallback(() => {
+    setShowGroupConfig(false);
+    // Reload linked group session data with deep copy
+    const current = useGroupSessionStore.getState().activeSession;
+    if (current) {
+      setLinkedGroupSession({
+        ...current,
+        groups: current.groups.map(g => ({ ...g, grades: [...g.grades] })),
+      });
+      setHasLoadedGroups(true);
+    }
+  }, []);
 
   const handleCancelSession = () => {
     Alert.alert(
@@ -562,7 +678,12 @@ function NativeSessionScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // cancelCurrentSession → deleteSession also deletes linked group_sessions
               await cancelCurrentSession();
+              // Clear group session store if it was loaded
+              if (linkedGroupSession) {
+                useGroupSessionStore.setState({ activeSession: null });
+              }
               router.replace('/(main)/');
             } catch (error) {
               console.error('[Session] Cancel failed:', error);
@@ -1038,57 +1159,92 @@ function NativeSessionScreen() {
       >
         <View style={styles.infoBar}>
           <Text style={styles.infoText}>
-            {currentRoom?.name} - Maintenir appuye sur un eleve
+            {viewMode === 'plan'
+              ? `${currentRoom?.name} - Maintenir appuye sur un eleve`
+              : `${currentRoom?.name} - Vue groupes`}
           </Text>
         </View>
 
-        {/* Toolbar */}
-        <View style={styles.toolbar}>
+        {/* View Mode Toggle */}
+        <View style={styles.viewModeToggle}>
           <Pressable
-            style={styles.toolbarButton}
-            onPress={handleRandomStudent}
+            style={[styles.viewModeTab, viewMode === 'plan' && styles.viewModeTabActive]}
+            onPress={() => setViewMode('plan')}
           >
-            <Text style={styles.toolbarButtonIcon}>🎲</Text>
-            <Text style={styles.toolbarButtonText}>Aleatoire</Text>
+            <Text style={[styles.viewModeTabText, viewMode === 'plan' && styles.viewModeTabTextActive]}>
+              Plan de classe
+            </Text>
           </Pressable>
-          <View style={styles.toolbarDivider} />
           <Pressable
-            style={styles.toolbarButton}
-            onPress={handleOralEvaluation}
+            style={[styles.viewModeTab, viewMode === 'groups' && styles.viewModeTabActive]}
+            onPress={handleSwitchToGroups}
           >
-            <Text style={styles.toolbarButtonIcon}>🎤</Text>
-            <Text style={styles.toolbarButtonText}>Oral</Text>
-            {activeSession && (
-              <View style={styles.oralCountBadge}>
-                <Text style={styles.oralCountText}>
-                  {getEvaluatedCount(activeSession.class_id)}/{students.filter(s => !isStudentAbsent(s.id)).length}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-          <View style={styles.toolbarDivider} />
-          <Pressable
-            style={styles.toolbarButton}
-            onPress={handleOpenSessionNotes}
-          >
-            <Text style={styles.toolbarButtonIcon}>📝</Text>
-            <Text style={styles.toolbarButtonText}>Note</Text>
-            {activeSession?.notes && (
-              <View style={styles.noteIndicator} />
-            )}
-          </Pressable>
-          <View style={styles.toolbarDivider} />
-          <Pressable
-            style={styles.toolbarButton}
-            onPress={handleOpenDeleteModal}
-          >
-            <Text style={styles.toolbarButtonIcon}>🗑️</Text>
-            <Text style={styles.toolbarButtonText}>Supprimer</Text>
+            <Text style={[styles.viewModeTabText, viewMode === 'groups' && styles.viewModeTabTextActive]}>
+              Groupes
+            </Text>
           </Pressable>
         </View>
 
+        {/* Toolbar (plan mode only) */}
+        {viewMode === 'plan' && (
+          <View style={styles.toolbar}>
+            <Pressable
+              style={styles.toolbarButton}
+              onPress={handleRandomStudent}
+            >
+              <Text style={styles.toolbarButtonIcon}>🎲</Text>
+              <Text style={styles.toolbarButtonText}>Aleatoire</Text>
+            </Pressable>
+            <View style={styles.toolbarDivider} />
+            <Pressable
+              style={styles.toolbarButton}
+              onPress={handleOralEvaluation}
+            >
+              <Text style={styles.toolbarButtonIcon}>🎤</Text>
+              <Text style={styles.toolbarButtonText}>Oral</Text>
+              {activeSession && (
+                <View style={styles.oralCountBadge}>
+                  <Text style={styles.oralCountText}>
+                    {getEvaluatedCount(activeSession.class_id)}/{students.filter(s => !isStudentAbsent(s.id)).length}
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+            <View style={styles.toolbarDivider} />
+            <Pressable
+              style={styles.toolbarButton}
+              onPress={handleOpenSessionNotes}
+            >
+              <Text style={styles.toolbarButtonIcon}>📝</Text>
+              <Text style={styles.toolbarButtonText}>Note</Text>
+              {activeSession?.notes && (
+                <View style={styles.noteIndicator} />
+              )}
+            </Pressable>
+            <View style={styles.toolbarDivider} />
+            <Pressable
+              style={styles.toolbarButton}
+              onPress={handleOpenDeleteModal}
+            >
+              <Text style={styles.toolbarButtonIcon}>🗑️</Text>
+              <Text style={styles.toolbarButtonText}>Supprimer</Text>
+            </Pressable>
+          </View>
+        )}
+
         <View style={styles.gridArea}>
-          {renderGrid()}
+          {viewMode === 'plan' ? renderGrid() : (
+            <SessionGroupView
+              groups={linkedGroupSession?.groups ?? []}
+              criteria={linkedGroupSession?.criteria ?? []}
+              maxPossibleScore={linkedGroupSession?.maxPossibleScore ?? 0}
+              students={students}
+              isLoading={isLoadingGroups}
+              isEmpty={hasLoadedGroups && !linkedGroupSession}
+              onGroupPress={linkedGroupSession ? handleGroupPress : undefined}
+              onConfigureGroups={handleOpenGroupConfig}
+            />
+          )}
         </View>
 
         {/* Progress Circle */}
@@ -1591,6 +1747,32 @@ function NativeSessionScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Group Configuration Sheet */}
+      {activeSession && user && (
+        <GroupConfigSheet
+          visible={showGroupConfig}
+          userId={user.id}
+          classId={activeSession.class_id}
+          sessionId={activeSession.id}
+          students={students}
+          onComplete={handleGroupConfigComplete}
+          onClose={() => setShowGroupConfig(false)}
+        />
+      )}
+
+      {/* Group Grading Overlay */}
+      <GroupGradingOverlay
+        visible={gradingGroup !== null}
+        group={gradingGroup ? (linkedGroupSession?.groups.find(g => g.id === gradingGroup.id) ?? gradingGroup) : null}
+        criteria={linkedGroupSession?.criteria ?? []}
+        maxPossibleScore={linkedGroupSession?.maxPossibleScore ?? 0}
+        students={students}
+        onGradeChange={handleGradeChange}
+        onApplyMalus={handleApplyMalus}
+        onResetMalus={handleResetMalus}
+        onClose={handleCloseGrading}
+      />
     </SafeAreaView>
   );
 }
@@ -2291,5 +2473,34 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: theme.colors.error,
     textAlign: 'center',
+  },
+
+  // View mode toggle
+  viewModeToggle: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.background,
+    padding: 4,
+    marginHorizontal: theme.spacing.md,
+    marginVertical: theme.spacing.xs,
+    borderRadius: theme.radius.lg,
+  },
+  viewModeTab: {
+    flex: 1,
+    paddingVertical: theme.spacing.sm,
+    alignItems: 'center',
+    borderRadius: theme.radius.md,
+  },
+  viewModeTabActive: {
+    backgroundColor: theme.colors.surface,
+    ...theme.shadows.sm,
+  },
+  viewModeTabText: {
+    fontSize: 14,
+    fontWeight: '500' as const,
+    color: theme.colors.textSecondary,
+  },
+  viewModeTabTextActive: {
+    color: theme.colors.primary,
+    fontWeight: '600' as const,
   },
 });
