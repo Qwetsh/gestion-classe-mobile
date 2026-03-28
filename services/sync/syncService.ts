@@ -1101,9 +1101,13 @@ async function syncBonuses(userId: string): Promise<number> {
 async function syncStampCards(userId: string): Promise<number> {
   if (!supabase) return 0;
 
+  // Get cards that are either unsynced OR have unsynced stamps (may have been deleted from server by web reset)
   const unsynced = await queryAll<{
     id: string; student_id: string; card_number: number; status: string; completed_at: string | null; created_at: string;
-  }>('SELECT id, student_id, card_number, status, completed_at, created_at FROM stamp_cards WHERE user_id = ? AND synced_at IS NULL', [userId]);
+  }>(`SELECT DISTINCT sc.id, sc.student_id, sc.card_number, sc.status, sc.completed_at, sc.created_at
+      FROM stamp_cards sc
+      LEFT JOIN stamps s ON s.card_id = sc.id AND s.synced_at IS NULL
+      WHERE sc.user_id = ? AND (sc.synced_at IS NULL OR s.id IS NOT NULL)`, [userId]);
 
   if (unsynced.length === 0) return 0;
 
@@ -1183,12 +1187,61 @@ async function syncStamps(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  // Filter: only sync stamps whose card is already synced on server
+  // Check which cards exist on server
   const cardIds = [...new Set(unsynced.map(s => s.card_id))];
   const { data: syncedCards } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
   const serverCardIds = new Set((syncedCards || []).map(c => c.id));
 
-  const toSync = unsynced
+  // For stamps whose card_id is NOT on server (e.g. after web reset),
+  // find the correct server card by (student_id, card_number) and remap
+  const missingCardIds = cardIds.filter(id => !serverCardIds.has(id));
+
+  if (missingCardIds.length > 0) {
+    // Get local card info for missing cards
+    const placeholders = missingCardIds.map(() => '?').join(',');
+    const localCards = await queryAll<{ id: string; student_id: string; card_number: number }>(
+      `SELECT id, student_id, card_number FROM stamp_cards WHERE id IN (${placeholders})`,
+      missingCardIds
+    );
+
+    if (localCards.length > 0) {
+      const studentIds = [...new Set(localCards.map(c => c.student_id))];
+      const { data: serverCardsForStudents } = await supabase
+        .from('stamp_cards')
+        .select('id, student_id, card_number')
+        .in('student_id', studentIds);
+
+      const serverMap = new Map<string, string>(); // "studentId:cardNumber" -> serverId
+      for (const sc of (serverCardsForStudents || [])) {
+        serverMap.set(`${sc.student_id}:${sc.card_number}`, sc.id);
+      }
+
+      for (const lc of localCards) {
+        const serverCardId = serverMap.get(`${lc.student_id}:${lc.card_number}`);
+        if (serverCardId && serverCardId !== lc.id) {
+          console.log(`[syncService] Remapping stamps from card ${lc.id} -> ${serverCardId}`);
+          // Remap stamps locally to use server card ID
+          await executeSql('UPDATE stamps SET card_id = ? WHERE card_id = ?', [serverCardId, lc.id]);
+          // Also remap the local card
+          await executeSql('UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', [serverCardId, lc.id]);
+          await executeSql('DELETE FROM stamp_cards WHERE id = ?', [lc.id]);
+          await executeSql(
+            `INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at)
+             VALUES (?, ?, ?, ?, 'active', NULL, datetime('now'), datetime('now'))`,
+            [serverCardId, lc.student_id, userId, lc.card_number]
+          );
+          serverCardIds.add(serverCardId);
+        }
+      }
+    }
+  }
+
+  // Re-read unsynced stamps (card_ids may have been remapped)
+  const updatedUnsynced = await queryAll<{
+    id: string; card_id: string; student_id: string; category_id: string | null; slot_number: number; awarded_at: string;
+  }>('SELECT id, card_id, student_id, category_id, slot_number, awarded_at FROM stamps WHERE user_id = ? AND synced_at IS NULL', [userId]);
+
+  const toSync = updatedUnsynced
     .filter(s => serverCardIds.has(s.card_id))
     .map(s => ({
       id: s.id, card_id: s.card_id, student_id: s.student_id, user_id: userId,
@@ -1202,8 +1255,8 @@ async function syncStamps(userId: string): Promise<number> {
 
   const now = new Date().toISOString();
   const ids = toSync.map(s => s.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamps SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  const syncPlaceholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE stamps SET synced_at = ? WHERE id IN (${syncPlaceholders})`, [now, ...ids]);
 
   return toSync.length;
 }
