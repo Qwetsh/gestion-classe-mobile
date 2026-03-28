@@ -1117,21 +1117,55 @@ async function syncStampCards(userId: string): Promise<number> {
   console.log('[syncService] syncStampCards: unsynced count =', unsynced.length);
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map(c => ({
-    id: c.id, student_id: c.student_id, user_id: userId,
-    card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
-  }));
+  // Check for existing server cards to detect UNIQUE(student_id, card_number) conflicts
+  const studentIds = [...new Set(unsynced.map(c => c.student_id))];
+  const { data: serverCards } = await supabase
+    .from('stamp_cards')
+    .select('id, student_id, card_number')
+    .in('student_id', studentIds);
 
-  console.log('[syncService] syncStampCards: upserting', toSync.length, 'cards to Supabase');
-  const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamp cards sync error:', JSON.stringify(error)); throw new Error(`Stamp cards: ${error.message}`); }
-  console.log('[syncService] syncStampCards: upsert OK');
+  const serverMap = new Map<string, string>(); // "studentId:cardNumber" -> serverId
+  for (const sc of (serverCards || [])) {
+    serverMap.set(`${sc.student_id}:${sc.card_number}`, sc.id);
+  }
 
+  const toUpsert: any[] = [];
   const now = new Date().toISOString();
-  const ids = unsynced.map(c => c.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
 
+  for (const c of unsynced) {
+    const serverCardId = serverMap.get(`${c.student_id}:${c.card_number}`);
+
+    if (serverCardId && serverCardId !== c.id) {
+      // Conflict: server has same student+card_number with different UUID
+      // Remap local stamps to point to server card ID (NO DELETE to avoid CASCADE)
+      console.log('[syncService] Card conflict: local', c.id, '-> server', serverCardId);
+      await executeSql('UPDATE stamps SET card_id = ? WHERE card_id = ?', [serverCardId, c.id]);
+      await executeSql('UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', [serverCardId, c.id]);
+      // Just mark local card as synced (keep it to avoid CASCADE delete of stamps)
+      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, c.id]);
+    } else if (!serverCardId) {
+      // No server card → upsert
+      toUpsert.push({
+        id: c.id, student_id: c.student_id, user_id: userId,
+        card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+      });
+    } else {
+      // Same ID on server → just mark synced
+      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, c.id]);
+    }
+  }
+
+  if (toUpsert.length > 0) {
+    console.log('[syncService] syncStampCards: upserting', toUpsert.length, 'new cards');
+    const { error } = await supabase.from('stamp_cards').upsert(toUpsert, { onConflict: 'id' });
+    if (error) { console.error('[syncService] Stamp cards sync error:', JSON.stringify(error)); throw new Error(`Stamp cards: ${error.message}`); }
+
+    const ids = toUpsert.map(c => c.id);
+    const placeholders = ids.map(() => '?').join(',');
+    await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  }
+
+  console.log('[syncService] syncStampCards: done (conflicts:', unsynced.length - toUpsert.length, ', upserted:', toUpsert.length, ')');
   return unsynced.length;
 }
 
