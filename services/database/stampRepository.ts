@@ -131,10 +131,43 @@ export async function seedDefaultStampData(userId: string): Promise<void> {
 
 export async function getStampCategories(userId: string, activeOnly = true): Promise<StampCategory[]> {
   const where = activeOnly ? 'AND is_active = 1' : '';
-  return queryAll<StampCategory>(
+  const all = await queryAll<StampCategory>(
     `SELECT * FROM stamp_categories WHERE user_id = ? ${where} ORDER BY display_order ASC`,
     [userId]
   );
+  // Deduplicate by label (keep first = lowest display_order)
+  const seen = new Set<string>();
+  return all.filter(cat => {
+    if (seen.has(cat.label)) return false;
+    seen.add(cat.label);
+    return true;
+  });
+}
+
+/**
+ * Remove duplicate stamp_categories in SQLite (keeps oldest per label).
+ * Call on app startup to clean up sync-created duplicates.
+ */
+export async function cleanupDuplicateCategories(userId: string): Promise<number> {
+  const all = await queryAll<StampCategory>(
+    'SELECT * FROM stamp_categories WHERE user_id = ? ORDER BY display_order ASC, created_at ASC',
+    [userId]
+  );
+  const seen = new Set<string>();
+  const toDelete: string[] = [];
+  for (const cat of all) {
+    if (seen.has(cat.label)) {
+      toDelete.push(cat.id);
+    } else {
+      seen.add(cat.label);
+    }
+  }
+  if (toDelete.length > 0) {
+    const placeholders = toDelete.map(() => '?').join(',');
+    await executeSql(`DELETE FROM stamp_categories WHERE id IN (${placeholders})`, toDelete);
+    console.log('[stampRepository] Cleaned up', toDelete.length, 'duplicate categories');
+  }
+  return toDelete.length;
 }
 
 export async function createStampCategory(

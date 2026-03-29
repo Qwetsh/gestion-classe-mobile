@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   seedDefaultStampData,
   getStampCategories,
+  cleanupDuplicateCategories,
   getActiveCardWithStamps,
   getCompletedCards,
   awardStamp,
@@ -47,6 +48,8 @@ export const useStampStore = create<StampState>((set, get) => ({
     try {
       // Seed defaults if needed
       await seedDefaultStampData(userId);
+      // Clean up duplicates created by sync
+      await cleanupDuplicateCategories(userId);
       const categories = await getStampCategories(userId, true);
       set({ categories, categoriesLoaded: true });
     } catch (error) {

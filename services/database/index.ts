@@ -210,6 +210,7 @@ export {
   seedDefaultStampData,
   // Categories CRUD
   getStampCategories,
+  cleanupDuplicateCategories,
   createStampCategory,
   updateStampCategory,
   deleteStampCategory,

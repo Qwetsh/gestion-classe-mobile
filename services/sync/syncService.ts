@@ -1856,7 +1856,14 @@ export async function pullFromServer(userId: string): Promise<{
           }
         }
       }
-      for (const cat of serverStampCategories) {
+      // Deduplicate server categories by label (keep first occurrence)
+      const seenLabels = new Set<string>();
+      const uniqueServerCats = serverStampCategories.filter(cat => {
+        if (seenLabels.has(cat.label)) return false;
+        seenLabels.add(cat.label);
+        return true;
+      });
+      for (const cat of uniqueServerCats) {
         await executeSql(
           `INSERT OR REPLACE INTO stamp_categories (id, user_id, label, icon, color, display_order, is_active, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [cat.id, userId, cat.label, cat.icon, cat.color, cat.display_order, cat.is_active ? 1 : 0, cat.created_at, now]
