@@ -1,6 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import { executeSql, queryAll, queryFirst, executeTransaction } from './client';
 import { DEFAULT_STAMP_CATEGORIES, DEFAULT_BONUSES } from './schema';
+import { supabase, isSupabaseConfigured } from '../supabase';
 
 // ============================================
 // Types
@@ -384,6 +385,35 @@ export async function awardStamp(
 
   console.log('[stampRepository] Awarded stamp', slotNumber + '/10 to student:', studentId);
 
+  // Push stamp to Supabase immediately for real-time sync
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error: stampErr } = await supabase.from('stamps').upsert({
+        id, card_id: card.id, student_id: studentId, user_id: userId,
+        category_id: categoryId, slot_number: slotNumber, awarded_at: now,
+      });
+      if (stampErr) {
+        console.warn('[stampRepository] Failed to push stamp to Supabase:', stampErr.message);
+      } else {
+        // Mark as synced locally
+        await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
+      }
+      // Also push card if newly created or completed
+      const { error: cardErr } = await supabase.from('stamp_cards').upsert({
+        id: card.id, student_id: studentId, user_id: userId,
+        card_number: card.card_number, status: isComplete ? 'completed' : 'active',
+        completed_at: isComplete ? now : card.completed_at, created_at: card.created_at,
+      });
+      if (cardErr) {
+        console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);
+      } else {
+        await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, card.id]);
+      }
+    } catch (err) {
+      console.warn('[stampRepository] Supabase award stamp sync error:', err);
+    }
+  }
+
   return { stamp, stampCount: currentCount + 1, cardComplete: isComplete, cardNumber: card.card_number };
 }
 
@@ -392,7 +422,21 @@ export async function awardStamp(
  */
 export async function deleteStamp(stampId: string): Promise<void> {
   await executeSql('DELETE FROM stamps WHERE id = ?', [stampId]);
-  console.log('[stampRepository] Deleted stamp:', stampId);
+  console.log('[stampRepository] Deleted stamp locally:', stampId);
+
+  // Also delete on Supabase immediately so it's reflected in real-time
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('stamps').delete().eq('id', stampId);
+      if (error) {
+        console.warn('[stampRepository] Failed to delete stamp on Supabase:', error.message);
+      } else {
+        console.log('[stampRepository] Deleted stamp on Supabase:', stampId);
+      }
+    } catch (err) {
+      console.warn('[stampRepository] Supabase delete stamp error:', err);
+    }
+  }
 }
 
 /**
