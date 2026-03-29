@@ -1107,18 +1107,60 @@ async function syncStampCards(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map(c => ({
-    id: c.id, student_id: c.student_id, user_id: userId,
-    card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
-  }));
+  // Check for UUID conflicts: server may already have cards for the same (student_id, card_number)
+  // created by the web app with different UUIDs
+  const studentIds = [...new Set(unsynced.map(c => c.student_id))];
+  const { data: serverCards } = await supabase
+    .from('stamp_cards')
+    .select('id, student_id, card_number')
+    .in('student_id', studentIds)
+    .eq('user_id', userId);
 
-  const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
+  // Build lookup: "student_id|card_number" -> server UUID
+  const serverCardMap = new Map<string, string>();
+  for (const sc of (serverCards || [])) {
+    serverCardMap.set(`${sc.student_id}|${sc.card_number}`, sc.id);
+  }
 
   const now = new Date().toISOString();
-  const ids = unsynced.map(c => c.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  const toSync: typeof unsynced = [];
+
+  for (const card of unsynced) {
+    const key = `${card.student_id}|${card.card_number}`;
+    const serverId = serverCardMap.get(key);
+
+    if (serverId && serverId !== card.id) {
+      // Conflict: server has a different UUID for this card
+      // Remap local references (stamps, bonus_selections) to use server UUID
+      await executeSql('UPDATE stamps SET card_id = ? WHERE card_id = ?', [serverId, card.id]);
+      await executeSql('UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', [serverId, card.id]);
+      // Update the local stamp_card id to match server
+      await executeSql('DELETE FROM stamp_cards WHERE id = ?', [card.id]);
+      await executeSql(
+        'INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [serverId, card.student_id, userId, card.card_number, card.status, card.completed_at, card.created_at, now]
+      );
+      console.log(`[syncService] Remapped stamp_card ${card.id} -> ${serverId} for student ${card.student_id}`);
+    } else {
+      // No conflict, sync normally
+      toSync.push(card);
+    }
+  }
+
+  // Upsert non-conflicting cards
+  if (toSync.length > 0) {
+    const payload = toSync.map(c => ({
+      id: c.id, student_id: c.student_id, user_id: userId,
+      card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+    }));
+
+    const { error } = await supabase.from('stamp_cards').upsert(payload, { onConflict: 'id' });
+    if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
+
+    const ids = toSync.map(c => c.id);
+    const placeholders = ids.map(() => '?').join(',');
+    await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
+  }
 
   return unsynced.length;
 }
@@ -1137,12 +1179,51 @@ async function syncStamps(userId: string): Promise<number> {
   const { data: syncedCards } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
   const serverCardIds = new Set((syncedCards || []).map(c => c.id));
 
-  const toSync = unsynced
-    .filter(s => serverCardIds.has(s.card_id))
-    .map(s => ({
+  const eligible = unsynced.filter(s => serverCardIds.has(s.card_id));
+  if (eligible.length === 0) return 0;
+
+  // Check for slot_number conflicts: server may already have stamps at the same (card_id, slot_number)
+  // This happens when web and mobile both award stamps to the same student
+  const { data: serverStamps } = await supabase
+    .from('stamps')
+    .select('card_id, slot_number')
+    .in('card_id', [...serverCardIds]);
+
+  const occupiedSlots = new Set<string>();
+  for (const ss of (serverStamps || [])) {
+    occupiedSlots.set(`${ss.card_id}|${ss.slot_number}`);
+  }
+
+  const toSync = [];
+  for (const s of eligible) {
+    let slot = s.slot_number;
+    const slotKey = `${s.card_id}|${slot}`;
+
+    if (occupiedSlots.has(slotKey)) {
+      // Conflict: find next available slot (max 10 per card)
+      let newSlot = slot;
+      while (newSlot <= 10 && occupiedSlots.has(`${s.card_id}|${newSlot}`)) {
+        newSlot++;
+      }
+      if (newSlot > 10) {
+        // Card is full, skip this stamp
+        console.log(`[syncService] Card ${s.card_id} full, skipping stamp ${s.id}`);
+        // Mark as synced locally to avoid retrying
+        await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [new Date().toISOString(), s.id]);
+        continue;
+      }
+      slot = newSlot;
+      // Update local slot_number to match
+      await executeSql('UPDATE stamps SET slot_number = ? WHERE id = ?', [slot, s.id]);
+      console.log(`[syncService] Renumbered stamp ${s.id} slot ${s.slot_number} -> ${slot}`);
+    }
+
+    occupiedSlots.add(`${s.card_id}|${slot}`);
+    toSync.push({
       id: s.id, card_id: s.card_id, student_id: s.student_id, user_id: userId,
-      category_id: s.category_id, slot_number: s.slot_number, awarded_at: s.awarded_at,
-    }));
+      category_id: s.category_id, slot_number: slot, awarded_at: s.awarded_at,
+    });
+  }
 
   if (toSync.length === 0) return 0;
 
