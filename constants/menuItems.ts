@@ -15,7 +15,7 @@ export const MENU_ITEMS: MenuItemType[] = [
   },
   {
     id: 'bavardage',
-    label: 'Bavardage',
+    label: 'Malus',
     icon: '💬',
     color: '#FBBF24',
   },

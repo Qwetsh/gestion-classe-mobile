@@ -334,18 +334,20 @@ export async function awardStamp(
 ): Promise<{ stamp: Stamp; stampCount: number; cardComplete: boolean; cardNumber: number }> {
   const card = await getOrCreateActiveCard(userId, studentId);
 
-  // Count current stamps
-  const countResult = await queryFirst<{ count: number }>(
-    'SELECT COUNT(*) as count FROM stamps WHERE card_id = ?',
+  // Find used slots and pick the first free one
+  const usedSlots = await queryAll<{ slot_number: number }>(
+    'SELECT slot_number FROM stamps WHERE card_id = ?',
     [card.id]
   );
-  const currentCount = countResult?.count || 0;
+  const currentCount = usedSlots.length;
 
   if (currentCount >= 10) {
     throw new Error('Carte déjà complète');
   }
 
-  const slotNumber = currentCount + 1;
+  const used = new Set(usedSlots.map(s => s.slot_number));
+  let slotNumber = 1;
+  while (used.has(slotNumber) && slotNumber <= 10) slotNumber++;
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -364,6 +366,14 @@ export async function awardStamp(
   console.log('[stampRepository] Awarded stamp', slotNumber + '/10 to student:', studentId);
 
   return { stamp, stampCount: slotNumber, cardComplete, cardNumber: card.card_number };
+}
+
+/**
+ * Delete a specific stamp by ID
+ */
+export async function deleteStamp(stampId: string): Promise<void> {
+  await executeSql('DELETE FROM stamps WHERE id = ?', [stampId]);
+  console.log('[stampRepository] Deleted stamp:', stampId);
 }
 
 /**

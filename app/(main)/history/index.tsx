@@ -222,7 +222,7 @@ export default function HistoryScreen() {
 
     Alert.alert(
       'Supprimer la séance',
-      `Voulez-vous vraiment supprimer la séance du ${dateStr} (${className}) ?\n\nTous les événements (participations, bavardages, etc.) seront également supprimés.${groupWarning}`,
+      `Voulez-vous vraiment supprimer la séance du ${dateStr} (${className}) ?\n\nTous les événements (participations, malus, etc.) seront également supprimés.${groupWarning}`,
       [
         { text: 'Annuler', style: 'cancel' },
         {

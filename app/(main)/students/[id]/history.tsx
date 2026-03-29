@@ -11,6 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import QRCode from 'react-native-qrcode-svg';
 import { useHistoryStore, useStudentStore, useAuthStore, useClassStore, useStampStore } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
 import {
@@ -18,20 +19,78 @@ import {
   type EventType,
   getStudentDeleteStats,
   deleteStudentCompletely,
+  deleteStamp,
   type CompletedCardSummary,
 } from '../../../../services/database';
+import { supabase, isSupabaseConfigured } from '../../../../services/supabase';
 import { PhotoPicker } from '../../../../components';
 import { exportStudentHistoryPdf } from '../../../../services/pdfExport';
 
 // Event type display config
 const EVENT_CONFIG: Record<EventType, { label: string; color: string; emoji: string }> = {
   participation: { label: 'Implication', color: theme.colors.participation, emoji: '+' },
-  bavardage: { label: 'Bavardage', color: theme.colors.bavardage, emoji: '-' },
+  bavardage: { label: 'Malus', color: theme.colors.bavardage, emoji: '-' },
   absence: { label: 'Absence', color: theme.colors.absence, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, emoji: 'S' },
   retour: { label: 'Retour', color: '#10B981', emoji: '↩' },
 };
+
+// Card tier system (matches web rewardsQueries.ts)
+interface CardTierMobile {
+  name: string;
+  emoji: string;
+  primaryColor: string;
+  borderColor: string;
+  progressColor: string;
+  progressCompleteColor: string;
+  textColor: string;
+  badgeBg: string;
+  badgeText: string;
+  slotBorder: string;
+  slotBg: string;
+  emptyIcon: string;
+}
+
+function getCardTier(cardNumber: number): CardTierMobile {
+  if (cardNumber >= 4) return CARD_TIERS.gold;
+  if (cardNumber === 3) return CARD_TIERS.silver;
+  if (cardNumber === 2) return CARD_TIERS.bronze;
+  return CARD_TIERS.wood;
+}
+
+const CARD_TIERS: Record<string, CardTierMobile> = {
+  wood: {
+    name: 'Bois', emoji: '🪵',
+    primaryColor: '#8B7355', borderColor: '#8B7355',
+    progressColor: '#A0826D', progressCompleteColor: '#6B8E23',
+    textColor: '#5C3D2E', badgeBg: '#8B735520', badgeText: '#6B4F36',
+    slotBorder: '#8B735540', slotBg: '#8B735508', emptyIcon: '🌰',
+  },
+  bronze: {
+    name: 'Bronze', emoji: '🥉',
+    primaryColor: '#CD7F32', borderColor: '#CD7F32',
+    progressColor: '#DDA15E', progressCompleteColor: '#CD7F32',
+    textColor: '#8B4513', badgeBg: '#CD7F3220', badgeText: '#A0522D',
+    slotBorder: '#CD7F3240', slotBg: '#CD7F3208', emptyIcon: '🔸',
+  },
+  silver: {
+    name: 'Argent', emoji: '🥈',
+    primaryColor: '#C0C0C0', borderColor: '#A9A9A9',
+    progressColor: '#D3D3D3', progressCompleteColor: '#A9A9A9',
+    textColor: '#4A4A4A', badgeBg: '#C0C0C020', badgeText: '#696969',
+    slotBorder: '#C0C0C050', slotBg: '#C0C0C00A', emptyIcon: '◇',
+  },
+  gold: {
+    name: 'Or', emoji: '🥇',
+    primaryColor: '#FFD700', borderColor: '#DAA520',
+    progressColor: '#FFD700', progressCompleteColor: '#DAA520',
+    textColor: '#8B6914', badgeBg: '#FFD70025', badgeText: '#B8860B',
+    slotBorder: '#FFD70050', slotBg: '#FFD70010', emptyIcon: '✦',
+  },
+};
+
+const WEBAPP_BASE_URL = 'https://qwetsh.github.io/gestion-classe/eleve';
 
 // Helper to format date
 function formatDate(dateString: string): string {
@@ -70,8 +129,11 @@ export default function StudentHistoryScreen() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [completedCards, setCompletedCards] = useState<CompletedCardSummary[]>([]);
+  const [studentCode, setStudentCode] = useState<string | null>(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
 
-  const { activeCards, loadActiveCard, getCompletedCardsForStudent } = useStampStore();
+  const { activeCards, loadActiveCard, getCompletedCardsForStudent, doAwardStamp, categories, loadCategories } = useStampStore();
 
   // Find the student across all classes
   const student = useMemo(() => {
@@ -122,8 +184,75 @@ export default function StudentHistoryScreen() {
     if (id && user) {
       loadActiveCard(user.id, id);
       getCompletedCardsForStudent(id).then(setCompletedCards);
+      loadCategories(user.id);
     }
   }, [id, user]);
+
+  // Fetch student_code from Supabase
+  useEffect(() => {
+    if (id && isSupabaseConfigured && supabase) {
+      supabase
+        .from('students')
+        .select('student_code')
+        .eq('id', id)
+        .single()
+        .then(({ data }) => {
+          if (data?.student_code) setStudentCode(data.student_code);
+        });
+    }
+  }, [id]);
+
+  // Handle stamp slot tap
+  const handleStampSlotPress = useCallback(async (slotNumber: number) => {
+    if (!activeCard || !id || !user) return;
+
+    const stamp = activeCard.stamps.find(s => s.slot_number === slotNumber);
+
+    if (stamp) {
+      // Tap on existing stamp -> confirm delete
+      Alert.alert(
+        'Supprimer ce tampon ?',
+        `${stamp.category_icon || '⭐'} ${stamp.category_label || 'Tampon'} (slot ${slotNumber})`,
+        [
+          { text: 'Annuler', style: 'cancel' },
+          {
+            text: 'Supprimer',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteStamp(stamp.id);
+                await loadActiveCard(user.id, id);
+              } catch (err) {
+                console.error('Delete stamp error:', err);
+                Alert.alert('Erreur', 'Impossible de supprimer le tampon');
+              }
+            },
+          },
+        ]
+      );
+    } else {
+      // Tap on empty slot -> show category picker
+      if (activeCard.stamp_count >= 10) return;
+      setShowCategoryModal(true);
+    }
+  }, [activeCard, id, user, loadActiveCard]);
+
+  // Handle category selection for new stamp
+  const handleCategorySelect = useCallback(async (categoryId: string) => {
+    if (!id || !user) return;
+    setShowCategoryModal(false);
+    try {
+      const result = await doAwardStamp(user.id, id, categoryId);
+      await loadActiveCard(user.id, id);
+      if (result.cardComplete) {
+        Alert.alert('Carte complete !', 'L\'eleve peut choisir son bonus.');
+        getCompletedCardsForStudent(id).then(setCompletedCards);
+      }
+    } catch (err) {
+      console.error('Award stamp error:', err);
+      Alert.alert('Erreur', 'Impossible d\'attribuer le tampon');
+    }
+  }, [id, user, doAwardStamp, loadActiveCard, getCompletedCardsForStudent]);
 
   // Handle delete button press
   const handleDeletePress = async () => {
@@ -171,6 +300,9 @@ export default function StudentHistoryScreen() {
 
     return total;
   }, [studentEvents]);
+
+  // Get card tier for active card
+  const tier = activeCard ? getCardTier(activeCard.card_number) : CARD_TIERS.wood;
 
   const renderEventItem = ({ item }: { item: Event }) => {
     const config = EVENT_CONFIG[item.type];
@@ -250,8 +382,14 @@ export default function StudentHistoryScreen() {
               />
               <View style={styles.studentInfo}>
                 <Text style={styles.studentName}>{student.fullName || student.pseudo}</Text>
-                <Text style={styles.studentPseudo}>{student.pseudo}</Text>
+                <Text style={styles.studentCode}>{studentCode || student.pseudo}</Text>
               </View>
+              <Pressable
+                style={({ pressed }) => [styles.qrButton, pressed && styles.qrButtonPressed]}
+                onPress={() => setShowQrModal(true)}
+              >
+                <Text style={styles.qrButtonText}>QR</Text>
+              </Pressable>
             </View>
           )}
 
@@ -274,20 +412,22 @@ export default function StudentHistoryScreen() {
           </View>
 
           {/* Stamp Card Section */}
-          <View style={styles.stampSection}>
+          <View style={[styles.stampSection, { borderColor: tier.borderColor, borderWidth: 1, backgroundColor: `${tier.primaryColor}10` }]}>
             <Text style={styles.sectionTitle}>Carte a tampons</Text>
             {activeCard ? (
               <View style={styles.stampCardContainer}>
                 <View style={styles.stampCardHeader}>
-                  <Text style={styles.stampCardTitle}>
-                    Carte n°{activeCard.card_number}
+                  <Text style={[styles.stampCardTitle, { color: tier.textColor }]}>
+                    {tier.emoji} Carte n°{activeCard.card_number} — {tier.name}
                   </Text>
                   <View style={[
                     styles.stampCountBadge,
+                    { backgroundColor: tier.badgeBg },
                     activeCard.stamp_count >= 10 && styles.stampCountComplete,
                   ]}>
                     <Text style={[
                       styles.stampCountText,
+                      { color: tier.badgeText },
                       activeCard.stamp_count >= 10 && styles.stampCountTextComplete,
                     ]}>
                       {activeCard.stamp_count}/10
@@ -300,7 +440,7 @@ export default function StudentHistoryScreen() {
                     styles.stampProgressFill,
                     {
                       width: `${Math.min(100, (activeCard.stamp_count / 10) * 100)}%` as any,
-                      backgroundColor: activeCard.stamp_count >= 10 ? '#22c55e' : '#f59e0b',
+                      backgroundColor: activeCard.stamp_count >= 10 ? tier.progressCompleteColor : tier.progressColor,
                     },
                   ]} />
                 </View>
@@ -309,21 +449,26 @@ export default function StudentHistoryScreen() {
                   {Array.from({ length: 10 }, (_, i) => {
                     const stamp = activeCard.stamps.find(s => s.slot_number === i + 1);
                     return (
-                      <View
+                      <Pressable
                         key={i}
-                        style={[
+                        onPress={() => handleStampSlotPress(i + 1)}
+                        style={({ pressed }) => [
                           styles.stampSlot,
                           stamp ? {
-                            backgroundColor: `${stamp.category_color || '#f59e0b'}20`,
-                            borderColor: `${stamp.category_color || '#f59e0b'}60`,
+                            backgroundColor: `${stamp.category_color || tier.primaryColor}20`,
+                            borderColor: `${stamp.category_color || tier.primaryColor}60`,
                             borderStyle: 'solid' as const,
-                          } : {},
+                          } : {
+                            borderColor: tier.slotBorder,
+                            backgroundColor: tier.slotBg,
+                          },
+                          pressed && { opacity: 0.6 },
                         ]}
                       >
                         <Text style={styles.stampSlotText}>
-                          {stamp ? (stamp.category_icon || '⭐') : '🔒'}
+                          {stamp ? (stamp.category_icon || '⭐') : tier.emptyIcon}
                         </Text>
-                      </View>
+                      </Pressable>
                     );
                   })}
                 </View>
@@ -341,18 +486,21 @@ export default function StudentHistoryScreen() {
                 <Text style={styles.completedCardsTitle}>
                   Cartes terminees ({completedCards.length})
                 </Text>
-                {completedCards.map(card => (
-                  <View key={card.id} style={styles.completedCardRow}>
-                    <Text style={styles.completedCardLabel}>
-                      Carte n°{card.card_number}
-                    </Text>
-                    <Text style={styles.completedCardBonus}>
-                      {card.bonus_label
-                        ? `🎁 ${card.bonus_label} ${card.bonus_used ? '✓' : '⏳'}`
-                        : 'Pas de bonus'}
-                    </Text>
-                  </View>
-                ))}
+                {completedCards.map(card => {
+                  const cardTier = getCardTier(card.card_number);
+                  return (
+                    <View key={card.id} style={styles.completedCardRow}>
+                      <Text style={styles.completedCardLabel}>
+                        {cardTier.emoji} Carte n°{card.card_number}
+                      </Text>
+                      <Text style={styles.completedCardBonus}>
+                        {card.bonus_label
+                          ? `🎁 ${card.bonus_label} ${card.bonus_used ? '✓' : '⏳'}`
+                          : 'Pas de bonus'}
+                      </Text>
+                    </View>
+                  );
+                })}
               </View>
             )}
           </View>
@@ -444,6 +592,72 @@ export default function StudentHistoryScreen() {
                 )}
               </Pressable>
             </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* QR Code Modal */}
+      <Modal
+        visible={showQrModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowQrModal(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowQrModal(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Acces eleve</Text>
+            <Text style={styles.modalText}>
+              Scannez ce QR code pour acceder a l'interface eleve
+            </Text>
+            <View style={styles.qrContainer}>
+              <QRCode value={WEBAPP_BASE_URL} size={200} />
+            </View>
+            {studentCode && (
+              <Text style={styles.qrCodeText}>Code : {studentCode}</Text>
+            )}
+            <Pressable
+              style={styles.modalCancelButton}
+              onPress={() => setShowQrModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Fermer</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Category Selection Modal */}
+      <Modal
+        visible={showCategoryModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowCategoryModal(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowCategoryModal(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Attribuer un tampon</Text>
+            <Text style={styles.modalText}>Choisissez la categorie :</Text>
+            <View style={styles.categoryList}>
+              {categories.map(cat => (
+                <Pressable
+                  key={cat.id}
+                  style={({ pressed }) => [
+                    styles.categoryItem,
+                    { borderColor: cat.color },
+                    pressed && { backgroundColor: `${cat.color}20` },
+                  ]}
+                  onPress={() => handleCategorySelect(cat.id)}
+                >
+                  <Text style={styles.categoryIcon}>{cat.icon}</Text>
+                  <Text style={styles.categoryLabel}>{cat.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable
+              style={[styles.modalCancelButton, { marginTop: theme.spacing.md }]}
+              onPress={() => setShowCategoryModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Annuler</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
@@ -541,10 +755,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: theme.colors.text,
   },
-  studentPseudo: {
-    fontSize: 14,
+  studentCode: {
+    fontSize: 13,
     color: theme.colors.textTertiary,
     marginTop: 2,
+    fontFamily: 'monospace',
+  },
+  qrButton: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary + '15',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.primary + '30',
+  },
+  qrButtonPressed: {
+    backgroundColor: theme.colors.primary + '30',
+  },
+  qrButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: theme.colors.primary,
   },
   totalsCard: {
     backgroundColor: theme.colors.surface,
@@ -649,7 +882,6 @@ const styles = StyleSheet.create({
 
   // Stamp card section
   stampSection: {
-    backgroundColor: theme.colors.surface,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
     marginBottom: theme.spacing.md,
@@ -665,13 +897,11 @@ const styles = StyleSheet.create({
   stampCardTitle: {
     fontSize: 15,
     fontWeight: '600',
-    color: theme.colors.text,
   },
   stampCountBadge: {
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: theme.radius.full,
-    backgroundColor: '#3b82f620',
   },
   stampCountComplete: {
     backgroundColor: '#22c55e20',
@@ -679,7 +909,6 @@ const styles = StyleSheet.create({
   stampCountText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#60a5fa',
   },
   stampCountTextComplete: {
     color: '#22c55e',
@@ -706,9 +935,7 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: theme.colors.border,
     borderStyle: 'dashed' as const,
-    backgroundColor: theme.colors.background,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -753,6 +980,44 @@ const styles = StyleSheet.create({
   completedCardBonus: {
     fontSize: 11,
     color: theme.colors.textTertiary,
+  },
+
+  // QR modal
+  qrContainer: {
+    padding: theme.spacing.lg,
+    backgroundColor: '#fff',
+    borderRadius: theme.radius.lg,
+    marginBottom: theme.spacing.md,
+  },
+  qrCodeText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: theme.colors.text,
+    marginBottom: theme.spacing.md,
+    fontFamily: 'monospace',
+  },
+
+  // Category picker
+  categoryList: {
+    alignSelf: 'stretch',
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+  },
+  categoryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    gap: theme.spacing.sm,
+  },
+  categoryIcon: {
+    fontSize: 22,
+  },
+  categoryLabel: {
+    fontSize: 14,
+    color: theme.colors.text,
+    fontWeight: '500',
   },
 
   // Danger zone

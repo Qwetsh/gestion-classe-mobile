@@ -225,6 +225,7 @@ export {
   getAllActiveCards,
   // Stamps
   awardStamp,
+  deleteStamp,
   removeLastStamp,
   // Bonus selections
   selectBonus,

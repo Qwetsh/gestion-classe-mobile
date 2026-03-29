@@ -6,7 +6,7 @@ import type { Event, EventType } from './database';
 // Event type labels and colors for PDF
 const EVENT_LABELS: Record<EventType, string> = {
   participation: 'Participation',
-  bavardage: 'Bavardage',
+  bavardage: 'Malus',
   absence: 'Absence',
   remarque: 'Remarque',
   sortie: 'Sortie',
@@ -326,7 +326,7 @@ export async function generateSessionPdf(data: SessionExportData): Promise<strin
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.bavardage}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.bavardage};">${counts.bavardage}</div>
-            <div class="stat-label">Bavardages</div>
+            <div class="stat-label">Malus</div>
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.absence}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.absence};">${counts.absence}</div>
@@ -478,7 +478,7 @@ export async function generateStudentHistoryPdf(data: StudentHistoryExportData):
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.bavardage}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.bavardage};">${counts.bavardage}</div>
-            <div class="stat-label">Bavardages</div>
+            <div class="stat-label">Malus</div>
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.absence}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.absence};">${counts.absence}</div>
@@ -609,7 +609,7 @@ export async function generateClassPdf(data: ClassExportData): Promise<string> {
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.bavardage}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.bavardage};">${totals.bavardage}</div>
-            <div class="stat-label">Bavardages</div>
+            <div class="stat-label">Malus</div>
           </div>
           <div class="stat-card" style="background: ${EVENT_COLORS.absence}20;">
             <div class="stat-value" style="color: ${EVENT_COLORS.absence};">${totals.absence}</div>

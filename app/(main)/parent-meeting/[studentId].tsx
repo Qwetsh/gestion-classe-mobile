@@ -132,7 +132,7 @@ export default function StudentDashboardScreen() {
           strokeWidth: 2,
         },
       ],
-      legend: ['Participation', 'Bavardage'],
+      legend: ['Participation', 'Malus'],
     };
   }, [dashboard]);
 
@@ -265,7 +265,7 @@ export default function StudentDashboardScreen() {
                   </Text>
                 </View>
                 <View style={[styles.statItem, styles.statItemNegative]}>
-                  <Text style={styles.statLabel}>Bavardages</Text>
+                  <Text style={styles.statLabel}>Malus</Text>
                   <Text style={[styles.statValue, styles.statValueNegative]}>
                     -{dashboard.stats.bavardage}
                   </Text>
@@ -327,7 +327,7 @@ export default function StudentDashboardScreen() {
                   </View>
                   <View style={styles.legendItem}>
                     <View style={[styles.legendDot, { backgroundColor: theme.colors.bavardage }]} />
-                    <Text style={styles.legendText}>Bavardage</Text>
+                    <Text style={styles.legendText}>Malus</Text>
                   </View>
                 </View>
               </View>

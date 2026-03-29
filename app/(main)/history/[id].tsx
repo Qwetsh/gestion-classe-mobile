@@ -19,7 +19,7 @@ import { exportSessionPdf } from '../../../services/pdfExport';
 // Event type display config
 const EVENT_CONFIG: Record<EventType, { label: string; color: string; softColor: string; emoji: string }> = {
   participation: { label: 'Implication', color: theme.colors.participation, softColor: theme.colors.participationSoft, emoji: '+' },
-  bavardage: { label: 'Bavardage', color: theme.colors.bavardage, softColor: theme.colors.bavardageSoft, emoji: '-' },
+  bavardage: { label: 'Malus', color: theme.colors.bavardage, softColor: theme.colors.bavardageSoft, emoji: '-' },
   absence: { label: 'Absence', color: theme.colors.absence, softColor: theme.colors.absenceSoft, emoji: 'A' },
   remarque: { label: 'Remarque', color: theme.colors.remarque, softColor: theme.colors.remarqueSoft, emoji: '!' },
   sortie: { label: 'Sortie', color: theme.colors.sortie, softColor: theme.colors.sortieSoft, emoji: 'S' },

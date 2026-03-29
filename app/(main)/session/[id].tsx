@@ -990,7 +990,7 @@ function NativeSessionScreen() {
   const getEventLabel = (type: string): string => {
     const labels: Record<string, string> = {
       participation: 'Implication',
-      bavardage: 'Bavardage',
+      bavardage: 'Malus',
       absence: 'Absence',
       remarque: 'Remarque',
       sortie: 'Sortie',
