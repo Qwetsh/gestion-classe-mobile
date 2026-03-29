@@ -136,34 +136,25 @@ export async function syncAll(userId: string): Promise<SyncResult> {
     result.tpTemplateCriteriaSync = await syncTpTemplateCriteria();
 
     // 15. Sync stamp categories
-    console.log('[syncService] === STEP 15: syncStampCategories ===');
     result.stampCategoriesSync = await syncStampCategories(userId);
 
     // 16. Sync bonuses
-    console.log('[syncService] === STEP 16: syncBonuses ===');
     result.bonusesSync = await syncBonuses(userId);
 
     // 17. Sync stamp cards (depends on students)
-    console.log('[syncService] === STEP 17: syncStampCards ===');
     result.stampCardsSync = await syncStampCards(userId);
 
     // 18. Sync stamps (depends on stamp_cards and stamp_categories)
-    console.log('[syncService] === STEP 18: syncStamps ===');
     result.stampsSync = await syncStamps(userId);
 
     // 19. Sync bonus selections (depends on stamp_cards and bonuses)
-    console.log('[syncService] === STEP 19: syncBonusSelections ===');
     result.bonusSelectionsSync = await syncBonusSelections(userId);
 
-    console.log('[syncService] Sync complete:', JSON.stringify({
-      stampCategories: result.stampCategoriesSync,
-      bonuses: result.bonusesSync,
-      stampCards: result.stampCardsSync,
-      stamps: result.stampsSync,
-      bonusSelections: result.bonusSelectionsSync,
-    }));
+    if (__DEV__) {
+      console.log('[syncService] Sync complete:', result);
+    }
   } catch (error) {
-    console.error('[syncService] Sync FAILED at step:', error);
+    console.error('[syncService] Sync failed:', error);
     result.success = false;
     result.errors.push(error instanceof Error ? error.message : 'Erreur de synchronisation');
   }
@@ -1114,58 +1105,21 @@ async function syncStampCards(userId: string): Promise<number> {
     id: string; student_id: string; card_number: number; status: string; completed_at: string | null; created_at: string;
   }>('SELECT id, student_id, card_number, status, completed_at, created_at FROM stamp_cards WHERE user_id = ? AND synced_at IS NULL', [userId]);
 
-  console.log('[syncService] syncStampCards: unsynced count =', unsynced.length);
   if (unsynced.length === 0) return 0;
 
-  // Check for existing server cards to detect UNIQUE(student_id, card_number) conflicts
-  const studentIds = [...new Set(unsynced.map(c => c.student_id))];
-  const { data: serverCards } = await supabase
-    .from('stamp_cards')
-    .select('id, student_id, card_number')
-    .in('student_id', studentIds);
+  const toSync = unsynced.map(c => ({
+    id: c.id, student_id: c.student_id, user_id: userId,
+    card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
+  }));
 
-  const serverMap = new Map<string, string>(); // "studentId:cardNumber" -> serverId
-  for (const sc of (serverCards || [])) {
-    serverMap.set(`${sc.student_id}:${sc.card_number}`, sc.id);
-  }
+  const { error } = await supabase.from('stamp_cards').upsert(toSync, { onConflict: 'id' });
+  if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
 
-  const toUpsert: any[] = [];
   const now = new Date().toISOString();
+  const ids = unsynced.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
 
-  for (const c of unsynced) {
-    const serverCardId = serverMap.get(`${c.student_id}:${c.card_number}`);
-
-    if (serverCardId && serverCardId !== c.id) {
-      // Conflict: server has same student+card_number with different UUID
-      // Remap local stamps to point to server card ID (NO DELETE to avoid CASCADE)
-      console.log('[syncService] Card conflict: local', c.id, '-> server', serverCardId);
-      await executeSql('UPDATE stamps SET card_id = ? WHERE card_id = ?', [serverCardId, c.id]);
-      await executeSql('UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', [serverCardId, c.id]);
-      // Just mark local card as synced (keep it to avoid CASCADE delete of stamps)
-      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, c.id]);
-    } else if (!serverCardId) {
-      // No server card → upsert
-      toUpsert.push({
-        id: c.id, student_id: c.student_id, user_id: userId,
-        card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
-      });
-    } else {
-      // Same ID on server → just mark synced
-      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, c.id]);
-    }
-  }
-
-  if (toUpsert.length > 0) {
-    console.log('[syncService] syncStampCards: upserting', toUpsert.length, 'new cards');
-    const { error } = await supabase.from('stamp_cards').upsert(toUpsert, { onConflict: 'id' });
-    if (error) { console.error('[syncService] Stamp cards sync error:', JSON.stringify(error)); throw new Error(`Stamp cards: ${error.message}`); }
-
-    const ids = toUpsert.map(c => c.id);
-    const placeholders = ids.map(() => '?').join(',');
-    await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
-  }
-
-  console.log('[syncService] syncStampCards: done (conflicts:', unsynced.length - toUpsert.length, ', upserted:', toUpsert.length, ')');
   return unsynced.length;
 }
 
@@ -1176,14 +1130,11 @@ async function syncStamps(userId: string): Promise<number> {
     id: string; card_id: string; student_id: string; category_id: string | null; slot_number: number; awarded_at: string;
   }>('SELECT id, card_id, student_id, category_id, slot_number, awarded_at FROM stamps WHERE user_id = ? AND synced_at IS NULL', [userId]);
 
-  console.log('[syncService] syncStamps: unsynced count =', unsynced.length);
   if (unsynced.length === 0) return 0;
 
   // Filter: only sync stamps whose card is already synced on server
   const cardIds = [...new Set(unsynced.map(s => s.card_id))];
-  console.log('[syncService] syncStamps: checking', cardIds.length, 'card IDs on server:', cardIds);
-  const { data: syncedCards, error: cardCheckError } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
-  console.log('[syncService] syncStamps: server cards found =', syncedCards?.length, 'error =', cardCheckError ? JSON.stringify(cardCheckError) : 'none');
+  const { data: syncedCards } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
   const serverCardIds = new Set((syncedCards || []).map(c => c.id));
 
   const toSync = unsynced
@@ -1193,12 +1144,10 @@ async function syncStamps(userId: string): Promise<number> {
       category_id: s.category_id, slot_number: s.slot_number, awarded_at: s.awarded_at,
     }));
 
-  console.log('[syncService] syncStamps: after filter, toSync count =', toSync.length, '(filtered out:', unsynced.length - toSync.length, ')');
   if (toSync.length === 0) return 0;
 
   const { error } = await supabase.from('stamps').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamps sync error:', JSON.stringify(error)); throw new Error(`Stamps: ${error.message}`); }
-  console.log('[syncService] syncStamps: upsert OK,', toSync.length, 'stamps synced');
+  if (error) { console.error('[syncService] Stamps sync error:', error); throw new Error(`Stamps: ${error.message}`); }
 
   const now = new Date().toISOString();
   const ids = toSync.map(s => s.id);
