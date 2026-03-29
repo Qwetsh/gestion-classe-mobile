@@ -482,6 +482,12 @@ export async function removeLastStamp(studentId: string): Promise<void> {
   );
   if (!card) return;
 
+  // Find the stamp to delete (for Supabase sync)
+  const lastStamp = await queryFirst<{ id: string }>(
+    `SELECT id FROM stamps WHERE card_id = ? ORDER BY slot_number DESC LIMIT 1`,
+    [card.id]
+  );
+
   await executeSql(
     `DELETE FROM stamps WHERE card_id = ? AND slot_number = (
       SELECT MAX(slot_number) FROM stamps WHERE card_id = ?
@@ -489,6 +495,18 @@ export async function removeLastStamp(studentId: string): Promise<void> {
     [card.id, card.id]
   );
   console.log('[stampRepository] Removed last stamp for student:', studentId);
+
+  // Sync to Supabase immediately
+  if (lastStamp && isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from('stamps').delete().eq('id', lastStamp.id);
+      if (error) {
+        console.warn('[stampRepository] Failed to delete last stamp on Supabase:', error.message);
+      }
+    } catch (err) {
+      console.warn('[stampRepository] Supabase removeLastStamp error:', err);
+    }
+  }
 }
 
 // ============================================
@@ -536,6 +554,23 @@ export async function markBonusUsed(selectionId: string): Promise<void> {
     [now, selectionId]
   );
   console.log('[stampRepository] Bonus marked as used:', selectionId);
+
+  // Sync to Supabase immediately so student sees "✓" in real-time
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase
+        .from('bonus_selections')
+        .update({ used_at: now })
+        .eq('id', selectionId);
+      if (error) {
+        console.warn('[stampRepository] Failed to sync markBonusUsed:', error.message);
+      } else {
+        await executeSql('UPDATE bonus_selections SET synced_at = ? WHERE id = ?', [now, selectionId]);
+      }
+    } catch (err) {
+      console.warn('[stampRepository] Supabase markBonusUsed error:', err);
+    }
+  }
 }
 
 /**
