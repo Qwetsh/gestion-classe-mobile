@@ -68,6 +68,19 @@ export async function deleteStudentCompletely(studentId: string): Promise<Delete
         sql: `DELETE FROM local_student_mapping WHERE student_id = ?`,
         params: [studentId],
       },
+      // Stamp data (RGPD)
+      {
+        sql: `DELETE FROM bonus_selections WHERE student_id = ?`,
+        params: [studentId],
+      },
+      {
+        sql: `DELETE FROM stamps WHERE student_id = ?`,
+        params: [studentId],
+      },
+      {
+        sql: `DELETE FROM stamp_cards WHERE student_id = ?`,
+        params: [studentId],
+      },
       {
         sql: `DELETE FROM students WHERE id = ?`,
         params: [studentId],
@@ -81,6 +94,10 @@ export async function deleteStudentCompletely(studentId: string): Promise<Delete
       try {
         // Delete events first
         await supabase.from('events').delete().eq('student_id', studentId);
+        // Delete stamp data (RGPD)
+        await supabase.from('bonus_selections').delete().eq('student_id', studentId);
+        await supabase.from('stamps').delete().eq('student_id', studentId);
+        await supabase.from('stamp_cards').delete().eq('student_id', studentId);
         // Delete student
         await supabase.from('students').delete().eq('id', studentId);
         console.log('[deleteService] Deleted student from Supabase:', studentId);
@@ -187,13 +204,30 @@ export async function deleteClassCompletely(classId: string): Promise<DeleteClas
       params: [classId],
     });
 
-    // 6. Delete students
+    // 6. Delete stamp data (RGPD)
+    if (studentIds.length > 0) {
+      const ph = studentIds.map(() => '?').join(',');
+      statements.push({
+        sql: `DELETE FROM bonus_selections WHERE student_id IN (${ph})`,
+        params: studentIds,
+      });
+      statements.push({
+        sql: `DELETE FROM stamps WHERE student_id IN (${ph})`,
+        params: studentIds,
+      });
+      statements.push({
+        sql: `DELETE FROM stamp_cards WHERE student_id IN (${ph})`,
+        params: studentIds,
+      });
+    }
+
+    // 7. Delete students
     statements.push({
       sql: `DELETE FROM students WHERE class_id = ?`,
       params: [classId],
     });
 
-    // 7. Delete class
+    // 8. Delete class
     statements.push({
       sql: `DELETE FROM classes WHERE id = ?`,
       params: [classId],
@@ -215,6 +249,12 @@ export async function deleteClassCompletely(classId: string): Promise<DeleteClas
         );
         await supabase.from('sessions').delete().eq('class_id', classId);
         await supabase.from('class_room_plans').delete().eq('class_id', classId);
+        // Delete stamp data for students of this class (RGPD)
+        if (studentIds.length > 0) {
+          await supabase.from('bonus_selections').delete().in('student_id', studentIds);
+          await supabase.from('stamps').delete().in('student_id', studentIds);
+          await supabase.from('stamp_cards').delete().in('student_id', studentIds);
+        }
         await supabase.from('students').delete().eq('class_id', classId);
         await supabase.from('classes').delete().eq('id', classId);
         console.log('[deleteService] Deleted class from Supabase:', classId);
@@ -322,7 +362,20 @@ export async function deleteAllUserData(userId: string): Promise<DeleteAllDataRe
         sql: `DELETE FROM local_student_mapping WHERE student_id IN (SELECT id FROM students WHERE user_id = ?)`,
         params: [userId],
       },
-      // 5. Delete all students
+      // 5. Delete stamp data (RGPD)
+      {
+        sql: `DELETE FROM bonus_selections WHERE user_id = ?`,
+        params: [userId],
+      },
+      {
+        sql: `DELETE FROM stamps WHERE user_id = ?`,
+        params: [userId],
+      },
+      {
+        sql: `DELETE FROM stamp_cards WHERE user_id = ?`,
+        params: [userId],
+      },
+      // 6. Delete all students
       {
         sql: `DELETE FROM students WHERE user_id = ?`,
         params: [userId],
@@ -354,6 +407,12 @@ export async function deleteAllUserData(userId: string): Promise<DeleteAllDataRe
         await supabase.from('class_room_plans').delete().in('class_id',
           (await supabase.from('classes').select('id').eq('user_id', userId)).data?.map(c => c.id) || []
         );
+        // Stamp data (RGPD)
+        await supabase.from('bonus_selections').delete().eq('user_id', userId);
+        await supabase.from('stamps').delete().eq('user_id', userId);
+        await supabase.from('stamp_cards').delete().eq('user_id', userId);
+        await supabase.from('stamp_categories').delete().eq('user_id', userId);
+        await supabase.from('bonuses').delete().eq('user_id', userId);
         await supabase.from('students').delete().eq('user_id', userId);
         await supabase.from('classes').delete().eq('user_id', userId);
         await supabase.from('rooms').delete().eq('user_id', userId);

@@ -132,6 +132,7 @@ export default function StudentHistoryScreen() {
   const [studentCode, setStudentCode] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [isProcessingStamp, setIsProcessingStamp] = useState(false);
 
   const { activeCards, loadActiveCard, getCompletedCardsForStudent, doAwardStamp, categories, loadCategories } = useStampStore();
 
@@ -190,21 +191,36 @@ export default function StudentHistoryScreen() {
 
   // Fetch student_code from Supabase
   useEffect(() => {
-    if (id && isSupabaseConfigured && supabase) {
-      supabase
-        .from('students')
-        .select('student_code')
-        .eq('id', id)
-        .single()
-        .then(({ data }) => {
-          if (data?.student_code) setStudentCode(data.student_code);
-        });
-    }
+    if (!id || !isSupabaseConfigured || !supabase) return;
+
+    let isMounted = true;
+
+    const fetchCode = async () => {
+      try {
+        const { data, error } = await supabase!
+          .from('students')
+          .select('student_code')
+          .eq('id', id)
+          .single();
+        if (!isMounted) return;
+        if (error) {
+          console.warn('[history] Failed to fetch student_code:', error.message);
+          return;
+        }
+        if (data?.student_code) setStudentCode(data.student_code);
+      } catch (err) {
+        if (!isMounted) return;
+        console.warn('[history] Unexpected error fetching student_code:', err);
+      }
+    };
+    fetchCode();
+
+    return () => { isMounted = false; };
   }, [id]);
 
   // Handle stamp slot tap
   const handleStampSlotPress = useCallback(async (slotNumber: number) => {
-    if (!activeCard || !id || !user) return;
+    if (!activeCard || !id || !user || isProcessingStamp) return;
 
     const stamp = activeCard.stamps.find(s => s.slot_number === slotNumber);
 
@@ -219,12 +235,16 @@ export default function StudentHistoryScreen() {
             text: 'Supprimer',
             style: 'destructive',
             onPress: async () => {
+              if (isProcessingStamp) return;
+              setIsProcessingStamp(true);
               try {
                 await deleteStamp(stamp.id);
                 await loadActiveCard(user.id, id);
               } catch (err) {
                 console.error('Delete stamp error:', err);
                 Alert.alert('Erreur', 'Impossible de supprimer le tampon');
+              } finally {
+                setIsProcessingStamp(false);
               }
             },
           },
@@ -232,14 +252,16 @@ export default function StudentHistoryScreen() {
       );
     } else {
       // Tap on empty slot -> show category picker
-      if (activeCard.stamp_count >= 10) return;
+      const count = activeCard.stamp_count ?? 0;
+      if (count >= 10) return;
       setShowCategoryModal(true);
     }
-  }, [activeCard, id, user, loadActiveCard]);
+  }, [activeCard, id, user, isProcessingStamp, loadActiveCard]);
 
   // Handle category selection for new stamp
   const handleCategorySelect = useCallback(async (categoryId: string) => {
-    if (!id || !user) return;
+    if (!id || !user || isProcessingStamp) return;
+    setIsProcessingStamp(true);
     setShowCategoryModal(false);
     try {
       const result = await doAwardStamp(user.id, id, categoryId);
@@ -251,8 +273,10 @@ export default function StudentHistoryScreen() {
     } catch (err) {
       console.error('Award stamp error:', err);
       Alert.alert('Erreur', 'Impossible d\'attribuer le tampon');
+    } finally {
+      setIsProcessingStamp(false);
     }
-  }, [id, user, doAwardStamp, loadActiveCard, getCompletedCardsForStudent]);
+  }, [id, user, isProcessingStamp, doAwardStamp, loadActiveCard, getCompletedCardsForStudent]);
 
   // Handle delete button press
   const handleDeletePress = async () => {
@@ -267,19 +291,23 @@ export default function StudentHistoryScreen() {
     if (!id || !student) return;
 
     setIsDeleting(true);
-    const result = await deleteStudentCompletely(id);
-    setIsDeleting(false);
-    setDeleteModalVisible(false);
+    try {
+      const result = await deleteStudentCompletely(id);
 
-    if (result.success) {
-      // Reload students for the class
-      if (student.classId) {
-        loadStudentsForClass(student.classId);
+      if (result.success) {
+        if (student.classId) {
+          try { await loadStudentsForClass(student.classId); } catch { /* continue */ }
+        }
+        router.back();
+      } else {
+        Alert.alert('Erreur', result.error || 'La suppression a echoue');
       }
-      // Navigate back
-      router.back();
-    } else {
-      Alert.alert('Erreur', result.error || 'La suppression a echoue');
+    } catch (err) {
+      console.error('[history] Unexpected delete error:', err);
+      Alert.alert('Erreur', 'Une erreur inattendue est survenue');
+    } finally {
+      setIsDeleting(false);
+      setDeleteModalVisible(false);
     }
   };
 
@@ -489,7 +517,7 @@ export default function StudentHistoryScreen() {
                 {completedCards.map(card => {
                   const cardTier = getCardTier(card.card_number);
                   return (
-                    <View key={card.id} style={styles.completedCardRow}>
+                    <View key={card.id || `card-${card.card_number}`} style={styles.completedCardRow}>
                       <Text style={styles.completedCardLabel}>
                         {cardTier.emoji} Carte n°{card.card_number}
                       </Text>

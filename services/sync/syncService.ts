@@ -1920,7 +1920,16 @@ export async function pullFromServer(userId: string): Promise<{
       );
       for (const local of localCards) {
         if (!serverIds.has(local.id) && local.synced_at !== null) {
-          // stamps and bonus_selections are CASCADE-deleted automatically
+          // Check for unsynced child stamps before CASCADE delete
+          const unsyncedChildren = await queryAll<{ id: string }>(
+            `SELECT id FROM stamps WHERE card_id = ? AND synced_at IS NULL`,
+            [local.id]
+          );
+          if (unsyncedChildren.length > 0) {
+            console.warn('[syncService] Skipping stamp_card delete (has', unsyncedChildren.length, 'unsynced stamps):', local.id);
+            continue; // Will be pushed on next sync, then cleaned up
+          }
+          // Safe to CASCADE delete — all children were synced
           await executeSql(`DELETE FROM stamp_cards WHERE id = ?`, [local.id]);
           if (__DEV__) {
             console.log('[syncService] Deleted local stamp_card not on server:', local.id);
@@ -1939,7 +1948,10 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
-    // 17. Pull stamps (after cards so FK exists)
+    // 17. Pull stamps (after cards so FK exists — skip if cards pull failed)
+    if (stampCardsError) {
+      console.warn('[syncService] Skipping stamps pull because stamp_cards pull failed');
+    } else {
     const { data: serverStamps, error: stampsError } = await supabase
       .from('stamps')
       .select('id, card_id, student_id, category_id, slot_number, awarded_at')
@@ -1973,8 +1985,12 @@ export async function pullFromServer(userId: string): Promise<{
         console.log('[syncService] Pulled stamps:', result.stamps);
       }
     }
+    } // end else (stampCardsError guard)
 
-    // 18. Pull bonus_selections (after cards so FK exists)
+    // 18. Pull bonus_selections (after cards so FK exists — skip if cards pull failed)
+    if (stampCardsError) {
+      console.warn('[syncService] Skipping bonus_selections pull because stamp_cards pull failed');
+    } else {
     const { data: serverBonusSel, error: bonusSelError } = await supabase
       .from('bonus_selections')
       .select('id, card_id, bonus_id, student_id, selected_at, used_at')
@@ -2008,6 +2024,7 @@ export async function pullFromServer(userId: string): Promise<{
         console.log('[syncService] Pulled bonus_selections:', result.bonusSelections);
       }
     }
+    } // end else (stampCardsError guard for bonus_selections)
 
     if (__DEV__) {
       console.log('[syncService] Pull complete:', result);

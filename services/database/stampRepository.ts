@@ -1,5 +1,5 @@
 import * as Crypto from 'expo-crypto';
-import { executeSql, queryAll, queryFirst } from './client';
+import { executeSql, queryAll, queryFirst, executeTransaction } from './client';
 import { DEFAULT_STAMP_CATEGORIES, DEFAULT_BONUSES } from './schema';
 
 // ============================================
@@ -254,14 +254,23 @@ export async function getOrCreateActiveCard(userId: string, studentId: string): 
     const id = Crypto.randomUUID();
     const now = new Date().toISOString();
 
+    // Use INSERT OR IGNORE to handle concurrent calls safely
     await executeSql(
-      `INSERT INTO stamp_cards (id, student_id, user_id, card_number, status, created_at)
+      `INSERT OR IGNORE INTO stamp_cards (id, student_id, user_id, card_number, status, created_at)
        VALUES (?, ?, ?, ?, 'active', ?)`,
       [id, studentId, userId, cardNumber, now]
     );
 
-    card = { id, student_id: studentId, user_id: userId, card_number: cardNumber, status: 'active', completed_at: null, created_at: now, synced_at: null };
-    console.log('[stampRepository] Created card #' + cardNumber + ' for student:', studentId);
+    // Re-fetch to handle case where another call won the race
+    card = await queryFirst<StampCard>(
+      `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' LIMIT 1`,
+      [studentId]
+    );
+
+    if (!card) {
+      throw new Error('Failed to create active card for student: ' + studentId);
+    }
+    console.log('[stampRepository] Created card #' + card.card_number + ' for student:', studentId);
   }
 
   return card;
@@ -351,21 +360,31 @@ export async function awardStamp(
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
-  await executeSql(
-    `INSERT INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, card.id, studentId, userId, categoryId, slotNumber, now]
-  );
+  // Use transaction to atomically insert stamp (+ mark card complete if 10th)
+  const isComplete = currentCount + 1 >= 10;
+  const statements: { sql: string; params: (string | number | null)[] }[] = [
+    {
+      sql: `INSERT INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      params: [id, card.id, studentId, userId, categoryId, slotNumber, now],
+    },
+  ];
+  if (isComplete) {
+    statements.push({
+      sql: `UPDATE stamp_cards SET status = 'completed', completed_at = ?, synced_at = NULL WHERE id = ?`,
+      params: [now, card.id],
+    });
+  }
+  await executeTransaction(statements);
 
   const stamp: Stamp = {
     id, card_id: card.id, student_id: studentId, user_id: userId,
     category_id: categoryId, slot_number: slotNumber, awarded_at: now, synced_at: null,
   };
 
-  const cardComplete = slotNumber === 10;
   console.log('[stampRepository] Awarded stamp', slotNumber + '/10 to student:', studentId);
 
-  return { stamp, stampCount: slotNumber, cardComplete, cardNumber: card.card_number };
+  return { stamp, stampCount: currentCount + 1, cardComplete: isComplete, cardNumber: card.card_number };
 }
 
 /**
@@ -412,18 +431,18 @@ export async function selectBonus(
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Mark card as completed
-  await executeSql(
-    `UPDATE stamp_cards SET status = 'completed', completed_at = ?, synced_at = NULL WHERE id = ?`,
-    [now, cardId]
-  );
-
-  // Insert bonus selection
-  await executeSql(
-    `INSERT INTO bonus_selections (id, card_id, bonus_id, student_id, user_id, selected_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, cardId, bonusId, studentId, userId, now]
-  );
+  // Atomic: mark card completed + insert bonus selection
+  await executeTransaction([
+    {
+      sql: `UPDATE stamp_cards SET status = 'completed', completed_at = ?, synced_at = NULL WHERE id = ?`,
+      params: [now, cardId],
+    },
+    {
+      sql: `INSERT INTO bonus_selections (id, card_id, bonus_id, student_id, user_id, selected_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      params: [id, cardId, bonusId, studentId, userId, now],
+    },
+  ]);
 
   console.log('[stampRepository] Bonus selected for card:', cardId);
 
