@@ -1276,9 +1276,14 @@ export async function pullFromServer(userId: string): Promise<{
   sessions: number;
   events: number;
   tpTemplates: number;
+  stampCategories: number;
+  bonuses: number;
+  stampCards: number;
+  stamps: number;
+  bonusSelections: number;
   errors: string[];
 }> {
-  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, tpTemplates: 0, errors: [] as string[] };
+  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, tpTemplates: 0, stampCategories: 0, bonuses: 0, stampCards: 0, stamps: 0, bonusSelections: 0, errors: [] as string[] };
 
   if (!isSupabaseConfigured || !supabase) {
     if (__DEV__) {
@@ -1823,6 +1828,184 @@ export async function pullFromServer(userId: string): Promise<{
             console.log('[syncService] Pulled', serverGrades.length, 'group grades');
           }
         }
+      }
+    }
+
+    // --- Pull stamp system tables ---
+
+    // 14. Pull stamp_categories
+    const { data: serverStampCategories, error: stampCatError } = await supabase
+      .from('stamp_categories')
+      .select('id, label, icon, color, display_order, is_active, created_at')
+      .eq('user_id', userId);
+
+    if (stampCatError) {
+      console.error('[syncService] Pull stamp_categories error:', stampCatError);
+      result.errors.push(`Stamp Categories: ${stampCatError.message}`);
+    } else if (serverStampCategories !== null) {
+      const serverIds = new Set(serverStampCategories.map(c => c.id));
+      const localCats = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM stamp_categories WHERE user_id = ?`,
+        [userId]
+      );
+      for (const local of localCats) {
+        if (!serverIds.has(local.id) && local.synced_at !== null) {
+          await executeSql(`DELETE FROM stamp_categories WHERE id = ?`, [local.id]);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local stamp_category not on server:', local.id);
+          }
+        }
+      }
+      for (const cat of serverStampCategories) {
+        await executeSql(
+          `INSERT OR REPLACE INTO stamp_categories (id, user_id, label, icon, color, display_order, is_active, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [cat.id, userId, cat.label, cat.icon, cat.color, cat.display_order, cat.is_active ? 1 : 0, cat.created_at, now]
+        );
+        result.stampCategories++;
+      }
+      if (__DEV__) {
+        console.log('[syncService] Pulled stamp_categories:', result.stampCategories);
+      }
+    }
+
+    // 15. Pull bonuses
+    const { data: serverBonuses, error: bonusesError } = await supabase
+      .from('bonuses')
+      .select('id, label, display_order, is_active, created_at')
+      .eq('user_id', userId);
+
+    if (bonusesError) {
+      console.error('[syncService] Pull bonuses error:', bonusesError);
+      result.errors.push(`Bonuses: ${bonusesError.message}`);
+    } else if (serverBonuses !== null) {
+      const serverIds = new Set(serverBonuses.map(b => b.id));
+      const localBonuses = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM bonuses WHERE user_id = ?`,
+        [userId]
+      );
+      for (const local of localBonuses) {
+        if (!serverIds.has(local.id) && local.synced_at !== null) {
+          await executeSql(`DELETE FROM bonuses WHERE id = ?`, [local.id]);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local bonus not on server:', local.id);
+          }
+        }
+      }
+      for (const bonus of serverBonuses) {
+        await executeSql(
+          `INSERT OR REPLACE INTO bonuses (id, user_id, label, display_order, is_active, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [bonus.id, userId, bonus.label, bonus.display_order, bonus.is_active ? 1 : 0, bonus.created_at, now]
+        );
+        result.bonuses++;
+      }
+      if (__DEV__) {
+        console.log('[syncService] Pulled bonuses:', result.bonuses);
+      }
+    }
+
+    // 16. Pull stamp_cards (CASCADE will auto-delete related stamps + bonus_selections)
+    const { data: serverStampCards, error: stampCardsError } = await supabase
+      .from('stamp_cards')
+      .select('id, student_id, card_number, status, completed_at, created_at')
+      .eq('user_id', userId);
+
+    if (stampCardsError) {
+      console.error('[syncService] Pull stamp_cards error:', stampCardsError);
+      result.errors.push(`Stamp Cards: ${stampCardsError.message}`);
+    } else if (serverStampCards !== null) {
+      const serverIds = new Set(serverStampCards.map(c => c.id));
+      const localCards = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM stamp_cards WHERE user_id = ?`,
+        [userId]
+      );
+      for (const local of localCards) {
+        if (!serverIds.has(local.id) && local.synced_at !== null) {
+          // stamps and bonus_selections are CASCADE-deleted automatically
+          await executeSql(`DELETE FROM stamp_cards WHERE id = ?`, [local.id]);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local stamp_card not on server:', local.id);
+          }
+        }
+      }
+      for (const card of serverStampCards) {
+        await executeSql(
+          `INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [card.id, card.student_id, userId, card.card_number, card.status, card.completed_at, card.created_at, now]
+        );
+        result.stampCards++;
+      }
+      if (__DEV__) {
+        console.log('[syncService] Pulled stamp_cards:', result.stampCards);
+      }
+    }
+
+    // 17. Pull stamps (after cards so FK exists)
+    const { data: serverStamps, error: stampsError } = await supabase
+      .from('stamps')
+      .select('id, card_id, student_id, category_id, slot_number, awarded_at')
+      .eq('user_id', userId);
+
+    if (stampsError) {
+      console.error('[syncService] Pull stamps error:', stampsError);
+      result.errors.push(`Stamps: ${stampsError.message}`);
+    } else if (serverStamps !== null) {
+      const serverIds = new Set(serverStamps.map(s => s.id));
+      const localStamps = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM stamps WHERE user_id = ?`,
+        [userId]
+      );
+      for (const local of localStamps) {
+        if (!serverIds.has(local.id) && local.synced_at !== null) {
+          await executeSql(`DELETE FROM stamps WHERE id = ?`, [local.id]);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local stamp not on server:', local.id);
+          }
+        }
+      }
+      for (const stamp of serverStamps) {
+        await executeSql(
+          `INSERT OR REPLACE INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [stamp.id, stamp.card_id, stamp.student_id, userId, stamp.category_id, stamp.slot_number, stamp.awarded_at, now]
+        );
+        result.stamps++;
+      }
+      if (__DEV__) {
+        console.log('[syncService] Pulled stamps:', result.stamps);
+      }
+    }
+
+    // 18. Pull bonus_selections (after cards so FK exists)
+    const { data: serverBonusSel, error: bonusSelError } = await supabase
+      .from('bonus_selections')
+      .select('id, card_id, bonus_id, student_id, selected_at, used_at')
+      .eq('user_id', userId);
+
+    if (bonusSelError) {
+      console.error('[syncService] Pull bonus_selections error:', bonusSelError);
+      result.errors.push(`Bonus Selections: ${bonusSelError.message}`);
+    } else if (serverBonusSel !== null) {
+      const serverIds = new Set(serverBonusSel.map(bs => bs.id));
+      const localBonusSel = await queryAll<{ id: string; synced_at: string | null }>(
+        `SELECT id, synced_at FROM bonus_selections WHERE user_id = ?`,
+        [userId]
+      );
+      for (const local of localBonusSel) {
+        if (!serverIds.has(local.id) && local.synced_at !== null) {
+          await executeSql(`DELETE FROM bonus_selections WHERE id = ?`, [local.id]);
+          if (__DEV__) {
+            console.log('[syncService] Deleted local bonus_selection not on server:', local.id);
+          }
+        }
+      }
+      for (const bs of serverBonusSel) {
+        await executeSql(
+          `INSERT OR REPLACE INTO bonus_selections (id, card_id, bonus_id, student_id, user_id, selected_at, used_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [bs.id, bs.card_id, bs.bonus_id, bs.student_id, userId, bs.selected_at, bs.used_at, now]
+        );
+        result.bonusSelections++;
+      }
+      if (__DEV__) {
+        console.log('[syncService] Pulled bonus_selections:', result.bonusSelections);
       }
     }
 
