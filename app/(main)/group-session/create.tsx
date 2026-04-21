@@ -16,6 +16,15 @@ import * as Haptics from 'expo-haptics';
 import { theme } from '../../../constants/theme';
 import { useAuthStore, useClassStore, useStudentStore, useGroupSessionStore, type StudentWithMapping } from '../../../stores';
 import { type TpTemplateWithCriteria, getActiveGroupSession, getGroupSessionsByClassId, getGroupsBySessionId, getGroupMemberIds } from '../../../services/database';
+import { supabase } from '../../../services/supabase/client';
+
+const HOUSE_NAMES: Record<string, string> = {
+  gryffondor: 'Gryffondor',
+  serpentard: 'Serpentard',
+  serdaigle: 'Serdaigle',
+  poufsouffle: 'Poufsouffle',
+};
+const HOUSE_IDS = ['gryffondor', 'serpentard', 'serdaigle', 'poufsouffle'] as const;
 
 type CreationStep = 'config' | 'groups' | 'criteria';
 
@@ -68,6 +77,10 @@ export default function CreateGroupSessionScreen() {
     sessionName: string;
     groups: { name: string; memberIds: string[] }[];
   } | null>(null);
+
+  // Academy mode
+  const [academyMode, setAcademyMode] = useState(false);
+  const [academyCoefficient, setAcademyCoefficient] = useState('1');
 
   // Loading states
   const [isCreating, setIsCreating] = useState(false);
@@ -131,14 +144,70 @@ export default function CreateGroupSessionScreen() {
     }
   }, [selectedClassId, loadStudentsForClass]);
 
-  // Check for previous sessions when class is selected
+  // Check for academy mode + previous sessions when class is selected
   useEffect(() => {
-    const checkPreviousSessions = async () => {
+    const checkClassSetup = async () => {
       if (!selectedClassId) {
         setPreviousGroupsData(null);
+        setAcademyMode(false);
         return;
       }
 
+      // Wait until students are loaded before checking academy assignments
+      if (students.length === 0) {
+        return;
+      }
+
+      // Check academy config
+      try {
+        if (supabase) {
+          const { data: config } = await supabase
+            .from('academy_config')
+            .select('enabled')
+            .eq('class_id', selectedClassId)
+            .maybeSingle();
+
+          if (config?.enabled) {
+            // Fetch assignments
+            const { data: assignments } = await supabase
+              .from('academy_assignments')
+              .select('student_id, house')
+              .eq('class_id', selectedClassId);
+
+            if (assignments && assignments.length > 0) {
+              const assignmentMap = new Map(assignments.map(a => [a.student_id, a.house]));
+
+              // Auto-create 4 house groups
+              const currentStudentIds = new Set(students.map((s: StudentWithMapping) => s.id));
+              const autoGroups: TempGroup[] = HOUSE_IDS.map(houseId => ({
+                id: generateId(),
+                name: HOUSE_NAMES[houseId],
+                memberIds: assignments
+                  .filter(a => a.house === houseId && currentStudentIds.has(a.student_id))
+                  .map(a => a.student_id),
+              }));
+
+              const assignedIds = new Set(assignments.map(a => a.student_id));
+              const unassigned = students
+                .filter((s: StudentWithMapping) => !assignedIds.has(s.id))
+                .map((s: StudentWithMapping) => s.id);
+
+              setTempGroups(autoGroups);
+              setUnassignedStudentIds(unassigned);
+              setAcademyMode(true);
+              setAcademyCoefficient('1');
+              setSelectedGroupIndex(0);
+              return; // Skip previous groups check in academy mode
+            }
+          }
+        }
+        setAcademyMode(false);
+      } catch (error) {
+        console.error('[CreateGroupSession] Academy check error:', error);
+        setAcademyMode(false);
+      }
+
+      // Check previous sessions (non-academy)
       try {
         const sessions = await getGroupSessionsByClassId(selectedClassId);
         const completedSession = sessions
@@ -171,8 +240,8 @@ export default function CreateGroupSessionScreen() {
       }
     };
 
-    checkPreviousSessions();
-  }, [selectedClassId]);
+    checkClassSetup();
+  }, [selectedClassId, students]);
 
   // Initialize unassigned students when students load
   useEffect(() => {
@@ -420,8 +489,19 @@ export default function CreateGroupSessionScreen() {
       // 4. Start the session
       await startSession();
 
-      // 5. Navigate to grading screen
+      // 5. Save academy coefficient if in academy mode
       const store = useGroupSessionStore.getState();
+      if (academyMode && store.activeSession?.session && supabase) {
+        const coeff = parseFloat(academyCoefficient) || 1;
+        await supabase
+          .from('academy_session_coefficients')
+          .upsert({
+            group_session_id: store.activeSession.session.id,
+            coefficient: coeff,
+          });
+      }
+
+      // 6. Navigate to grading screen
       if (store.activeSession?.session) {
         router.replace(`/(main)/group-session/${store.activeSession.session.id}/grade`);
       }
@@ -496,21 +576,44 @@ export default function CreateGroupSessionScreen() {
 
   const renderGroupsStep = () => (
     <View style={styles.stepContent}>
-      <Text style={styles.stepTitle}>Groupes</Text>
+      <Text style={styles.stepTitle}>
+        {academyMode ? 'Maisons' : 'Groupes'}
+      </Text>
       <Text style={styles.stepSubtitle}>
-        Créez des groupes et assignez les élèves
+        {academyMode
+          ? 'Les maisons sont pré-assignées par le Choixpeau'
+          : 'Créez des groupes et assignez les élèves'}
       </Text>
 
-      {/* Quick actions */}
-      <View style={styles.quickActions}>
-        <Pressable
-          style={styles.quickActionButton}
-          onPress={() => setShowRandomModal(true)}
-        >
-          <Text style={styles.quickActionIcon}>🎲</Text>
-          <Text style={styles.quickActionText}>Aléatoire</Text>
-        </Pressable>
-      </View>
+      {/* Academy coefficient */}
+      {academyMode && (
+        <View style={styles.coefficientRow}>
+          <Text style={styles.coefficientLabel}>Coefficient Académie</Text>
+          <TextInput
+            style={styles.coefficientInput}
+            value={academyCoefficient}
+            onChangeText={setAcademyCoefficient}
+            keyboardType="decimal-pad"
+            selectTextOnFocus
+          />
+          <Text style={styles.coefficientHint}>
+            Points = note x coeff
+          </Text>
+        </View>
+      )}
+
+      {/* Quick actions — hidden in academy mode */}
+      {!academyMode && (
+        <View style={styles.quickActions}>
+          <Pressable
+            style={styles.quickActionButton}
+            onPress={() => setShowRandomModal(true)}
+          >
+            <Text style={styles.quickActionIcon}>🎲</Text>
+            <Text style={styles.quickActionText}>Aléatoire</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* Groups tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.groupTabs}>
@@ -526,8 +629,7 @@ export default function CreateGroupSessionScreen() {
               setSelectedGroupIndex(index);
             }}
             onLongPress={() => {
-              // Alert.prompt is iOS only, so we just use the group name for now
-              // TODO: Add a custom modal for renaming on Android
+              if (academyMode) return; // No renaming in academy mode
               if (Platform.OS === 'ios') {
                 Alert.prompt(
                   'Renommer le groupe',
@@ -548,17 +650,23 @@ export default function CreateGroupSessionScreen() {
             ]}>
               {group.name} ({group.memberIds.length})
             </Text>
-            <Pressable
-              style={styles.removeGroupButton}
-              onPress={() => handleRemoveGroup(index)}
-            >
-              <Text style={styles.removeGroupButtonText}>×</Text>
-            </Pressable>
+            {/* Hide remove button in academy mode */}
+            {!academyMode && (
+              <Pressable
+                style={styles.removeGroupButton}
+                onPress={() => handleRemoveGroup(index)}
+              >
+                <Text style={styles.removeGroupButtonText}>×</Text>
+              </Pressable>
+            )}
           </Pressable>
         ))}
-        <Pressable style={styles.addGroupButton} onPress={handleAddGroup}>
-          <Text style={styles.addGroupButtonText}>+ Groupe</Text>
-        </Pressable>
+        {/* Hide add group button in academy mode */}
+        {!academyMode && (
+          <Pressable style={styles.addGroupButton} onPress={handleAddGroup}>
+            <Text style={styles.addGroupButtonText}>+ Groupe</Text>
+          </Pressable>
+        )}
       </ScrollView>
 
       {/* Two columns: unassigned + selected group */}
@@ -1270,6 +1378,42 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: theme.colors.text,
+  },
+
+  // Academy coefficient
+  coefficientRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  coefficientLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: theme.colors.text,
+  },
+  coefficientInput: {
+    width: 60,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    fontSize: 16,
+    fontWeight: '700',
+    color: theme.colors.primary,
+    textAlign: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  coefficientHint: {
+    fontSize: 12,
+    color: theme.colors.textTertiary,
+    flex: 1,
   },
 
   // Template selector
