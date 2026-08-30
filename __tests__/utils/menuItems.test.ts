@@ -1,8 +1,8 @@
 import { MENU_ITEMS, MENU_RADIUS, SUBMENU_RADIUS, ITEM_SIZE, LONG_PRESS_DURATION } from '../../constants/menuItems';
 
 describe('Menu Items Configuration', () => {
-  it('should have exactly 5 primary items', () => {
-    expect(MENU_ITEMS).toHaveLength(5);
+  it('should have exactly 4 primary items (remarque moved to toolbar)', () => {
+    expect(MENU_ITEMS).toHaveLength(4);
   });
 
   it('should contain all required action types', () => {
@@ -10,8 +10,17 @@ describe('Menu Items Configuration', () => {
     expect(ids).toContain('participation');
     expect(ids).toContain('bavardage');
     expect(ids).toContain('sortie');
-    expect(ids).toContain('remarque');
     expect(ids).toContain('absence');
+    expect(ids).not.toContain('remarque');
+  });
+
+  it('should be ordered participation/bavardage/sortie/absence (haut/droite/bas/gauche)', () => {
+    expect(MENU_ITEMS.map(item => item.id)).toEqual([
+      'participation',
+      'bavardage',
+      'sortie',
+      'absence',
+    ]);
   });
 
   it('should have unique IDs', () => {

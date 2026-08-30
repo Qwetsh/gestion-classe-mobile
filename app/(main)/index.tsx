@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -7,41 +7,51 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
-  Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import { useAuthStore, useClassStore, useSessionStore, useSyncStore } from '../../stores';
+import { ChevronRight, Play } from 'lucide-react-native';
+import {
+  useAuthStore,
+  useClassStore,
+  useHistoryStore,
+  useRoomStore,
+  useSessionStore,
+  useSyncStore,
+} from '../../stores';
 import { theme } from '../../constants/theme';
-import { FeedbackButton, AnnouncementBanner } from '../../components';
-import Svg, { Path } from 'react-native-svg';
+import { FeedbackButton } from '../../components';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const HEADER_HEIGHT = 260;
-const CURVE_HEIGHT = 40;
+function formatRelative(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 60) return `il y a ${Math.max(diffMin, 1)} min`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24 && date.getDate() === now.getDate()) return `il y a ${diffH} h`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'hier';
+  return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+}
 
-function CurvedSeparator() {
-  return (
-    <View style={styles.curveContainer}>
-      <Svg width={SCREEN_WIDTH} height={CURVE_HEIGHT} viewBox={`0 0 ${SCREEN_WIDTH} ${CURVE_HEIGHT}`}>
-        <Path
-          d={`M0,0 L0,0 Q${SCREEN_WIDTH / 2},${CURVE_HEIGHT * 2} ${SCREEN_WIDTH},0 L${SCREEN_WIDTH},${CURVE_HEIGHT} L0,${CURVE_HEIGHT} Z`}
-          fill={theme.colors.background}
-        />
-      </Svg>
-    </View>
+function formatDuration(startStr: string, endStr: string): string {
+  const min = Math.max(
+    1,
+    Math.round((new Date(endStr).getTime() - new Date(startStr).getTime()) / 60000)
   );
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const rest = min % 60;
+  return rest > 0 ? `${h} h ${rest.toString().padStart(2, '0')}` : `${h} h`;
 }
 
 export default function HomeScreen() {
-  const insets = useSafeAreaInsets();
   const { user, signOut, isLoading: authLoading } = useAuthStore();
-  const {
-    classes,
-    isLoading: classesLoading,
-    loadClasses,
-  } = useClassStore();
+  const { classes, isLoading: classesLoading, loadClasses } = useClassStore();
+  const { rooms, loadRooms } = useRoomStore();
+  const { sessions, loadSessionHistory } = useHistoryStore();
   const {
     activeSession,
     isSessionActive,
@@ -51,20 +61,30 @@ export default function HomeScreen() {
   const { sync, isSyncing } = useSyncStore();
 
   const hasAutoSynced = useRef(false);
+  const [nowTick, setNowTick] = useState(Date.now());
 
   useEffect(() => {
     if (user?.id) {
       loadClasses(user.id);
+      loadRooms(user.id);
     }
-  }, [user?.id, loadClasses]);
+  }, [user?.id, loadClasses, loadRooms]);
 
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
         loadActiveSession(user.id);
+        loadSessionHistory(user.id);
       }
-    }, [user?.id, loadActiveSession])
+    }, [user?.id, loadActiveSession, loadSessionHistory])
   );
+
+  // Chrono de la seance active (rafraichi toutes les 30 s)
+  useEffect(() => {
+    if (!isSessionActive) return;
+    const interval = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, [isSessionActive]);
 
   useEffect(() => {
     const autoSync = async () => {
@@ -85,20 +105,16 @@ export default function HomeScreen() {
   }, [user?.id, classesLoading, classes.length, isSyncing, sync, loadClasses]);
 
   const handleLogout = async () => {
-    Alert.alert(
-      'Déconnexion',
-      'Voulez-vous vous déconnecter ?',
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: 'Déconnexion',
-          onPress: async () => {
-            await signOut();
-            router.replace('/(auth)/login');
-          },
+    Alert.alert('Déconnexion', 'Voulez-vous vous déconnecter ?', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Déconnexion',
+        onPress: async () => {
+          await signOut();
+          router.replace('/(auth)/login');
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handleCancelSession = () => {
@@ -121,504 +137,293 @@ export default function HomeScreen() {
   const userName = user?.email?.split('@')[0] || 'Enseignant';
   const displayName = userName.charAt(0).toUpperCase() + userName.slice(1);
 
+  const classNameById = (id: string) =>
+    classes.find((c) => c.id === id)?.name ?? 'Classe';
+  const roomNameById = (id: string) =>
+    rooms.find((r) => r.id === id)?.name ?? 'Salle';
+
+  const hasActive = isSessionActive && activeSession && !activeSession.ended_at;
+  const elapsedMin = hasActive
+    ? Math.max(
+        0,
+        Math.floor((nowTick - new Date(activeSession!.started_at).getTime()) / 60000)
+      )
+    : 0;
+  const startedAtLabel = hasActive
+    ? new Date(activeSession!.started_at).toLocaleTimeString('fr-FR', {
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
+
+  const lastSession = sessions[0];
+
   return (
-    <View style={styles.container}>
-      {/* Gradient Header Background */}
-      <LinearGradient
-        colors={['#4F46E5', '#7C3AED', '#9333EA']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.headerGradient}
-      />
-      <CurvedSeparator />
-
-      <SafeAreaView style={styles.safeArea} edges={['top']}>
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Header on gradient */}
-          <View style={styles.header}>
-            <View style={styles.headerTop}>
-              <View style={styles.greetingContainer}>
-                <Text style={styles.greeting}>Bonjour,</Text>
-                <Text style={styles.userName}>{displayName}</Text>
-              </View>
-              <View style={styles.headerActions}>
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.profileButton,
-                    pressed && styles.profileButtonPressed,
-                  ]}
-                  onPress={handleLogout}
-                  disabled={authLoading}
-                >
-                  {authLoading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.profileInitial}>
-                      {displayName.charAt(0)}
-                    </Text>
-                  )}
-                </Pressable>
-              </View>
-            </View>
-
-            {/* Announcements */}
-            <AnnouncementBanner />
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.greeting}>Bonjour,</Text>
+            <Text style={styles.userName}>{displayName}</Text>
           </View>
-
-          {/* Content cards (overlapping gradient and white) */}
-          <View style={styles.content}>
-            {/* Active Session Card */}
-            {isSessionActive && activeSession && !activeSession.ended_at && (
-              <View style={styles.activeSessionCard}>
-                <View style={styles.activeSessionHeader}>
-                  <View style={styles.liveIndicator}>
-                    <View style={styles.liveDot} />
-                    <Text style={styles.liveText}>EN COURS</Text>
-                  </View>
-                </View>
-                <Text style={styles.activeSessionTitle}>Séance active</Text>
-                <Text style={styles.activeSessionSubtitle}>
-                  Reprenez là où vous en étiez
-                </Text>
-                <View style={styles.activeSessionActions}>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.resumeButton,
-                      pressed && styles.buttonPressed,
-                    ]}
-                    onPress={() => router.push(`/(main)/session/${activeSession.id}`)}
-                  >
-                    <LinearGradient
-                      colors={theme.gradients.success}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.gradientButton}
-                    >
-                      <Text style={styles.resumeButtonText}>Reprendre</Text>
-                    </LinearGradient>
-                  </Pressable>
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.cancelButton,
-                      pressed && styles.cancelButtonPressed,
-                    ]}
-                    onPress={handleCancelSession}
-                  >
-                    <Text style={styles.cancelButtonText}>Annuler</Text>
-                  </Pressable>
-                </View>
-              </View>
-            )}
-
-            {/* Primary Action - Start Session OR Sync Indicator */}
-            {!isSessionActive && (
-              isSyncing ? (
-                <View style={styles.primaryActionCard}>
-                  <LinearGradient
-                    colors={['#6366F1', '#4F46E5']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.primaryActionGradient}
-                  >
-                    <View style={styles.primaryActionLeft}>
-                      <View style={styles.primaryActionIcon}>
-                        <ActivityIndicator color="#fff" size="small" />
-                      </View>
-                      <View>
-                        <Text style={styles.primaryActionTitle}>Synchronisation...</Text>
-                        <Text style={styles.primaryActionSubtitle}>
-                          Envoi des données en cours
-                        </Text>
-                      </View>
-                    </View>
-                  </LinearGradient>
-                </View>
+          <View style={styles.headerActions}>
+            <FeedbackButton variant="icon" />
+            <Pressable
+              style={({ pressed }) => [styles.avatar, pressed && styles.avatarPressed]}
+              onPress={handleLogout}
+              disabled={authLoading}
+            >
+              {authLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
               ) : (
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.primaryActionCard,
-                    pressed && styles.buttonPressed,
-                  ]}
-                  onPress={() => router.push('/(main)/session/start')}
-                >
-                  <LinearGradient
-                    colors={['#10B981', '#059669']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.primaryActionGradient}
-                  >
-                    <View style={styles.primaryActionLeft}>
-                      <View style={styles.primaryActionIcon}>
-                        <Text style={styles.primaryActionIconText}>▶</Text>
-                      </View>
-                      <View>
-                        <Text style={styles.primaryActionTitle}>Démarrer une séance</Text>
-                        <Text style={styles.primaryActionSubtitle}>
-                          Suivre la participation en classe
-                        </Text>
-                      </View>
-                    </View>
-                  </LinearGradient>
-                </Pressable>
-              )
-            )}
-
-            {/* Quick Actions */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Accès rapide</Text>
-            </View>
-
-            <View style={styles.quickActionsGrid}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.quickActionCard,
-                  pressed && styles.quickActionCardPressed,
-                ]}
-                onPress={() => router.push('/(main)/parent-meeting')}
-              >
-                <View style={[styles.quickActionIcon, { backgroundColor: theme.colors.primarySoft }]}>
-                  <Text style={styles.quickActionIconText}>👨‍👩‍👧</Text>
-                </View>
-                <Text style={styles.quickActionTitle}>Réunions parents</Text>
-              </Pressable>
-
-            </View>
-
-            {/* Navigation buttons */}
-            <View style={styles.navButtonsRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.navButton,
-                  pressed && styles.navButtonPressed,
-                ]}
-                onPress={() => router.push('/(main)/classes')}
-              >
-                <View style={[styles.navButtonIcon, { backgroundColor: theme.colors.primarySoft }]}>
-                  <Text style={styles.navButtonIconText}>📚</Text>
-                </View>
-                <Text style={styles.navButtonTitle}>Mes classes</Text>
-              </Pressable>
-
-              <Pressable
-                style={({ pressed }) => [
-                  styles.navButton,
-                  pressed && styles.navButtonPressed,
-                ]}
-                onPress={() => router.push('/(main)/history')}
-              >
-                <View style={[styles.navButtonIcon, { backgroundColor: theme.colors.sortieSoft }]}>
-                  <Text style={styles.navButtonIconText}>📋</Text>
-                </View>
-                <Text style={styles.navButtonTitle}>Historique</Text>
-              </Pressable>
-            </View>
+                <Text style={styles.avatarInitial}>{displayName.charAt(0)}</Text>
+              )}
+            </Pressable>
           </View>
-        </ScrollView>
-      </SafeAreaView>
+        </View>
 
-      {/* Footer */}
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, theme.spacing.sm) }]}>
-        <FeedbackButton />
-      </View>
-    </View>
+        {/* Corps centre : hero */}
+        <View style={styles.heroSection}>
+          {hasActive && (
+            <View style={styles.liveBadge}>
+              <View style={styles.liveDot} />
+              <Text style={styles.liveBadgeText}>
+                EN COURS · {elapsedMin} MIN
+              </Text>
+            </View>
+          )}
+
+          <Pressable
+            style={({ pressed }) => [styles.heroHalo, pressed && styles.heroPressed]}
+            onPress={() =>
+              hasActive
+                ? router.push(`/(main)/session/${activeSession!.id}`)
+                : router.push('/(main)/session/start')
+            }
+            disabled={isSyncing}
+          >
+            <View style={styles.heroCircle}>
+              {isSyncing ? (
+                <ActivityIndicator color="#fff" size="large" />
+              ) : (
+                <Play
+                  size={52}
+                  color={theme.colors.textInverse}
+                  fill={theme.colors.textInverse}
+                  strokeWidth={0}
+                  style={styles.playIcon}
+                />
+              )}
+            </View>
+          </Pressable>
+
+          <Text style={styles.heroTitle}>
+            {hasActive ? 'Reprendre la séance' : 'Démarrer une séance'}
+          </Text>
+          <Text style={styles.heroSubtitle}>
+            {isSyncing
+              ? 'Synchronisation en cours…'
+              : hasActive
+                ? `${classNameById(activeSession!.class_id)} — ${roomNameById(activeSession!.room_id)} · démarrée à ${startedAtLabel}${activeSession!.topic ? ` / ${activeSession!.topic}` : ''}`
+                : 'Suivre la participation en classe en moins de 2 secondes'}
+          </Text>
+
+          {hasActive && (
+            <Pressable
+              style={({ pressed }) => [
+                styles.cancelSessionButton,
+                pressed && styles.cancelSessionButtonPressed,
+              ]}
+              onPress={handleCancelSession}
+            >
+              <Text style={styles.cancelSessionText}>Annuler la séance</Text>
+            </Pressable>
+          )}
+        </View>
+
+        {/* Derniere seance */}
+        {!hasActive && lastSession && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.lastSessionCard,
+              pressed && styles.lastSessionCardPressed,
+            ]}
+            onPress={() => router.push('/(main)/history')}
+          >
+            <Text style={styles.lastSessionText} numberOfLines={1}>
+              Dernière séance : {classNameById(lastSession.class_id)} ·{' '}
+              {formatRelative(lastSession.started_at)},{' '}
+              {formatDuration(lastSession.started_at, lastSession.ended_at!)}
+            </Text>
+            <ChevronRight size={16} color={theme.colors.textTertiary} strokeWidth={1.8} />
+          </Pressable>
+        )}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.colors.background,
-  },
-
-  // Gradient header
-  headerGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: HEADER_HEIGHT,
-  },
-  curveContainer: {
-    position: 'absolute',
-    top: HEADER_HEIGHT - CURVE_HEIGHT,
-    left: 0,
-    right: 0,
-    zIndex: -1,
-  },
-
   safeArea: {
     flex: 1,
+    backgroundColor: theme.colors.background,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: theme.spacing.xxl,
+    flexGrow: 1,
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
   },
 
   // Header
   header: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    paddingBottom: theme.spacing.xl,
-  },
-  headerTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: theme.spacing.md,
+    paddingTop: theme.spacing.md,
   },
-  greetingContainer: {},
   greeting: {
-    fontSize: 16,
-    fontWeight: '400',
-    color: 'rgba(255,255,255,0.8)',
+    fontFamily: theme.fonts.body,
+    fontSize: 15,
+    color: theme.colors.textSecondary,
   },
   userName: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: -0.5,
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
+    color: theme.colors.text,
+    letterSpacing: -0.3,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  profileButton: {
-    width: 44,
-    height: 44,
+  avatar: {
+    width: 40,
+    height: 40,
     borderRadius: theme.radius.full,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: theme.colors.text,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
   },
-  profileButtonPressed: {
-    backgroundColor: 'rgba(255,255,255,0.3)',
+  avatarPressed: {
+    opacity: 0.85,
   },
-  profileInitial: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
+  avatarInitial: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 16,
+    color: theme.colors.textInverse,
   },
 
-  // Content
-  content: {
-    paddingHorizontal: theme.spacing.lg,
-    marginTop: theme.spacing.sm,
+  // Hero
+  heroSection: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.xl,
   },
-
-  // Active Session Card
-  activeSessionCard: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
-    padding: theme.spacing.lg,
-    marginBottom: theme.spacing.md,
-    ...theme.shadows.lg,
-  },
-  activeSessionHeader: {
-    flexDirection: 'row',
-    marginBottom: theme.spacing.md,
-  },
-  liveIndicator: {
+  liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: theme.colors.successSoft,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.full,
+    gap: 6,
+    marginBottom: theme.spacing.lg,
   },
   liveDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
-    backgroundColor: theme.colors.success,
-    marginRight: theme.spacing.xs,
+    backgroundColor: theme.colors.action,
   },
-  liveText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: theme.colors.success,
+  liveBadgeText: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 12,
+    color: theme.colors.action,
     letterSpacing: 0.5,
   },
-  activeSessionTitle: {
+  heroHalo: {
+    width: 150 + 28,
+    height: 150 + 28,
+    borderRadius: (150 + 28) / 2,
+    backgroundColor: theme.colors.actionSoft,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: theme.spacing.lg,
+  },
+  heroPressed: {
+    transform: [{ scale: 0.98 }],
+  },
+  heroCircle: {
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    backgroundColor: theme.colors.action,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: theme.colors.action,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 30,
+    elevation: 8,
+  },
+  playIcon: {
+    marginLeft: 6,
+  },
+  heroTitle: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 20,
-    fontWeight: '700',
     color: theme.colors.text,
     marginBottom: theme.spacing.xs,
   },
-  activeSessionSubtitle: {
+  heroSubtitle: {
+    fontFamily: theme.fonts.body,
     fontSize: 14,
     color: theme.colors.textSecondary,
-    marginBottom: theme.spacing.lg,
-  },
-  activeSessionActions: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-  },
-  resumeButton: {
-    flex: 1,
-    borderRadius: theme.radius.lg,
-    overflow: 'hidden',
-    ...theme.shadows.success,
-  },
-  gradientButton: {
-    paddingVertical: theme.spacing.md,
-    alignItems: 'center',
-  },
-  resumeButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: theme.colors.textInverse,
-  },
-  cancelButton: {
-    paddingVertical: theme.spacing.md,
+    textAlign: 'center',
     paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.errorSoft,
   },
-  cancelButtonPressed: {
+  cancelSessionButton: {
+    marginTop: theme.spacing.lg,
+    backgroundColor: theme.colors.errorSoft,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  cancelSessionButtonPressed: {
     opacity: 0.8,
   },
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+  cancelSessionText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 14,
     color: theme.colors.error,
   },
 
-  // Primary Action Card
-  primaryActionCard: {
-    borderRadius: theme.radius.xl,
-    overflow: 'hidden',
-    marginBottom: theme.spacing.lg,
-    ...theme.shadows.md,
-  },
-  primaryActionGradient: {
-    paddingVertical: theme.spacing.lg,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  primaryActionLeft: {
+  // Derniere seance
+  lastSessionCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
+    justifyContent: 'space-between',
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingVertical: 13,
+    paddingHorizontal: theme.spacing.md,
   },
-  primaryActionIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: theme.radius.full,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
+  lastSessionCardPressed: {
+    backgroundColor: theme.colors.surfaceHover,
   },
-  primaryActionIconText: {
-    fontSize: 22,
-    color: theme.colors.textInverse,
-  },
-  primaryActionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: theme.colors.textInverse,
-  },
-  primaryActionSubtitle: {
+  lastSessionText: {
+    flex: 1,
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 13,
-    color: 'rgba(255,255,255,0.8)',
-    marginTop: 2,
-  },
-
-  buttonPressed: {
-    opacity: 0.95,
-    transform: [{ scale: 0.98 }],
-  },
-
-  // Section
-  sectionHeader: {
-    marginBottom: theme.spacing.md,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: theme.colors.text,
-  },
-
-  // Quick Actions Grid
-  quickActionsGrid: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-    marginBottom: theme.spacing.lg,
-  },
-  quickActionCard: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
-    padding: theme.spacing.lg,
-    alignItems: 'center',
-    ...theme.shadows.sm,
-  },
-  quickActionCardPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-    transform: [{ scale: 0.98 }],
-  },
-  quickActionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: theme.radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: theme.spacing.sm,
-  },
-  quickActionIconText: {
-    fontSize: 24,
-  },
-  quickActionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.text,
-    textAlign: 'center',
-  },
-
-  // Navigation buttons
-  navButtonsRow: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-  },
-  navButton: {
-    flex: 1,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
-    padding: theme.spacing.lg,
-    alignItems: 'center',
-    ...theme.shadows.sm,
-  },
-  navButtonPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-    transform: [{ scale: 0.98 }],
-  },
-  navButtonIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: theme.radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: theme.spacing.sm,
-  },
-  navButtonIconText: {
-    fontSize: 24,
-  },
-  navButtonTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.text,
-    textAlign: 'center',
-  },
-
-  // Footer
-  footer: {
-    paddingHorizontal: theme.spacing.lg,
+    color: theme.colors.textSecondary,
+    marginRight: theme.spacing.sm,
   },
 });

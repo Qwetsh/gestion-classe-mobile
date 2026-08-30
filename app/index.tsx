@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
+import { BookOpen } from 'lucide-react-native';
 import { useAuthStore } from '../stores';
 import { theme } from '../constants/theme';
 
@@ -29,12 +30,14 @@ export default function Index() {
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.emoji}>📚</Text>
+        <View style={styles.logoSquare}>
+          <BookOpen size={34} color={theme.colors.textInverse} strokeWidth={2} />
+        </View>
         <Text style={styles.title}>Gestion Classe</Text>
         <Text style={styles.subtitle}>Chargement...</Text>
         <ActivityIndicator
           size="large"
-          color={theme.colors.participation}
+          color={theme.colors.primary}
           style={styles.loader}
         />
       </View>
@@ -52,17 +55,23 @@ const styles = StyleSheet.create({
   content: {
     alignItems: 'center',
   },
-  emoji: {
-    fontSize: 64,
+  logoSquare: {
+    width: 68,
+    height: 68,
+    borderRadius: 18,
+    backgroundColor: theme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: theme.spacing.md,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '600',
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
     color: theme.colors.text,
     marginBottom: theme.spacing.xs,
   },
   subtitle: {
+    fontFamily: theme.fonts.body,
     fontSize: 16,
     color: theme.colors.textSecondary,
     marginBottom: theme.spacing.xl,

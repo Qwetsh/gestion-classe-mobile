@@ -42,6 +42,41 @@ import {
 } from '../services/database';
 
 // ============================================
+// Derniere config de groupes par classe ("Reprendre", maquette 10c)
+// ============================================
+
+import * as SecureStore from 'expo-secure-store';
+
+export interface LastGroupConfig {
+  groups: Array<{ name: string; memberIds: string[] }>;
+  criteria: Array<{ label: string; maxPoints: number }>;
+  templateId: string | null;
+  savedAt: string;
+}
+
+const LAST_CONFIG_PREFIX = 'group_config_';
+
+export async function saveLastGroupConfig(classId: string, config: Omit<LastGroupConfig, 'savedAt'>): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(
+      `${LAST_CONFIG_PREFIX}${classId}`,
+      JSON.stringify({ ...config, savedAt: new Date().toISOString() })
+    );
+  } catch {
+    // Best-effort : "Reprendre" sera simplement indisponible
+  }
+}
+
+export async function getLastGroupConfig(classId: string): Promise<LastGroupConfig | null> {
+  try {
+    const raw = await SecureStore.getItemAsync(`${LAST_CONFIG_PREFIX}${classId}`);
+    return raw ? (JSON.parse(raw) as LastGroupConfig) : null;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================
 // Types
 // ============================================
 

@@ -11,6 +11,7 @@ export { useOralEvaluationStore, ORAL_GRADE_LABELS, type OralEvaluation } from '
 export { useParentMeetingStore, type Period, type StudentStats, type WeeklyData, type StudentDashboard } from './parentMeetingStore';
 export { useGroupSessionStore, type SessionGroupWithDetails, type ActiveSessionState } from './groupSessionStore';
 export { useStampStore } from './stampStore';
+export { useSettingsStore, type SessionSettings } from './settingsStore';
 
 // Re-export types needed by group session screens
 export type { GradingCriteria, SessionGroup, GroupGrade } from '../types';

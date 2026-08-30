@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import { Animated } from 'react-native';
-import { MENU_ITEMS, MenuItemType, MENU_RADIUS, SUBMENU_RADIUS } from '../constants/menuItems';
+import { MENU_ITEMS, MenuItemType, MENU_RADIUS, SUBMENU_RADIUS, CENTER_RADIUS } from '../constants/menuItems';
 import {
   triggerLightFeedback,
   triggerMediumFeedback,
@@ -8,6 +8,7 @@ import {
 } from '../utils/haptics';
 import {
   EdgeProximity,
+  MenuBounds,
   calculateClampedMenuPosition,
   calculateSubmenuPosition,
 } from '../utils/menuPositioning';
@@ -44,6 +45,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   const closeMenuTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const menuStateRef = useRef<MenuState>('closed');
   const menuPositionRef = useRef({ x: 0, y: 0 });
+  const boundsRef = useRef<MenuBounds | null>(null);
   const activeSubmenuRef = useRef<MenuItemType | null>(null);
   const onSelectRef = useRef(onSelect);
   const isMountedRef = useRef(true);
@@ -134,9 +136,13 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     }
   }, []);
 
-  const openMenu = useCallback((x: number, y: number) => {
+  const openMenu = useCallback((x: number, y: number, bounds?: MenuBounds) => {
+    // Limites de la zone de rendu (ex : contentWrapper), pour que le clamp
+    // et le flip du sous-menu utilisent le meme repere que l'affichage.
+    boundsRef.current = bounds ?? null;
+
     // Use shared utility for position clamping
-    const { position, edgeProximity: edges } = calculateClampedMenuPosition(x, y);
+    const { position, edgeProximity: edges } = calculateClampedMenuPosition(x, y, bounds);
 
     setEdgeProximity(edges);
     setMenuPosition(position);
@@ -263,8 +269,8 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     const dy = touchY - centerY;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
-    // Very forgiving radius detection
-    const minRadius = 25;
+    // Relacher dans le disque central blanc = annulation silencieuse
+    const minRadius = CENTER_RADIUS;
     const maxRadius = radius * 2.5;
 
     if (distance < minRadius || distance > maxRadius) {
@@ -298,7 +304,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     if (currentMenuState === 'submenu' && currentActiveSubmenu?.subItems) {
       currentItems = currentActiveSubmenu.subItems;
       // Use shared utility for submenu position (synced with visual)
-      const submenuPos = calculateSubmenuPosition(currentActiveSubmenu, currentPosition);
+      const submenuPos = calculateSubmenuPosition(currentActiveSubmenu, currentPosition, boundsRef.current ?? undefined);
       centerX = currentPosition.x + submenuPos.x;
       centerY = currentPosition.y + submenuPos.y;
       radius = SUBMENU_RADIUS;
@@ -360,7 +366,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
     if (currentMenuState === 'submenu' && currentActiveSubmenu?.subItems) {
       currentItems = currentActiveSubmenu.subItems;
       // Use shared utility for submenu position (synced with visual)
-      const submenuPos = calculateSubmenuPosition(currentActiveSubmenu, currentPosition);
+      const submenuPos = calculateSubmenuPosition(currentActiveSubmenu, currentPosition, boundsRef.current ?? undefined);
       centerX = currentPosition.x + submenuPos.x;
       centerY = currentPosition.y + submenuPos.y;
       radius = SUBMENU_RADIUS;

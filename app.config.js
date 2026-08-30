@@ -4,7 +4,7 @@ export default {
   expo: {
     name: IS_DEV ? 'Gestion Classe (Dev)' : 'Gestion Classe',
     slug: 'gestion-classe',
-    version: '1.0.0',
+    version: '1.1.0',
     orientation: 'portrait',
     icon: './assets/icon.png',
     userInterfaceStyle: 'light',

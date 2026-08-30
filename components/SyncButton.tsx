@@ -8,7 +8,6 @@ import {
   Animated,
   Modal,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { theme } from '../constants/theme';
 import { useAuthStore, useSyncStore, useClassStore, useRoomStore, useIsOffline } from '../stores';
 import { SyncResult } from '../services/sync';
@@ -147,17 +146,12 @@ export function SyncButton() {
           disabled={isOffline || isSyncing}
         >
           {isSyncing ? (
-            <LinearGradient
-              colors={theme.gradients.primary}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.buttonGradient}
-            >
+            <View style={[styles.buttonGradient, { backgroundColor: theme.colors.primary }]}>
               <Animated.Text style={[styles.buttonIconSyncing, { transform: [{ rotate: spin }] }]}>
                 ↻
               </Animated.Text>
               <Text style={styles.buttonTextSyncing}>Synchronisation...</Text>
-            </LinearGradient>
+            </View>
           ) : (
             <View style={styles.buttonInner}>
               <View style={styles.iconContainer}>
@@ -195,12 +189,9 @@ export function SyncButton() {
             {displayedResult?.result?.success ? (
               <>
                 <View style={styles.modalIconContainer}>
-                  <LinearGradient
-                    colors={theme.gradients.success}
-                    style={styles.modalIconGradient}
-                  >
+                  <View style={[styles.modalIconGradient, { backgroundColor: theme.colors.action }]}>
                     <Text style={styles.modalIconText}>✓</Text>
-                  </LinearGradient>
+                  </View>
                 </View>
                 <Text style={styles.modalTitle}>Synchronisation reussie</Text>
                 <Text style={styles.modalText}>

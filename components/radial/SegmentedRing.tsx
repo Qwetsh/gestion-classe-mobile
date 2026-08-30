@@ -1,7 +1,7 @@
 import React from 'react';
 import { Animated } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { MENU_ITEMS, MENU_RADIUS, ITEM_SIZE } from '../../constants/menuItems';
+import { MENU_ITEMS, MENU_RADIUS, ITEM_SIZE, CENTER_RADIUS } from '../../constants/menuItems';
 
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 const AnimatedSvg = Animated.createAnimatedComponent(Svg);
@@ -15,12 +15,20 @@ interface SegmentedRingProps {
 
 const INNER_RADIUS = 40;
 const OUTER_RADIUS = MENU_RADIUS + ITEM_SIZE / 2 + 8;
-const GAP_ANGLE = 0.04; // radians gap between segments
+const GAP_ANGLE = (2 * Math.PI) / 180; // ~2 degres entre quadrants
 const RING_SIZE = (OUTER_RADIUS + 4) * 2;
 const CENTER = RING_SIZE / 2;
 
 // Participation is index 0
 const PARTICIPATION_INDEX = 0;
+
+/** Convertit une couleur hex #RRGGBB en rgba(). */
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 
 function describeArc(
   cx: number,
@@ -78,7 +86,7 @@ export function SegmentedRing({ menuScale, menuOpacity, hoveredIndex, bonusFillP
       <Path
         key={item.id}
         d={path}
-        fill={isHovered ? 'rgba(255,255,255,0.12)' : 'rgba(15,23,42,0.75)'}
+        fill={isHovered ? hexToRgba(item.color, 0.88) : 'rgba(15,23,42,0.78)'}
         stroke="rgba(255,255,255,0.08)"
         strokeWidth={1}
       />
@@ -88,9 +96,12 @@ export function SegmentedRing({ menuScale, menuOpacity, hoveredIndex, bonusFillP
   // Animated fill arc for participation bonus
   // We use interpolation to map progress (0-1) to discrete fill path steps
   const fillPaths = Array.from({ length: FILL_STEPS + 1 }, (_, i) => i / FILL_STEPS);
+  // Every output string must share the exact same numeric structure for RN
+  // string interpolation, so progress 0 uses a degenerate (invisible) arc
+  // instead of an empty/short path
   const fillD = bonusFillProgress.interpolate({
     inputRange: fillPaths,
-    outputRange: fillPaths.map((p) => getFillPath(p) || 'M0 0'),
+    outputRange: fillPaths.map((p) => getFillPath(Math.max(p, 0.001))),
   });
 
   return (

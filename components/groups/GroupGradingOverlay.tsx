@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -6,113 +6,94 @@ import {
   Modal,
   Pressable,
   ScrollView,
-  Animated,
-  PanResponder,
-  Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ChevronLeft, ChevronRight, Minus, Plus } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { theme } from '../../constants/theme';
 import type { SessionGroupWithDetails } from '../../stores/groupSessionStore';
 import type { GradingCriteria } from '../../types';
 import type { StudentWithMapping } from '../../stores';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const SLIDER_PADDING = 24;
-const SLIDER_WIDTH = SCREEN_WIDTH - SLIDER_PADDING * 2 - 80;
-
 interface GroupGradingOverlayProps {
   visible: boolean;
   group: SessionGroupWithDetails | null;
+  /** Tous les groupes de la seance (navigation inter-groupes + pastilles). */
+  groups: SessionGroupWithDetails[];
   criteria: GradingCriteria[];
   maxPossibleScore: number;
   students: StudentWithMapping[];
   onGradeChange: (groupId: string, criteriaId: string, points: number) => void;
-  onApplyMalus: (groupId: string) => void;
-  onResetMalus: (groupId: string) => void;
+  /** Stepper malus explicite : delta = +1 ou -1. */
+  onMalusChange: (groupId: string, delta: number) => void;
+  onSelectGroup: (group: SessionGroupWithDetails) => void;
   onClose: () => void;
 }
 
-// ---- CriteriaSlider (same pattern as grade.tsx) ----
+/** Affiche 3,5 au lieu de 3.5 */
+function formatPoints(value: number): string {
+  return value.toLocaleString('fr-FR');
+}
 
-interface CriteriaSliderProps {
+// ---- Stepper de critere (remplace les sliders, maquette 10b) ----
+
+interface CriteriaStepperProps {
   criteria: GradingCriteria;
   value: number;
   onChange: (value: number) => void;
 }
 
-function CriteriaSlider({ criteria, value, onChange }: CriteriaSliderProps) {
-  const progress = useRef(new Animated.Value(value / criteria.maxPoints)).current;
-  const lastValue = useRef(value);
+function CriteriaStepper({ criteria, value, onChange }: CriteriaStepperProps) {
+  const step = 0.5;
 
-  const updateValue = useCallback((newProgress: number) => {
-    const clampedProgress = Math.max(0, Math.min(1, newProgress));
-    const newValue = Math.round(clampedProgress * criteria.maxPoints * 2) / 2;
-    if (newValue !== lastValue.current) {
-      lastValue.current = newValue;
+  const change = (delta: number) => {
+    const next = Math.max(0, Math.min(criteria.maxPoints, value + delta));
+    if (next !== value) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      onChange(newValue);
+      onChange(next);
     }
-  }, [criteria.maxPoints, onChange]);
+  };
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (evt) => {
-        const newProgress = evt.nativeEvent.locationX / SLIDER_WIDTH;
-        progress.setValue(Math.max(0, Math.min(1, newProgress)));
-        updateValue(newProgress);
-      },
-      onPanResponderMove: (evt) => {
-        const newProgress = evt.nativeEvent.locationX / SLIDER_WIDTH;
-        progress.setValue(Math.max(0, Math.min(1, newProgress)));
-        updateValue(newProgress);
-      },
-      onPanResponderRelease: () => {
-        const finalProgress = lastValue.current / criteria.maxPoints;
-        Animated.spring(progress, {
-          toValue: finalProgress,
-          useNativeDriver: false,
-          friction: 8,
-        }).start();
-      },
-    })
-  ).current;
-
-  useEffect(() => {
-    if (value !== lastValue.current) {
-      lastValue.current = value;
-      Animated.spring(progress, {
-        toValue: value / criteria.maxPoints,
-        useNativeDriver: false,
-        friction: 8,
-      }).start();
-    }
-  }, [value, criteria.maxPoints, progress]);
-
-  const fillWidth = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
-  });
-
-  const thumbLeft = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, SLIDER_WIDTH - 24],
-  });
+  const progress = criteria.maxPoints > 0 ? value / criteria.maxPoints : 0;
 
   return (
-    <View style={styles.sliderContainer}>
-      <Text style={styles.criteriaLabel}>{criteria.label}</Text>
-      <View style={styles.sliderRow}>
-        <View style={styles.sliderTrack} {...panResponder.panHandlers}>
-          <Animated.View style={[styles.sliderFill, { width: fillWidth }]} />
-          <Animated.View style={[styles.sliderThumb, { left: thumbLeft }]} />
+    <View style={styles.criteriaRow}>
+      <View style={styles.criteriaInfo}>
+        <Text style={styles.criteriaLabel} numberOfLines={1}>
+          {criteria.label}
+        </Text>
+        <View style={styles.criteriaProgressTrack}>
+          <View style={[styles.criteriaProgressFill, { width: `${Math.round(progress * 100)}%` }]} />
         </View>
-        <View style={styles.valueDisplay}>
-          <Text style={styles.valueText}>{value}</Text>
-          <Text style={styles.maxText}>/{criteria.maxPoints}</Text>
-        </View>
+      </View>
+      <View style={styles.stepperRow}>
+        <Pressable
+          style={({ pressed }) => [
+            styles.stepperMinus,
+            value <= 0 && styles.stepperDisabled,
+            pressed && styles.stepperPressed,
+          ]}
+          onPress={() => change(-step)}
+          disabled={value <= 0}
+          hitSlop={6}
+        >
+          <Minus size={17} color={value <= 0 ? theme.colors.textTertiary : theme.colors.text} strokeWidth={2} />
+        </Pressable>
+        <Text style={styles.stepperValue}>
+          {formatPoints(value)}/{criteria.maxPoints}
+        </Text>
+        <Pressable
+          style={({ pressed }) => [
+            styles.stepperPlus,
+            value >= criteria.maxPoints && styles.stepperDisabled,
+            pressed && styles.stepperPressed,
+          ]}
+          onPress={() => change(step)}
+          disabled={value >= criteria.maxPoints}
+          hitSlop={6}
+        >
+          <Plus size={17} color="#FFFFFF" strokeWidth={2} />
+        </Pressable>
       </View>
     </View>
   );
@@ -128,19 +109,23 @@ function getDisplayName(student: StudentWithMapping): string {
   return student.fullName || student.pseudo;
 }
 
+function isGraded(group: SessionGroupWithDetails, criteriaCount: number): boolean {
+  return criteriaCount > 0 && group.grades.length >= criteriaCount;
+}
+
 export function GroupGradingOverlay({
   visible,
   group,
+  groups,
   criteria,
   maxPossibleScore,
   students,
   onGradeChange,
-  onApplyMalus,
-  onResetMalus,
+  onMalusChange,
+  onSelectGroup,
   onClose,
 }: GroupGradingOverlayProps) {
   const insets = useSafeAreaInsets();
-  const malusScale = useRef(new Animated.Value(1)).current;
 
   if (!group) return null;
 
@@ -155,26 +140,17 @@ export function GroupGradingOverlay({
     return grade?.pointsAwarded ?? 0;
   };
 
-  const handleApplyMalus = () => {
-    Animated.sequence([
-      Animated.timing(malusScale, {
-        toValue: 0.8,
-        duration: 50,
-        useNativeDriver: true,
-      }),
-      Animated.spring(malusScale, {
-        toValue: 1,
-        friction: 3,
-        useNativeDriver: true,
-      }),
-    ]).start();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    onApplyMalus(group.id);
-  };
+  const currentIndex = groups.findIndex((g) => g.id === group.id);
+  const prevGroup = currentIndex > 0 ? groups[currentIndex - 1] : null;
+  const nextGroup = currentIndex >= 0 && currentIndex < groups.length - 1 ? groups[currentIndex + 1] : null;
+  const isLast = !nextGroup;
 
-  const handleResetMalus = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    onResetMalus(group.id);
+  const handleMalus = (delta: number) => {
+    if (delta < 0 && group.conductMalus <= 0) return;
+    Haptics.notificationAsync(
+      delta > 0 ? Haptics.NotificationFeedbackType.Warning : Haptics.NotificationFeedbackType.Success
+    );
+    onMalusChange(group.id, delta);
   };
 
   return (
@@ -186,63 +162,133 @@ export function GroupGradingOverlay({
     >
       <View style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={onClose} />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
           {/* Handle */}
           <View style={styles.handle} />
 
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
+          {/* Titre + navigation inter-groupes */}
+          <View style={styles.navRow}>
+            <Pressable
+              style={[styles.navArrow, !prevGroup && styles.navArrowDisabled]}
+              onPress={() => prevGroup && onSelectGroup(prevGroup)}
+              disabled={!prevGroup}
+              hitSlop={8}
+            >
+              <ChevronLeft
+                size={22}
+                color={prevGroup ? theme.colors.text : theme.colors.textTertiary}
+                strokeWidth={2}
+              />
+            </Pressable>
+            <View style={styles.navCenter}>
               <Text style={styles.groupName}>{group.name}</Text>
-              <View style={styles.membersRow}>
-                {memberNames.map((name, idx) => (
-                  <Text key={idx} style={styles.memberText}>
-                    {name}{idx < memberNames.length - 1 ? ', ' : ''}
-                  </Text>
-                ))}
-              </View>
+              <Text style={styles.membersLine} numberOfLines={1}>
+                {memberNames.join(', ')}
+              </Text>
             </View>
-            <View style={styles.scoreContainer}>
-              <Text style={styles.scoreValue}>{currentScore}</Text>
-              <Text style={styles.scoreMax}>/{maxPossibleScore}</Text>
-            </View>
+            <Pressable
+              style={[styles.navArrow, !nextGroup && styles.navArrowDisabled]}
+              onPress={() => nextGroup && onSelectGroup(nextGroup)}
+              disabled={!nextGroup}
+              hitSlop={8}
+            >
+              <ChevronRight
+                size={22}
+                color={nextGroup ? theme.colors.text : theme.colors.textTertiary}
+                strokeWidth={2}
+              />
+            </Pressable>
           </View>
 
-          {/* Criteria sliders */}
+          {/* Pastilles de progression */}
+          <View style={styles.dotsRow}>
+            {groups.map((g) => {
+              const graded = isGraded(g, criteria.length);
+              const isCurrent = g.id === group.id;
+              return (
+                <Pressable key={g.id} onPress={() => onSelectGroup(g)} hitSlop={6}>
+                  <View
+                    style={[
+                      styles.dot,
+                      graded && styles.dotGraded,
+                      isCurrent && styles.dotCurrent,
+                    ]}
+                  />
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Criteres en steppers */}
           <ScrollView
             style={styles.criteriaSection}
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.criteriaSectionContent}
           >
             {criteria.map((crit) => (
-              <CriteriaSlider
+              <CriteriaStepper
                 key={`${group.id}-${crit.id}`}
                 criteria={crit}
                 value={getGradeForCriteria(crit.id)}
                 onChange={(value) => onGradeChange(group.id, crit.id, value)}
               />
             ))}
+
+            {/* Malus conduite : ligne rouge avec steppers explicites */}
+            <View style={styles.malusRow}>
+              <View style={styles.malusInfo}>
+                <Text style={styles.malusLabel}>Malus conduite</Text>
+                <Text style={styles.malusCount}>
+                  {group.conductMalus > 0 ? `−${group.conductMalus} pt${group.conductMalus > 1 ? 's' : ''}` : 'Aucun'}
+                </Text>
+              </View>
+              <View style={styles.stepperRow}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.stepperMinus,
+                    group.conductMalus <= 0 && styles.stepperDisabled,
+                    pressed && styles.stepperPressed,
+                  ]}
+                  onPress={() => handleMalus(-1)}
+                  disabled={group.conductMalus <= 0}
+                  hitSlop={6}
+                >
+                  <Minus
+                    size={17}
+                    color={group.conductMalus <= 0 ? theme.colors.textTertiary : theme.colors.text}
+                    strokeWidth={2}
+                  />
+                </Pressable>
+                <Text style={[styles.stepperValue, styles.malusValue]}>
+                  {group.conductMalus}
+                </Text>
+                <Pressable
+                  style={({ pressed }) => [styles.malusPlus, pressed && styles.stepperPressed]}
+                  onPress={() => handleMalus(1)}
+                  hitSlop={6}
+                >
+                  <Plus size={17} color="#FFFFFF" strokeWidth={2} />
+                </Pressable>
+              </View>
+            </View>
           </ScrollView>
 
-          {/* Malus section */}
-          <View style={styles.malusSection}>
-            <Animated.View style={{ transform: [{ scale: malusScale }] }}>
-              <Pressable
-                style={styles.malusButton}
-                onPress={handleApplyMalus}
-                onLongPress={handleResetMalus}
-              >
-                <Text style={styles.malusButtonText}>-1</Text>
-              </Pressable>
-            </Animated.View>
-            <View style={styles.malusInfo}>
-              <Text style={styles.malusLabel}>Malus conduite</Text>
-              <Text style={styles.malusCount}>
-                {group.conductMalus > 0 ? `-${group.conductMalus}` : '0'}
+          {/* Footer : total + groupe suivant */}
+          <View style={styles.footer}>
+            <View style={styles.totalContainer}>
+              <Text style={styles.totalLabel}>Total</Text>
+              <Text style={styles.totalValue}>
+                {formatPoints(currentScore)}
+                <Text style={styles.totalMax}>/{maxPossibleScore}</Text>
               </Text>
             </View>
-            <Pressable style={styles.closeButton} onPress={onClose}>
-              <Text style={styles.closeButtonText}>Fermer</Text>
+            <Pressable
+              style={({ pressed }) => [styles.nextButton, pressed && styles.stepperPressed]}
+              onPress={() => (isLast ? onClose() : onSelectGroup(nextGroup!))}
+            >
+              <Text style={styles.nextButtonText}>
+                {isLast ? 'Terminer la notation' : 'Groupe suivant →'}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -258,172 +304,232 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,23,42,0.4)',
+    backgroundColor: theme.colors.sheetBackdrop,
   },
   sheet: {
-    backgroundColor: theme.colors.background,
-    borderTopLeftRadius: theme.radius.xxl,
-    borderTopRightRadius: theme.radius.xxl,
-    maxHeight: '85%',
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '88%',
+    paddingHorizontal: 24,
   },
   handle: {
-    width: 40,
+    width: 38,
     height: 4,
     borderRadius: 2,
     backgroundColor: theme.colors.border,
     alignSelf: 'center',
-    marginTop: theme.spacing.sm,
+    marginTop: theme.spacing.sm + 2,
     marginBottom: theme.spacing.md,
   },
 
-  // Header
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingHorizontal: theme.spacing.lg,
-    marginBottom: theme.spacing.md,
-  },
-  headerLeft: {
-    flex: 1,
-    marginRight: theme.spacing.md,
-  },
-  groupName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: theme.colors.text,
-    marginBottom: 4,
-  },
-  membersRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  memberText: {
-    fontSize: 13,
-    color: theme.colors.textSecondary,
-  },
-  scoreContainer: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-  },
-  scoreValue: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: theme.colors.primary,
-  },
-  scoreMax: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: theme.colors.textSecondary,
-  },
-
-  // Criteria
-  criteriaSection: {
-    paddingHorizontal: theme.spacing.lg,
-  },
-  criteriaSectionContent: {
-    paddingBottom: theme.spacing.md,
-  },
-  sliderContainer: {
-    marginBottom: theme.spacing.lg,
-  },
-  criteriaLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.text,
-    marginBottom: theme.spacing.sm,
-  },
-  sliderRow: {
+  // Navigation
+  navRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
   },
-  sliderTrack: {
-    flex: 1,
-    height: 40,
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    overflow: 'hidden',
+  navArrow: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     justifyContent: 'center',
+    alignItems: 'center',
   },
-  sliderFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: theme.colors.primarySoft,
-    borderRadius: theme.radius.lg,
+  navArrowDisabled: {
+    borderColor: theme.colors.borderLight,
   },
-  sliderThumb: {
-    position: 'absolute',
-    top: 8,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: theme.colors.primary,
-    ...theme.shadows.md,
+  navCenter: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.sm,
   },
-  valueDisplay: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    minWidth: 60,
-    justifyContent: 'flex-end',
-  },
-  valueText: {
-    fontSize: 20,
-    fontWeight: '700',
+  groupName: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 18,
     color: theme.colors.text,
   },
-  maxText: {
+  membersLine: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12.5,
+    color: theme.colors.textSecondary,
+    marginTop: 1,
+  },
+
+  // Pastilles
+  dotsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: theme.spacing.md,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: theme.colors.segmentTrack,
+  },
+  dotGraded: {
+    backgroundColor: theme.colors.action,
+  },
+  dotCurrent: {
+    width: 18,
+    backgroundColor: theme.colors.primary,
+  },
+
+  // Criteres
+  criteriaSection: {
+    flexGrow: 0,
+  },
+  criteriaSectionContent: {
+    paddingBottom: theme.spacing.sm,
+  },
+  criteriaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.sm + 2,
+    gap: theme.spacing.md,
+  },
+  criteriaInfo: {
+    flex: 1,
+  },
+  criteriaLabel: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 14,
-    color: theme.colors.textTertiary,
+    color: theme.colors.text,
+    marginBottom: 6,
+  },
+  criteriaProgressTrack: {
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.colors.segmentTrack,
+    overflow: 'hidden',
+  },
+  criteriaProgressFill: {
+    height: '100%',
+    borderRadius: 2,
+    backgroundColor: theme.colors.primary,
+  },
+
+  // Steppers
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  stepperMinus: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepperPlus: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: theme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepperDisabled: {
+    opacity: 0.45,
+  },
+  stepperPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.97 }],
+  },
+  stepperValue: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 17,
+    color: theme.colors.text,
+    minWidth: 52,
+    textAlign: 'center',
   },
 
   // Malus
-  malusSection: {
+  malusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
     gap: theme.spacing.md,
-  },
-  malusButton: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: theme.colors.error,
-    justifyContent: 'center',
-    alignItems: 'center',
-    ...theme.shadows.md,
-  },
-  malusButtonText: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#fff',
+    backgroundColor: theme.colors.absentBg,
+    borderWidth: 1,
+    borderColor: theme.colors.absentBorder,
+    borderRadius: 12,
+    padding: theme.spacing.md,
+    marginTop: theme.spacing.sm,
   },
   malusInfo: {
     flex: 1,
   },
   malusLabel: {
-    fontSize: 12,
-    color: theme.colors.textSecondary,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 14,
+    color: theme.colors.absentText,
   },
   malusCount: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: theme.colors.error,
+    fontFamily: theme.fonts.body,
+    fontSize: 12.5,
+    color: theme.colors.absentText,
+    marginTop: 1,
   },
-  closeButton: {
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surfaceHover,
+  malusValue: {
+    color: theme.colors.absentText,
+    minWidth: 30,
   },
-  closeButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+  malusPlus: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: theme.colors.error,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // Footer
+  footer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderLight,
+  },
+  totalContainer: {},
+  totalLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
     color: theme.colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  totalValue: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 20,
+    color: theme.colors.text,
+  },
+  totalMax: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+  },
+  nextButton: {
+    flex: 1,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  nextButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 15,
+    color: theme.colors.textInverse,
   },
 });

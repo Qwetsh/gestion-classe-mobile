@@ -11,7 +11,8 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, Stack } from 'expo-router';
+import { router } from 'expo-router';
+import { ChevronRight, Mic, Search, Users, X } from 'lucide-react-native';
 import { useAuthStore, useClassStore } from '../../../stores';
 import { useParentMeetingStore } from '../../../stores/parentMeetingStore';
 import { StudentWithMapping } from '../../../stores/studentStore';
@@ -110,11 +111,12 @@ export default function ParentMeetingScreen() {
     if (item.type === 'header') {
       return (
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionHeaderIcon}>📚</Text>
           <Text style={styles.sectionHeaderText}>{item.className}</Text>
-          <Text style={styles.sectionHeaderCount}>
-            {studentsByClass[item.classId!]?.length || 0}
-          </Text>
+          <View style={styles.sectionHeaderCountBadge}>
+            <Text style={styles.sectionHeaderCount}>
+              {studentsByClass[item.classId!]?.length || 0}
+            </Text>
+          </View>
         </View>
       );
     }
@@ -136,9 +138,9 @@ export default function ParentMeetingScreen() {
           <Text style={styles.studentName}>
             {student.fullName || student.pseudo}
           </Text>
-          <Text style={styles.studentPseudo}>
-            {student.fullName ? student.pseudo : ''}
-          </Text>
+          {student.fullName ? (
+            <Text style={styles.studentPseudo}>{student.pseudo}</Text>
+          ) : null}
         </View>
 
         <View style={styles.studentStats}>
@@ -152,20 +154,19 @@ export default function ParentMeetingScreen() {
               score > 0 && styles.scoreTextPositive,
               score < 0 && styles.scoreTextNegative,
             ]}>
-              {score > 0 ? '+' : ''}{score}
+              {score > 0 ? '+' : score < 0 ? '−' : ''}{Math.abs(score)}
             </Text>
           </View>
 
-          {oralGrade !== null && (
+          {oralGrade !== null && oralGrade !== undefined && (
             <View style={styles.oralBadge}>
-              <Text style={styles.oralText}>🎤 {oralGrade}</Text>
+              <Mic size={12} color={theme.colors.remarque} strokeWidth={2} />
+              <Text style={styles.oralText}>{oralGrade}</Text>
             </View>
           )}
         </View>
 
-        <View style={styles.chevronContainer}>
-          <Text style={styles.chevron}>›</Text>
-        </View>
+        <ChevronRight size={17} color={theme.colors.textTertiary} strokeWidth={1.8} />
       </Pressable>
     );
   };
@@ -173,53 +174,32 @@ export default function ParentMeetingScreen() {
   const renderEmptyList = () => (
     <View style={styles.placeholder}>
       <View style={styles.placeholderIconContainer}>
-        <Text style={styles.placeholderEmoji}>👨‍👩‍👧</Text>
+        <Users size={32} color={theme.colors.primary} strokeWidth={1.7} />
       </View>
       <Text style={styles.placeholderTitle}>
-        {searchQuery ? 'Aucun resultat' : 'Aucun eleve'}
+        {searchQuery ? 'Aucun résultat' : 'Aucun élève'}
       </Text>
       <Text style={styles.placeholderText}>
         {searchQuery
-          ? 'Aucun eleve ne correspond a votre recherche'
-          : 'Ajoutez des eleves a vos classes pour les voir ici'}
+          ? 'Aucun élève ne correspond à votre recherche'
+          : 'Ajoutez des élèves à vos classes pour les voir ici'}
       </Text>
     </View>
   );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: 'Reunion Parent-Prof',
-          headerStyle: { backgroundColor: theme.colors.background },
-          headerTintColor: theme.colors.text,
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontWeight: '700',
-            fontSize: 18,
-          },
-          headerLeft: () => (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Retour</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      <View style={styles.screenHeader}>
+        <Text style={styles.screenTitle}>Réunions parents</Text>
+      </View>
 
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBar}>
-          <Text style={styles.searchIcon}>🔍</Text>
+          <Search size={17} color={theme.colors.textTertiary} strokeWidth={1.8} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Rechercher un eleve..."
+            placeholder="Rechercher un élève…"
             placeholderTextColor={theme.colors.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -227,11 +207,8 @@ export default function ParentMeetingScreen() {
             autoCorrect={false}
           />
           {searchQuery.length > 0 && (
-            <Pressable
-              onPress={() => setSearchQuery('')}
-              style={styles.clearButton}
-            >
-              <Text style={styles.clearButtonText}>✕</Text>
+            <Pressable onPress={() => setSearchQuery('')} style={styles.clearButton} hitSlop={8}>
+              <X size={16} color={theme.colors.textTertiary} strokeWidth={2} />
             </Pressable>
           )}
         </View>
@@ -277,7 +254,7 @@ export default function ParentMeetingScreen() {
       {isLoading && allStudents.length === 0 ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Chargement des eleves...</Text>
+          <Text style={styles.loadingText}>Chargement des élèves...</Text>
         </View>
       ) : (
         <FlatList
@@ -299,15 +276,6 @@ export default function ParentMeetingScreen() {
               tintColor={theme.colors.primary}
             />
           }
-          ListHeaderComponent={
-            sections.length > 0 ? (
-              <View style={styles.listHeaderContainer}>
-                <Text style={styles.listHeader}>
-                  {filteredStudents.length} eleve{filteredStudents.length > 1 ? 's' : ''}
-                </Text>
-              </View>
-            ) : null
-          }
         />
       )}
     </SafeAreaView>
@@ -319,56 +287,47 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  backButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+  screenHeader: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
   },
-  backButtonPressed: {
-    backgroundColor: theme.colors.surfaceHover,
-  },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 16,
-    fontWeight: '600',
+  screenTitle: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
+    color: theme.colors.text,
+    letterSpacing: -0.3,
   },
 
   // Search
   searchContainer: {
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
     paddingHorizontal: theme.spacing.md,
-    ...theme.shadows.sm,
-  },
-  searchIcon: {
-    fontSize: 16,
-    marginRight: theme.spacing.sm,
   },
   searchInput: {
     flex: 1,
     height: 44,
-    fontSize: 16,
+    fontFamily: theme.fonts.body,
+    fontSize: 15,
     color: theme.colors.text,
   },
   clearButton: {
     padding: theme.spacing.xs,
   },
-  clearButtonText: {
-    fontSize: 16,
-    color: theme.colors.textTertiary,
-  },
 
   // Filter
   filterContainer: {
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    paddingBottom: theme.spacing.sm,
   },
   filterScroll: {
     paddingHorizontal: theme.spacing.lg,
@@ -379,19 +338,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.surface,
-    ...theme.shadows.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
   filterChipActive: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.text,
+    borderColor: theme.colors.text,
   },
   filterChipText: {
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 14,
     color: theme.colors.text,
-    fontWeight: '500',
   },
   filterChipTextActive: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.textInverse,
-    fontWeight: '600',
   },
 
   // Error
@@ -400,13 +361,13 @@ const styles = StyleSheet.create({
     padding: theme.spacing.md,
     marginHorizontal: theme.spacing.lg,
     marginTop: theme.spacing.md,
-    borderRadius: theme.radius.lg,
+    borderRadius: 12,
   },
   errorText: {
+    fontFamily: theme.fonts.bodyMedium,
     color: theme.colors.error,
     fontSize: 14,
     textAlign: 'center',
-    fontWeight: '500',
   },
 
   // Loading
@@ -417,6 +378,7 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: theme.spacing.md,
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
   },
@@ -424,20 +386,11 @@ const styles = StyleSheet.create({
   // List
   list: {
     padding: theme.spacing.lg,
+    paddingTop: 0,
   },
   emptyList: {
     flex: 1,
     padding: theme.spacing.lg,
-  },
-  listHeaderContainer: {
-    marginBottom: theme.spacing.md,
-  },
-  listHeader: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
 
   // Section Header
@@ -448,24 +401,22 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.md,
     marginBottom: theme.spacing.xs,
   },
-  sectionHeaderIcon: {
-    fontSize: 18,
+  sectionHeaderText: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 16,
+    color: theme.colors.text,
     marginRight: theme.spacing.sm,
   },
-  sectionHeaderText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: theme.colors.text,
-    flex: 1,
-  },
-  sectionHeaderCount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.textTertiary,
+  sectionHeaderCountBadge: {
     backgroundColor: theme.colors.surfaceSecondary,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 2,
     borderRadius: theme.radius.full,
+  },
+  sectionHeaderCount: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.textSecondary,
   },
 
   // Student Card
@@ -473,10 +424,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
     marginBottom: theme.spacing.sm,
-    ...theme.shadows.sm,
   },
   studentCardPressed: {
     backgroundColor: theme.colors.surfaceHover,
@@ -486,14 +438,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   studentName: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 15,
     color: theme.colors.text,
   },
   studentPseudo: {
-    fontSize: 13,
+    fontFamily: theme.fonts.body,
+    fontSize: 12.5,
     color: theme.colors.textTertiary,
-    marginTop: 2,
+    marginTop: 1,
   },
   studentStats: {
     flexDirection: 'row',
@@ -504,51 +457,41 @@ const styles = StyleSheet.create({
   scoreBadge: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.full,
     backgroundColor: theme.colors.surfaceSecondary,
     minWidth: 40,
     alignItems: 'center',
   },
   scoreBadgePositive: {
-    backgroundColor: theme.colors.participationSoft,
+    backgroundColor: theme.colors.actionSoft,
   },
   scoreBadgeNegative: {
     backgroundColor: theme.colors.bavardageSoft,
   },
   scoreText: {
+    fontFamily: theme.fonts.bodyBold,
     fontSize: 13,
-    fontWeight: '700',
     color: theme.colors.textSecondary,
   },
   scoreTextPositive: {
-    color: theme.colors.participation,
+    color: theme.colors.action,
   },
   scoreTextNegative: {
-    color: theme.colors.bavardage,
+    color: theme.colors.bavardageText,
   },
   oralBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.full,
     backgroundColor: theme.colors.remarqueSoft,
   },
   oralText: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 13,
-    fontWeight: '600',
     color: theme.colors.remarque,
-  },
-  chevronContainer: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.surfaceSecondary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chevron: {
-    fontSize: 18,
-    color: theme.colors.textTertiary,
-    fontWeight: '600',
   },
 
   // Placeholder
@@ -557,29 +500,28 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xxl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.xl,
-    ...theme.shadows.sm,
   },
   placeholderIconContainer: {
-    width: 80,
-    height: 80,
+    width: 72,
+    height: 72,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.primarySoft,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: theme.spacing.lg,
   },
-  placeholderEmoji: {
-    fontSize: 40,
-  },
   placeholderTitle: {
+    fontFamily: theme.fonts.bodyBold,
     fontSize: 20,
-    fontWeight: '700',
     color: theme.colors.text,
     marginBottom: theme.spacing.sm,
   },
   placeholderText: {
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
     textAlign: 'center',

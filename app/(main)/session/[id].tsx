@@ -18,6 +18,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import {
+  MessageSquare,
+  Mic,
+  Pencil,
+  Settings,
+  Shuffle,
+  Trash2,
+} from 'lucide-react-native';
+import {
   useAuthStore,
   useClassStore,
   useStudentStore,
@@ -27,17 +35,31 @@ import {
   useOralEvaluationStore,
   useGroupSessionStore,
   useStampStore,
-  ORAL_GRADE_LABELS,
+  useSettingsStore,
   StudentWithMapping,
   type ActiveSessionState,
 } from '../../../stores';
+import {
+  MENU_ITEMS,
+  FLICK_PAUSE_DURATION,
+  FLICK_DISTANCE_THRESHOLD,
+} from '../../../constants/menuItems';
+import {
+  RandomPickerSheet,
+  OralEvaluationSheet,
+  SessionNoteSheet,
+  SessionSettingsSheet,
+  StudentPickerSheet,
+  UndoBanner,
+} from '../../../components/session';
+import { triggerActionSignature, triggerErrorFeedback } from '../../../utils/haptics';
 import { getGroupSessionByLinkedSessionId } from '../../../services/database';
 import { SessionGroupView } from '../../../components/groups/SessionGroupView';
 import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOverlay';
 import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
 import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
 import { theme } from '../../../constants/theme';
-import { getStudentAtPosition, EVENT_TYPES, SortieSubtype, Event, deleteEvent, getStudentEventsInSession } from '../../../services/database';
+import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, deleteEvent, getStudentEventsInSession } from '../../../services/database';
 import {
   pickFromCamera,
   pickFromGallery,
@@ -216,17 +238,44 @@ function NativeSessionScreen() {
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoQuality, setPhotoQuality] = useState<PhotoQuality>('minimal');
 
-  // Oral evaluation state
-  const [showOralModal, setShowOralModal] = useState(false);
+  // Oral evaluation state (sheet 9b)
+  const [showOralSheet, setShowOralSheet] = useState(false);
   const [showOralStudentPicker, setShowOralStudentPicker] = useState(false);
-  const [oralStudent, setOralStudent] = useState<StudentWithMapping | null>(null);
-  const [selectedOralGrade, setSelectedOralGrade] = useState<number | null>(null);
+  const [oralPickedStudent, setOralPickedStudent] = useState<StudentWithMapping | null>(null);
   const [isSavingOral, setIsSavingOral] = useState(false);
-  const [unevaluatedList, setUnevaluatedList] = useState<StudentWithMapping[]>([]);
 
-  // Session notes state
-  const [showSessionNotesModal, setShowSessionNotesModal] = useState(false);
-  const [sessionNotesText, setSessionNotesText] = useState('');
+  // Tirage au sort (sheet 9a)
+  const [showRandomSheet, setShowRandomSheet] = useState(false);
+
+  // Reglages de seance (sheet 7b)
+  const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  const { flickMode, distinctHaptics, compactGrid, loadSettings } = useSettingsStore();
+
+  useEffect(() => {
+    loadSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Selecteur d'eleve pour la remarque (toolbar)
+  const [showRemarquePicker, setShowRemarquePicker] = useState(false);
+
+  // Banniere de confirmation / echec (undo du dernier evenement rapide)
+  const [undoBanner, setUndoBanner] = useState<{
+    visible: boolean;
+    message: string;
+    eventId: string | null;
+    variant: 'success' | 'error';
+  }>({ visible: false, message: '', eventId: null, variant: 'success' });
+
+  // Chrono de seance (minutes ecoulees, rafraichi toutes les 30 s)
+  const [sessionTick, setSessionTick] = useState(Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setSessionTick(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Session notes state (sheet 9c)
+  const [showSessionNotesSheet, setShowSessionNotesSheet] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
 
   // Delete event state
@@ -250,9 +299,15 @@ function NativeSessionScreen() {
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
 
+  // Mode expert (flick) : point de depart du geste + geste deja consomme
+  const flickStartRef = useRef({ x: 0, y: 0 });
+  const flickHandledRef = useRef(false);
+
   // Container position tracking for coordinate conversion
   const containerRef = useRef<View>(null);
   const containerOffsetRef = useRef({ x: 0, y: 0 });
+  // Taille de la zone de contenu : sert de limites au menu radial (clamp + flip)
+  const containerBoundsRef = useRef({ width: 0, height: 0 });
 
   // Cleanup on unmount - prevent state updates after unmount
   useEffect(() => {
@@ -364,6 +419,51 @@ function NativeSessionScreen() {
     );
   }, [getActiveSortie, formatElapsedTime, markReturn]);
 
+  const ACTION_LABELS: Record<string, string> = {
+    participation: '+1 Implication',
+    bavardage: '+1 Malus',
+    absence: 'Absence',
+    sortie: 'Sortie',
+  };
+
+  // Banniere verte de confirmation avec undo (toute action rapide : menu ou flick)
+  const showUndoBanner = useCallback((student: StudentWithMapping, actionId: string, eventId: string | null, subLabel?: string) => {
+    const label = subLabel ? `${ACTION_LABELS[actionId]} · ${subLabel}` : ACTION_LABELS[actionId] || actionId;
+    setUndoBanner({
+      visible: true,
+      message: `${student.fullName || student.pseudo} · ${label}`,
+      eventId,
+      variant: 'success',
+    });
+  }, []);
+
+  // Banniere rouge : l'evenement n'a PAS ete enregistre (echec DB, etc.)
+  const showErrorBanner = useCallback((student: StudentWithMapping) => {
+    triggerErrorFeedback();
+    setUndoBanner({
+      visible: true,
+      message: `${student.fullName || student.pseudo} · non enregistré — réessayez`,
+      eventId: null,
+      variant: 'error',
+    });
+  }, []);
+
+  const handleUndoLastEvent = useCallback(async () => {
+    const eventId = undoBanner.eventId;
+    setUndoBanner({ visible: false, message: '', eventId: null, variant: 'success' });
+    if (!eventId) return;
+    try {
+      await deleteEvent(eventId);
+      await loadSessionEvents();
+    } catch (error) {
+      if (__DEV__) console.error('[Session] Undo failed:', error);
+    }
+  }, [undoBanner.eventId, loadSessionEvents]);
+
+  const dismissUndoBanner = useCallback(() => {
+    setUndoBanner((prev) => ({ ...prev, visible: false }));
+  }, []);
+
   // Handle selection from radial menu
   const handleRadialSelection = useCallback(async (selection: RadialMenuSelection) => {
     if (!selectedStudent) return;
@@ -372,7 +472,7 @@ function NativeSessionScreen() {
     const subItemId = selection.parentId ? selection.itemId : null;
 
     switch (itemId) {
-      case 'participation':
+      case 'participation': {
         if (selection.isBonus) {
           // Show bonus modal instead of adding 1pt
           setBonusPoints('3');
@@ -380,26 +480,51 @@ function NativeSessionScreen() {
           setShowBonusModal(true);
           return; // Don't clear selectedStudent yet
         }
-        await addEvent(selectedStudent.id, EVENT_TYPES.PARTICIPATION);
-        break;
-      case 'bavardage':
-        await addEvent(selectedStudent.id, EVENT_TYPES.BAVARDAGE);
-        break;
-      case 'absence':
-        await addEvent(selectedStudent.id, EVENT_TYPES.ABSENCE);
-        break;
-      case 'remarque':
-        setShowRemarqueModal(true);
-        return;
-      case 'sortie':
-        if (subItemId) {
-          await addEvent(selectedStudent.id, EVENT_TYPES.SORTIE, subItemId as SortieSubtype);
+        const event = await addEvent(selectedStudent.id, EVENT_TYPES.PARTICIPATION);
+        if (event) {
+          triggerActionSignature('participation', distinctHaptics);
+          showUndoBanner(selectedStudent, 'participation', event.id);
+        } else {
+          showErrorBanner(selectedStudent);
         }
         break;
+      }
+      case 'bavardage': {
+        const event = await addEvent(selectedStudent.id, EVENT_TYPES.BAVARDAGE);
+        if (event) {
+          triggerActionSignature('bavardage', distinctHaptics);
+          showUndoBanner(selectedStudent, 'bavardage', event.id);
+        } else {
+          showErrorBanner(selectedStudent);
+        }
+        break;
+      }
+      case 'absence': {
+        const event = await addEvent(selectedStudent.id, EVENT_TYPES.ABSENCE);
+        if (event) {
+          triggerActionSignature('absence', distinctHaptics);
+          showUndoBanner(selectedStudent, 'absence', event.id);
+        } else {
+          showErrorBanner(selectedStudent);
+        }
+        break;
+      }
+      case 'sortie': {
+        if (subItemId) {
+          const event = await addEvent(selectedStudent.id, EVENT_TYPES.SORTIE, subItemId as SortieSubtype);
+          if (event) {
+            triggerActionSignature('sortie', distinctHaptics);
+            showUndoBanner(selectedStudent, 'sortie', event.id, selection.label.split(' > ')[1]);
+          } else {
+            showErrorBanner(selectedStudent);
+          }
+        }
+        break;
+      }
     }
 
     setSelectedStudent(null);
-  }, [selectedStudent, addEvent]);
+  }, [selectedStudent, addEvent, distinctHaptics, showUndoBanner, showErrorBanner]);
 
   const {
     menuState,
@@ -431,6 +556,7 @@ function NativeSessionScreen() {
     if (containerRef.current) {
       containerRef.current.measure((x, y, width, height, pageX, pageY) => {
         containerOffsetRef.current = { x: pageX, y: pageY };
+        containerBoundsRef.current = { width, height };
       });
     }
   }, []);
@@ -495,13 +621,19 @@ function NativeSessionScreen() {
 
     currentStudentRef.current = student;
     lastTouchRef.current = { x: containerPos.x, y: containerPos.y };
+    flickStartRef.current = { x: containerPos.x, y: containerPos.y };
+    flickHandledRef.current = false;
     setTouchPos({ x: containerPos.x, y: containerPos.y });
     setShowProgress(true);
+
+    // Mode flick : une pause de 250 ms ouvre le menu normal ; un geste rapide
+    // avant la pause valide directement l'action de la direction.
+    const openDelay = flickMode ? FLICK_PAUSE_DURATION : LONG_PRESS_DURATION;
 
     // Animate progress circle
     Animated.timing(progressAnim, {
       toValue: 1,
-      duration: LONG_PRESS_DURATION,
+      duration: openDelay,
       useNativeDriver: true,
     }).start();
 
@@ -514,21 +646,69 @@ function NativeSessionScreen() {
       setShowProgress(false);
       setSelectedStudent(student);
       menuOpenRef.current = true;
-      openMenu(containerPos.x, containerPos.y);
-    }, LONG_PRESS_DURATION);
+      openMenu(containerPos.x, containerPos.y, containerBoundsRef.current);
+    }, openDelay);
   };
+
+  // Valide directement l'action d'une direction (mode expert flick)
+  const handleFlickAction = useCallback(async (student: StudentWithMapping, itemId: string) => {
+    if (itemId === 'sortie') {
+      // La sortie exige une sous-action : on ouvre le menu au point de depart,
+      // le doigt (deja vers le bas) survole le quadrant Sortie et le sous-menu s'ouvre.
+      setSelectedStudent(student);
+      menuOpenRef.current = true;
+      openMenu(flickStartRef.current.x, flickStartRef.current.y, containerBoundsRef.current);
+      return;
+    }
+
+    const typeMap: Record<string, EventType> = {
+      participation: EVENT_TYPES.PARTICIPATION,
+      bavardage: EVENT_TYPES.BAVARDAGE,
+      absence: EVENT_TYPES.ABSENCE,
+    };
+    const type = typeMap[itemId];
+    if (!type) return;
+
+    const event = await addEvent(student.id, type);
+    if (event) {
+      triggerActionSignature(itemId, distinctHaptics);
+      showUndoBanner(student, itemId, event.id);
+    } else {
+      showErrorBanner(student);
+    }
+  }, [addEvent, distinctHaptics, showUndoBanner, showErrorBanner, openMenu]);
 
   const handleTouchMoveEvent = (pageX: number, pageY: number) => {
     // Convert to container-relative coordinates
     const containerPos = toContainerCoords(pageX, pageY);
     lastTouchRef.current = { x: containerPos.x, y: containerPos.y };
 
-    // If moved too far before menu opened, cancel
+    // If moved too far before menu opened
     if (!menuOpenRef.current && showProgress) {
-      const dx = containerPos.x - touchPos.x;
-      const dy = containerPos.y - touchPos.y;
+      const dx = containerPos.x - flickStartRef.current.x;
+      const dy = containerPos.y - flickStartRef.current.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
-      if (distance > TOUCH_MOVE_THRESHOLD) {
+
+      if (flickMode && !flickHandledRef.current) {
+        // Flick : deplacement > seuil avant la pause => action de la direction
+        if (distance > FLICK_DISTANCE_THRESHOLD) {
+          flickHandledRef.current = true;
+          const student = currentStudentRef.current;
+          clearLongPressTimer();
+          if (student) {
+            // Meme decoupage angulaire que le menu (quadrants a 90°, haut = -135°→-45°)
+            let angle = Math.atan2(dx, -dy);
+            if (angle < 0) angle += 2 * Math.PI;
+            const anglePerItem = (2 * Math.PI) / MENU_ITEMS.length;
+            const itemIndex = Math.floor(((angle + anglePerItem / 2) % (2 * Math.PI)) / anglePerItem);
+            const item = MENU_ITEMS[itemIndex];
+            if (item) {
+              handleFlickAction(student, item.id);
+            }
+          }
+          return;
+        }
+      } else if (!flickMode && distance > TOUCH_MOVE_THRESHOLD) {
         clearLongPressTimer();
         return;
       }
@@ -675,13 +855,8 @@ function NativeSessionScreen() {
     refreshLinkedGroupSession();
   }, [refreshLinkedGroupSession]);
 
-  const handleApplyMalus = useCallback(async (groupId: string) => {
-    await useGroupSessionStore.getState().applyMalus(groupId, 1);
-    refreshLinkedGroupSession();
-  }, [refreshLinkedGroupSession]);
-
-  const handleResetMalus = useCallback(async (groupId: string) => {
-    await useGroupSessionStore.getState().resetMalus(groupId);
+  const handleMalusChange = useCallback(async (groupId: string, delta: number) => {
+    await useGroupSessionStore.getState().applyMalus(groupId, delta);
     refreshLinkedGroupSession();
   }, [refreshLinkedGroupSession]);
 
@@ -791,38 +966,37 @@ function NativeSessionScreen() {
     setRemarquePhotoUri(null);
   };
 
-  // Random student selection (simple - no DB)
+  // Eleves presents / non evalues (partages entre toolbar et sheets)
+  const presentStudents = students.filter(s => !isStudentAbsent(s.id));
+  const unevaluatedStudents = activeSession
+    ? getUnevaluatedStudents(activeSession.class_id, presentStudents)
+    : [];
+
+  // Tirage au sort (sheet 9a)
   const handleRandomStudent = useCallback(() => {
-    const presentStudents = students.filter(s => !isStudentAbsent(s.id));
     if (presentStudents.length === 0) {
-      Alert.alert('Aucun eleve', 'Tous les eleves sont absents.');
+      Alert.alert('Aucun élève', 'Tous les élèves sont absents.');
       return;
     }
-    const randomIndex = Math.floor(Math.random() * presentStudents.length);
-    const selected = presentStudents[randomIndex];
-    Alert.alert('Eleve selectionne', selected.fullName || selected.pseudo);
-  }, [students, isStudentAbsent]);
+    setShowRandomSheet(true);
+  }, [presentStudents.length]);
 
-  // Oral evaluation flow
+  // Evaluation orale (sheet 9b)
   const handleOralEvaluation = useCallback(() => {
     if (!activeSession) return;
-
-    const presentStudents = students.filter(s => !isStudentAbsent(s.id));
-    const unevaluatedStudents = getUnevaluatedStudents(activeSession.class_id, presentStudents);
 
     if (unevaluatedStudents.length === 0) {
       // All students evaluated - ask to reset
       Alert.alert(
-        'Tous evalues',
-        'Tous les eleves presents ont ete evalues ce trimestre.\n\nVoulez-vous reinitialiser les evaluations pour cette classe ?',
+        'Tous évalués',
+        'Tous les élèves présents ont été évalués ce trimestre.\n\nVoulez-vous réinitialiser les évaluations pour cette classe ?',
         [
           { text: 'Non', style: 'cancel' },
           {
-            text: 'Oui, reinitialiser',
+            text: 'Oui, réinitialiser',
             style: 'destructive',
             onPress: async () => {
               await resetClassEvaluations(activeSession.class_id);
-              Alert.alert('Reinitialise', 'Les evaluations ont ete remises a zero.');
             },
           },
         ]
@@ -830,95 +1004,70 @@ function NativeSessionScreen() {
       return;
     }
 
-    // Store unevaluated list for manual selection
-    setUnevaluatedList(unevaluatedStudents);
-
-    // Propose choice: random or manual selection
-    Alert.alert(
-      'Evaluation orale',
-      `${unevaluatedStudents.length} eleve(s) non evalue(s)`,
-      [
-        { text: 'Annuler', style: 'cancel' },
-        {
-          text: '🎯 Choisir',
-          onPress: () => {
-            setShowOralStudentPicker(true);
-          },
-        },
-        {
-          text: '🎲 Hasard',
-          onPress: () => {
-            const randomIndex = Math.floor(Math.random() * unevaluatedStudents.length);
-            const selected = unevaluatedStudents[randomIndex];
-            setOralStudent(selected);
-            setSelectedOralGrade(null);
-            setShowOralModal(true);
-          },
-        },
-      ]
-    );
-  }, [students, isStudentAbsent, activeSession, getUnevaluatedStudents, resetClassEvaluations]);
+    setOralPickedStudent(null);
+    setShowOralSheet(true);
+  }, [activeSession, unevaluatedStudents.length, resetClassEvaluations]);
 
   // Handle manual student selection for oral
   const handleSelectStudentForOral = useCallback((student: StudentWithMapping) => {
     setShowOralStudentPicker(false);
-    setOralStudent(student);
-    setSelectedOralGrade(null);
-    setShowOralModal(true);
+    setOralPickedStudent(student);
+    setShowOralSheet(true);
   }, []);
 
-  const handleSaveOralEvaluation = async () => {
-    if (!oralStudent || selectedOralGrade === null || !user || !activeSession) return;
+  const handleSaveOralEvaluation = async (student: StudentWithMapping, grade: number) => {
+    if (!user || !activeSession) return;
 
     setIsSavingOral(true);
     try {
-      const result = await addEvaluation(
-        user.id,
-        oralStudent.id,
-        activeSession.class_id,
-        selectedOralGrade
-      );
-
-      if (result) {
-        const evaluatedCount = getEvaluatedCount(activeSession.class_id) + 1;
-        const totalPresent = students.filter(s => !isStudentAbsent(s.id)).length;
-
-        Alert.alert(
-          'Evaluation enregistree',
-          `${oralStudent.fullName || oralStudent.pseudo}: ${selectedOralGrade}/5 - ${ORAL_GRADE_LABELS[selectedOralGrade]}\n\n${evaluatedCount}/${totalPresent} eleves evalues`
-        );
+      const result = await addEvaluation(user.id, student.id, activeSession.class_id, grade);
+      if (!result) {
+        Alert.alert('Erreur', 'Impossible d\'enregistrer l\'évaluation');
       }
     } catch (error) {
-      Alert.alert('Erreur', 'Impossible d\'enregistrer l\'evaluation');
+      Alert.alert('Erreur', 'Impossible d\'enregistrer l\'évaluation');
     } finally {
       setIsSavingOral(false);
-      setShowOralModal(false);
-      setOralStudent(null);
-      setSelectedOralGrade(null);
+      setShowOralSheet(false);
+      setOralPickedStudent(null);
     }
   };
 
-  // Session notes handlers
+  // Session notes handlers (sheet 9c)
   const handleOpenSessionNotes = useCallback(() => {
     if (activeSession) {
-      setSessionNotesText(activeSession.notes || '');
-      setShowSessionNotesModal(true);
+      setShowSessionNotesSheet(true);
     }
   }, [activeSession]);
 
-  const handleSaveSessionNotes = async () => {
+  const handleSaveSessionNotes = async (text: string) => {
     if (!activeSession) return;
 
     setIsSavingNotes(true);
     try {
-      await updateNotes(sessionNotesText.trim() || null);
-      setShowSessionNotesModal(false);
+      await updateNotes(text.trim() || null);
+      setShowSessionNotesSheet(false);
     } catch (error) {
       Alert.alert('Erreur', 'Impossible de sauvegarder la note');
     } finally {
       setIsSavingNotes(false);
     }
   };
+
+  // Remarque depuis la toolbar : selecteur d'eleve puis modale remarque existante
+  const handleOpenRemarque = useCallback(() => {
+    if (presentStudents.length === 0) {
+      Alert.alert('Aucun élève', 'Tous les élèves sont absents.');
+      return;
+    }
+    setShowRemarquePicker(true);
+  }, [presentStudents.length]);
+
+  const handleSelectStudentForRemarque = useCallback((student: StudentWithMapping) => {
+    setShowRemarquePicker(false);
+    setSelectedStudent(student);
+    setShowRemarqueModal(true);
+  }, []);
 
   // Delete event flow - show student picker
   const handleOpenDeleteModal = useCallback(() => {
@@ -1010,6 +1159,7 @@ function NativeSessionScreen() {
   };
 
   // Memoized grid data to avoid recalculating on every render
+  // Grille compacte (8b) : gap 3px purement visuel, zones tactiles bord a bord.
   const gridData = useMemo(() => {
     if (!currentRoom || !currentPlan) return null;
 
@@ -1020,9 +1170,11 @@ function NativeSessionScreen() {
       return { error: true };
     }
 
+    const gap = compactGrid ? 3 : 8;
+    const maxCell = compactGrid ? 60 : 64;
     const cellSize = Math.min(
-      (SCREEN_WIDTH - theme.spacing.lg * 2 - theme.spacing.sm * 2) / grid_cols,
-      60
+      (SCREEN_WIDTH - 32 - gap * (grid_cols - 1)) / grid_cols,
+      maxCell
     );
 
     // Parse disabled cells
@@ -1035,8 +1187,8 @@ function NativeSessionScreen() {
       disabledCells = [];
     }
 
-    return { grid_rows, grid_cols, cellSize, disabledCells, positions: currentPlan.positions };
-  }, [currentRoom, currentPlan]);
+    return { grid_rows, grid_cols, cellSize, gap, disabledCells, positions: currentPlan.positions };
+  }, [currentRoom, currentPlan, compactGrid]);
 
   const renderGrid = useCallback(() => {
     if (!gridData) return null;
@@ -1049,8 +1201,11 @@ function NativeSessionScreen() {
       );
     }
 
-    const { grid_rows, grid_cols, cellSize, disabledCells, positions } = gridData;
+    const { grid_rows, grid_cols, cellSize, gap, disabledCells, positions } = gridData;
     const isDisabled = (row: number, col: number) => disabledCells.includes(`${row},${col}`);
+    // Zone tactile bord a bord : la cellule externe inclut le gap,
+    // la carte interne (visuelle) est en retrait de gap/2.
+    const outerSize = cellSize + gap;
 
     const rows = [];
     for (let r = 0; r < grid_rows; r++) {
@@ -1061,14 +1216,9 @@ function NativeSessionScreen() {
         // If cell is disabled (aisle), render empty cell
         if (cellDisabled) {
           cells.push(
-            <View
-              key={`${r}-${c}`}
-              style={[
-                styles.gridCell,
-                styles.gridCellDisabled,
-                { width: cellSize, height: cellSize },
-              ]}
-            />
+            <View key={`${r}-${c}`} style={{ width: outerSize, height: outerSize, padding: gap / 2 }}>
+              <View style={styles.gridCellDisabled} />
+            </View>
           );
           continue;
         }
@@ -1084,14 +1234,7 @@ function NativeSessionScreen() {
         cells.push(
           <View
             key={`${r}-${c}`}
-            style={[
-              styles.gridCell,
-              { width: cellSize, height: cellSize },
-              student && styles.gridCellOccupied,
-              student && isAbsent && styles.gridCellAbsent,
-              student && isOut && styles.gridCellOut,
-              selectedStudent?.id === student?.id && styles.gridCellSelected,
-            ]}
+            style={{ width: outerSize, height: outerSize, padding: gap / 2 }}
             onTouchStart={(e) => {
               if (student) {
                 const { pageX, pageY } = e.nativeEvent;
@@ -1110,37 +1253,50 @@ function NativeSessionScreen() {
               }
             }}
           >
-            {student ? (
-              <View style={styles.cellContent}>
-                <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
-                  {getDisplayName(student).split(' ')[0]}
-                </Text>
-                {isAbsent ? (
-                  <View style={styles.absentBadge}>
-                    <Text style={styles.absentBadgeText}>ABS</Text>
-                  </View>
-                ) : isOut && activeSortie ? (
-                  <View style={styles.sortieBadge}>
-                    <Text style={styles.sortieBadgeText}>🚪 {formatElapsedTime(activeSortie.timestamp)}</Text>
-                  </View>
-                ) : (
-                  counts && (counts.participation > 0 || counts.bavardage > 0) && (
-                    <View style={styles.countersRow}>
-                      {counts.participation > 0 && (
-                        <View style={[styles.counterBadge, styles.counterParticipation]}>
-                          <Text style={styles.counterText}>{counts.participation}</Text>
-                        </View>
-                      )}
-                      {counts.bavardage > 0 && (
-                        <View style={[styles.counterBadge, styles.counterBavardage]}>
-                          <Text style={styles.counterText}>{counts.bavardage}</Text>
-                        </View>
-                      )}
+            <View
+              style={[
+                styles.gridCell,
+                student && isAbsent && styles.gridCellAbsent,
+                student && isOut && styles.gridCellOut,
+                selectedStudent?.id === student?.id && styles.gridCellSelected,
+              ]}
+            >
+              {student ? (
+                <View style={styles.cellContent}>
+                  <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
+                    {getDisplayName(student).split(' ')[0]}
+                  </Text>
+                  {isAbsent ? (
+                    <View style={styles.absentBadge}>
+                      <Text style={styles.absentBadgeText}>ABS</Text>
                     </View>
-                  )
-                )}
-              </View>
-            ) : null}
+                  ) : isOut && activeSortie ? (
+                    <View style={styles.sortieBadge}>
+                      <Text style={styles.sortieBadgeText}>{formatElapsedTime(activeSortie.timestamp)}</Text>
+                    </View>
+                  ) : (
+                    counts && (counts.participation > 0 || counts.bavardage > 0) && (
+                      <View style={styles.countersRow}>
+                        {counts.participation > 0 && (
+                          <View style={[styles.counterBadge, styles.counterParticipation]}>
+                            <Text style={[styles.counterText, styles.counterTextParticipation]}>
+                              +{counts.participation}
+                            </Text>
+                          </View>
+                        )}
+                        {counts.bavardage > 0 && (
+                          <View style={[styles.counterBadge, styles.counterBavardage]}>
+                            <Text style={[styles.counterText, styles.counterTextBavardage]}>
+                              {counts.bavardage}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    )
+                  )}
+                </View>
+              ) : null}
+            </View>
           </View>
         );
       }
@@ -1155,7 +1311,7 @@ function NativeSessionScreen() {
       <View style={styles.gridWrapper}>
         <View style={styles.gridContainer}>{rows}</View>
         <View style={styles.teacherArea}>
-          <Text style={styles.teacherText}>Tableau</Text>
+          <Text style={styles.teacherText}>TABLEAU</Text>
         </View>
       </View>
     );
@@ -1170,105 +1326,121 @@ function NativeSessionScreen() {
     );
   }
 
+  const elapsedSessionMin = Math.max(
+    0,
+    Math.floor((sessionTick - new Date(activeSession.started_at).getTime()) / 60000)
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: currentClass?.name || 'Seance',
-          headerStyle: { backgroundColor: theme.colors.participation },
-          headerTintColor: theme.colors.textInverse,
-          headerLeft: () => (
-            <Pressable style={styles.cancelButton} onPress={handleCancelSession}>
-              <Text style={styles.cancelButtonText}>Annuler</Text>
-            </Pressable>
-          ),
-          headerRight: () => (
-            <Pressable style={styles.endButton} onPress={handleEndSession}>
-              <Text style={styles.endButtonText}>Terminer</Text>
-            </Pressable>
-          ),
-        }}
-      />
+      {/* Header blanc plat (6a) */}
+      <View style={styles.header}>
+        <Pressable style={styles.cancelButton} onPress={handleCancelSession} hitSlop={6}>
+          <Text style={styles.cancelButtonText}>Annuler</Text>
+        </Pressable>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {currentClass?.name || 'Séance'}{currentRoom ? ` · ${currentRoom.name}` : ''}
+          </Text>
+          <View style={styles.chronoRow}>
+            <View style={styles.chronoDot} />
+            <Text style={styles.chronoText}>{elapsedSessionMin} min</Text>
+          </View>
+        </View>
+        <Pressable
+          style={({ pressed }) => [styles.endButton, pressed && styles.endButtonPressed]}
+          onPress={handleEndSession}
+        >
+          <Text style={styles.endButtonText}>Terminer</Text>
+        </Pressable>
+      </View>
 
       <View
         ref={containerRef}
         style={styles.contentWrapper}
         onLayout={handleContainerLayout}
       >
-        <View style={styles.infoBar}>
-          <Text style={styles.infoText}>
-            {viewMode === 'plan'
-              ? `${currentRoom?.name} - Maintenir appuye sur un eleve`
-              : `${currentRoom?.name} - Vue groupes`}
-          </Text>
-        </View>
-
-        {/* View Mode Toggle */}
-        <View style={styles.viewModeToggle}>
-          <Pressable
-            style={[styles.viewModeTab, viewMode === 'plan' && styles.viewModeTabActive]}
-            onPress={() => setViewMode('plan')}
-          >
-            <Text style={[styles.viewModeTabText, viewMode === 'plan' && styles.viewModeTabTextActive]}>
-              Plan de classe
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.viewModeTab, viewMode === 'groups' && styles.viewModeTabActive]}
-            onPress={handleSwitchToGroups}
-          >
-            <Text style={[styles.viewModeTabText, viewMode === 'groups' && styles.viewModeTabTextActive]}>
-              Groupes
-            </Text>
-          </Pressable>
-        </View>
-
-        {/* Toolbar (plan mode only) */}
-        {viewMode === 'plan' && (
-          <View style={styles.toolbar}>
+        {/* Toggle segmente Plan / Groupes + engrenage reglages */}
+        <View style={styles.toggleRow}>
+          <View style={styles.viewModeToggle}>
             <Pressable
-              style={styles.toolbarButton}
-              onPress={handleRandomStudent}
+              style={[styles.viewModeTab, viewMode === 'plan' && styles.viewModeTabActive]}
+              onPress={() => setViewMode('plan')}
             >
-              <Text style={styles.toolbarButtonIcon}>🎲</Text>
-              <Text style={styles.toolbarButtonText}>Aleatoire</Text>
+              <Text style={[styles.viewModeTabText, viewMode === 'plan' && styles.viewModeTabTextActive]}>
+                Plan de classe
+              </Text>
             </Pressable>
-            <View style={styles.toolbarDivider} />
             <Pressable
-              style={styles.toolbarButton}
-              onPress={handleOralEvaluation}
+              style={[styles.viewModeTab, viewMode === 'groups' && styles.viewModeTabActive]}
+              onPress={handleSwitchToGroups}
             >
-              <Text style={styles.toolbarButtonIcon}>🎤</Text>
-              <Text style={styles.toolbarButtonText}>Oral</Text>
-              {activeSession && (
-                <View style={styles.oralCountBadge}>
-                  <Text style={styles.oralCountText}>
-                    {getEvaluatedCount(activeSession.class_id)}/{students.filter(s => !isStudentAbsent(s.id)).length}
-                  </Text>
-                </View>
-              )}
-            </Pressable>
-            <View style={styles.toolbarDivider} />
-            <Pressable
-              style={styles.toolbarButton}
-              onPress={handleOpenSessionNotes}
-            >
-              <Text style={styles.toolbarButtonIcon}>📝</Text>
-              <Text style={styles.toolbarButtonText}>Note</Text>
-              {activeSession?.notes && (
-                <View style={styles.noteIndicator} />
-              )}
-            </Pressable>
-            <View style={styles.toolbarDivider} />
-            <Pressable
-              style={styles.toolbarButton}
-              onPress={handleOpenDeleteModal}
-            >
-              <Text style={styles.toolbarButtonIcon}>🗑️</Text>
-              <Text style={styles.toolbarButtonText}>Supprimer</Text>
+              <Text style={[styles.viewModeTabText, viewMode === 'groups' && styles.viewModeTabTextActive]}>
+                Groupes
+              </Text>
             </Pressable>
           </View>
+          <Pressable
+            style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsButtonPressed]}
+            onPress={() => setShowSettingsSheet(true)}
+            hitSlop={4}
+          >
+            <Settings size={18} color={theme.colors.textSecondary} strokeWidth={1.8} />
+          </Pressable>
+        </View>
+
+        {/* Toolbar 5 boutons (plan mode only) */}
+        {viewMode === 'plan' && (
+          <>
+            <View style={styles.toolbar}>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleRandomStudent}
+              >
+                <Shuffle size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Aléatoire</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleOralEvaluation}
+              >
+                <Mic size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Oral</Text>
+                {activeSession && (
+                  <View style={styles.oralCountBadge}>
+                    <Text style={styles.oralCountText}>
+                      {getEvaluatedCount(activeSession.class_id)}/{presentStudents.length}
+                    </Text>
+                  </View>
+                )}
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleOpenSessionNotes}
+              >
+                <Pencil size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Note</Text>
+                {activeSession?.notes && (
+                  <View style={styles.noteIndicator} />
+                )}
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleOpenRemarque}
+              >
+                <MessageSquare size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Remarque</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleOpenDeleteModal}
+              >
+                <Trash2 size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Supprimer</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.hint}>Maintenir appuyé sur un élève</Text>
+          </>
         )}
 
         <View style={styles.gridArea}>
@@ -1280,6 +1452,7 @@ function NativeSessionScreen() {
               students={students}
               isLoading={isLoadingGroups}
               isEmpty={hasLoadedGroups && !linkedGroupSession}
+              tpName={linkedGroupSession?.session.name ?? null}
               onGroupPress={linkedGroupSession ? handleGroupPress : undefined}
               onConfigureGroups={handleOpenGroupConfig}
             />
@@ -1307,16 +1480,20 @@ function NativeSessionScreen() {
           submenuScale={submenuScale}
           submenuOpacity={submenuOpacity}
           bonusFillProgress={bonusFillProgress}
+          studentName={selectedStudent ? getDisplayName(selectedStudent) : null}
+          bounds={containerBoundsRef.current.width > 0 ? containerBoundsRef.current : undefined}
         />
-
-        {selectedStudent && menuState !== 'closed' && (
-          <View style={styles.selectedIndicator}>
-            <Text style={styles.selectedText}>
-              {getDisplayName(selectedStudent)}
-            </Text>
-          </View>
-        )}
       </View>
+
+      {/* Banniere de confirmation / echec (undo) */}
+      <UndoBanner
+        visible={undoBanner.visible}
+        message={undoBanner.message}
+        variant={undoBanner.variant}
+        canUndo={!!undoBanner.eventId}
+        onUndo={handleUndoLastEvent}
+        onDismiss={dismissUndoBanner}
+      />
 
       {/* Remarque Modal */}
       <Modal
@@ -1554,203 +1731,67 @@ function NativeSessionScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Oral Evaluation Modal */}
-      <Modal
-        visible={showOralModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setShowOralModal(false);
-          setOralStudent(null);
-          setSelectedOralGrade(null);
+      {/* Tirage au sort (sheet 9a) */}
+      <RandomPickerSheet
+        visible={showRandomSheet}
+        students={presentStudents}
+        onClose={() => setShowRandomSheet(false)}
+      />
+
+      {/* Evaluation orale (sheet 9b) */}
+      <OralEvaluationSheet
+        visible={showOralSheet}
+        unevaluated={unevaluatedStudents}
+        evaluatedCount={activeSession ? getEvaluatedCount(activeSession.class_id) : 0}
+        totalPresent={presentStudents.length}
+        trimester={useOralEvaluationStore.getState().currentTrimester}
+        isSaving={isSavingOral}
+        onSave={handleSaveOralEvaluation}
+        pickedStudent={oralPickedStudent}
+        onChooseStudent={() => {
+          setShowOralSheet(false);
+          setShowOralStudentPicker(true);
         }}
-      >
-        <View style={styles.modalOverlay}>
-          <Pressable
-            style={styles.modalBackdrop}
-            onPress={() => {
-              setShowOralModal(false);
-              setOralStudent(null);
-              setSelectedOralGrade(null);
-            }}
-          />
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Evaluation orale</Text>
-            {oralStudent && (
-              <View style={styles.oralStudentName}>
-                <Text style={styles.oralStudentNameText}>
-                  {oralStudent.fullName || oralStudent.pseudo}
-                </Text>
-              </View>
-            )}
+        onClose={() => {
+          setShowOralSheet(false);
+          setOralPickedStudent(null);
+        }}
+      />
 
-            <Text style={styles.oralGradeLabel}>Note :</Text>
-            <View style={styles.oralGradeButtons}>
-              {[1, 2, 3, 4, 5].map((grade) => (
-                <Pressable
-                  key={grade}
-                  style={[
-                    styles.oralGradeButton,
-                    selectedOralGrade === grade && styles.oralGradeButtonSelected,
-                  ]}
-                  onPress={() => setSelectedOralGrade(grade)}
-                >
-                  <Text
-                    style={[
-                      styles.oralGradeButtonNumber,
-                      selectedOralGrade === grade && styles.oralGradeButtonNumberSelected,
-                    ]}
-                  >
-                    {grade}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.oralGradeButtonLabel,
-                      selectedOralGrade === grade && styles.oralGradeButtonLabelSelected,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {ORAL_GRADE_LABELS[grade]}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelButton}
-                onPress={() => {
-                  setShowOralModal(false);
-                  setOralStudent(null);
-                  setSelectedOralGrade(null);
-                }}
-                disabled={isSavingOral}
-              >
-                <Text style={styles.modalCancelButtonText}>Annuler</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.oralSaveButton,
-                  (!selectedOralGrade || isSavingOral) && styles.buttonDisabled,
-                ]}
-                onPress={handleSaveOralEvaluation}
-                disabled={!selectedOralGrade || isSavingOral}
-              >
-                {isSavingOral ? (
-                  <ActivityIndicator color={theme.colors.textInverse} size="small" />
-                ) : (
-                  <Text style={styles.confirmButtonText}>Enregistrer</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Oral Student Picker Modal */}
-      <Modal
+      {/* Choisir un eleve pour l'oral */}
+      <StudentPickerSheet
         visible={showOralStudentPicker}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowOralStudentPicker(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <Pressable
-            style={styles.modalBackdrop}
-            onPress={() => setShowOralStudentPicker(false)}
-          />
-          <View style={[styles.modalContent, styles.oralPickerContent]}>
-            <Text style={styles.modalTitle}>Choisir un eleve</Text>
-            <Text style={styles.oralPickerHint}>
-              {unevaluatedList.length} eleve(s) non evalue(s) ce trimestre
-            </Text>
-            <ScrollView style={styles.oralPickerList} showsVerticalScrollIndicator={false}>
-              {unevaluatedList
-                .sort((a, b) => (a.fullName || a.pseudo).localeCompare(b.fullName || b.pseudo))
-                .map((student) => (
-                  <Pressable
-                    key={student.id}
-                    style={styles.oralPickerItem}
-                    onPress={() => handleSelectStudentForOral(student)}
-                  >
-                    <Text style={styles.oralPickerItemText}>
-                      {student.fullName || student.pseudo}
-                    </Text>
-                  </Pressable>
-                ))}
-            </ScrollView>
-            <Pressable
-              style={styles.modalCancelButton}
-              onPress={() => setShowOralStudentPicker(false)}
-            >
-              <Text style={styles.modalCancelButtonText}>Annuler</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+        title="Choisir un élève"
+        subtitle={`${unevaluatedStudents.length} élève${unevaluatedStudents.length > 1 ? 's' : ''} non évalué${unevaluatedStudents.length > 1 ? 's' : ''} ce trimestre`}
+        students={unevaluatedStudents}
+        onSelect={handleSelectStudentForOral}
+        onClose={() => setShowOralStudentPicker(false)}
+      />
 
-      {/* Session Notes Modal */}
-      <Modal
-        visible={showSessionNotesModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowSessionNotesModal(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalOverlay}
-        >
-          <Pressable
-            style={styles.modalBackdrop}
-            onPress={() => setShowSessionNotesModal(false)}
-          />
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Note de seance</Text>
-            <Text style={styles.sessionNotesHint}>
-              Notez vos observations sur cette seance (notions incomprises, remarques generales...)
-            </Text>
+      {/* Note de seance (sheet 9c) */}
+      <SessionNoteSheet
+        visible={showSessionNotesSheet}
+        initialText={activeSession?.notes || ''}
+        isSaving={isSavingNotes}
+        onSave={handleSaveSessionNotes}
+        onClose={() => setShowSessionNotesSheet(false)}
+      />
 
-            <TextInput
-              style={styles.sessionNotesInput}
-              placeholder="Vos notes sur cette seance..."
-              placeholderTextColor={theme.colors.textTertiary}
-              value={sessionNotesText}
-              onChangeText={setSessionNotesText}
-              multiline
-              numberOfLines={5}
-              maxLength={1000}
-              textAlignVertical="top"
-            />
-            <Text style={styles.sessionNotesCharCount}>
-              {sessionNotesText.length}/1000
-            </Text>
+      {/* Selecteur d'eleve pour la remarque (toolbar) */}
+      <StudentPickerSheet
+        visible={showRemarquePicker}
+        title="Remarque"
+        subtitle="Sélectionner un élève"
+        students={presentStudents}
+        onSelect={handleSelectStudentForRemarque}
+        onClose={() => setShowRemarquePicker(false)}
+      />
 
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelButton}
-                onPress={() => setShowSessionNotesModal(false)}
-                disabled={isSavingNotes}
-              >
-                <Text style={styles.modalCancelButtonText}>Annuler</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.confirmButton,
-                  isSavingNotes && styles.buttonDisabled,
-                ]}
-                onPress={handleSaveSessionNotes}
-                disabled={isSavingNotes}
-              >
-                {isSavingNotes ? (
-                  <ActivityIndicator color={theme.colors.textInverse} size="small" />
-                ) : (
-                  <Text style={styles.confirmButtonText}>Enregistrer</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      {/* Reglages de seance (sheet 7b) */}
+      <SessionSettingsSheet
+        visible={showSettingsSheet}
+        onClose={() => setShowSettingsSheet(false)}
+      />
 
       {/* Student Picker Modal (for delete) */}
       <Modal
@@ -1909,12 +1950,13 @@ function NativeSessionScreen() {
       <GroupGradingOverlay
         visible={gradingGroup !== null}
         group={gradingGroup ? (linkedGroupSession?.groups.find(g => g.id === gradingGroup.id) ?? gradingGroup) : null}
+        groups={linkedGroupSession?.groups ?? []}
         criteria={linkedGroupSession?.criteria ?? []}
         maxPossibleScore={linkedGroupSession?.maxPossibleScore ?? 0}
         students={students}
         onGradeChange={handleGradeChange}
-        onApplyMalus={handleApplyMalus}
-        onResetMalus={handleResetMalus}
+        onMalusChange={handleMalusChange}
+        onSelectGroup={(g) => setGradingGroup(g)}
         onClose={handleCloseGrading}
       />
 
@@ -2071,88 +2113,145 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.md,
     color: theme.colors.textSecondary,
   },
-  endButton: {
+  // Header blanc plat (6a)
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.xs,
+    paddingVertical: theme.spacing.sm + 2,
+  },
+  headerCenter: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  headerTitle: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 16,
+    color: theme.colors.text,
+  },
+  chronoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 1,
+  },
+  chronoDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.action,
+  },
+  chronoText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.action,
+  },
+  endButton: {
+    backgroundColor: theme.colors.action,
+    borderRadius: 9,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 8,
+  },
+  endButtonPressed: {
+    opacity: 0.9,
   },
   endButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.textInverse,
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
   },
   cancelButton: {
-    paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
+    minWidth: 60,
   },
   cancelButtonText: {
-    color: theme.colors.textInverse,
+    fontFamily: theme.fonts.bodyMedium,
+    color: theme.colors.error,
     fontSize: 14,
-    fontWeight: '500',
-    opacity: 0.9,
   },
   contentWrapper: {
     flex: 1,
   },
-  infoBar: {
+  // Toggle + reglages
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.sm,
+  },
+  settingsButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     backgroundColor: theme.colors.surface,
-    padding: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  infoText: {
-    fontSize: 12,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
+  settingsButtonPressed: {
+    backgroundColor: theme.colors.surfaceHover,
   },
-  // Toolbar styles
+  // Toolbar 5 boutons (cartes)
   toolbar: {
     flexDirection: 'row',
-    backgroundColor: theme.colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    gap: 6,
+    marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.sm,
   },
   toolbarButton: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 10,
     paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.md,
-    gap: theme.spacing.xs,
+    gap: 3,
   },
-  toolbarButtonIcon: {
-    fontSize: 18,
+  toolbarButtonPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+    transform: [{ scale: 0.98 }],
   },
   toolbarButtonText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 10.5,
     color: theme.colors.text,
   },
-  toolbarDivider: {
-    width: 1,
-    backgroundColor: theme.colors.border,
-    marginVertical: theme.spacing.xs,
+  hint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12.5,
+    color: theme.colors.textTertiary,
+    textAlign: 'center',
+    marginTop: theme.spacing.sm,
   },
   oralCountBadge: {
-    backgroundColor: theme.colors.participation + '30',
-    paddingHorizontal: theme.spacing.xs,
-    paddingVertical: 2,
-    borderRadius: theme.radius.sm,
-    marginLeft: theme.spacing.xs,
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    backgroundColor: theme.colors.primarySoft,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: theme.radius.full,
   },
   oralCountText: {
-    fontSize: 11,
-    color: theme.colors.participation,
-    fontWeight: '600',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 9,
+    color: theme.colors.primary,
   },
   noteIndicator: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
     backgroundColor: theme.colors.primary,
     position: 'absolute',
-    top: 4,
-    right: 4,
+    top: 5,
+    right: 5,
   },
   sessionNotesHint: {
     fontSize: 13,
@@ -2207,27 +2306,27 @@ const styles = StyleSheet.create({
   },
   gridArea: {
     flex: 1,
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
   gridWrapper: {
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.md,
-    ...theme.shadows.sm,
+    alignItems: 'center',
   },
   teacherArea: {
-    backgroundColor: theme.colors.border,
+    alignSelf: 'stretch',
+    backgroundColor: theme.colors.segmentTrack,
     borderRadius: theme.radius.sm,
     padding: theme.spacing.sm,
     marginTop: theme.spacing.md,
     alignItems: 'center',
   },
   teacherText: {
-    fontSize: 12,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
     color: theme.colors.textSecondary,
-    fontWeight: '500',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
   gridContainer: {
     alignItems: 'center',
@@ -2235,38 +2334,33 @@ const styles = StyleSheet.create({
   gridRow: {
     flexDirection: 'row',
   },
+  // Carte visuelle interne d'une cellule (le gap est porte par le wrapper tactile)
   gridCell: {
-    margin: 2,
+    flex: 1,
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  gridCellOccupied: {
-    backgroundColor: theme.colors.surface,
-    borderColor: theme.colors.participation + '50',
-  },
   gridCellDisabled: {
-    backgroundColor: theme.colors.border,
-    borderColor: 'transparent',
-    opacity: 0.4,
+    flex: 1,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surfaceDisabled,
   },
   gridCellAbsent: {
-    backgroundColor: '#FEE2E2', // Light red background
-    borderColor: '#EF4444',
-    borderWidth: 2,
+    backgroundColor: theme.colors.absentBg,
+    borderColor: theme.colors.absentBorder,
   },
   gridCellOut: {
-    backgroundColor: '#FEF3C7', // Light amber/yellow background
-    borderColor: '#F59E0B',
-    borderWidth: 2,
+    backgroundColor: theme.colors.sortieBg,
+    borderColor: theme.colors.sortieBorder,
   },
   gridCellSelected: {
     borderColor: theme.colors.participation,
     borderWidth: 2,
-    backgroundColor: theme.colors.participation + '20',
+    backgroundColor: theme.colors.participationSoft,
   },
   cellContent: {
     flex: 1,
@@ -2275,42 +2369,40 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   cellName: {
-    fontSize: 9,
-    fontWeight: '500',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
     color: theme.colors.text,
     textAlign: 'center',
   },
   cellNameAbsent: {
-    color: '#DC2626', // Red text
-    fontWeight: '600',
+    color: theme.colors.absentText,
   },
   cellNameOut: {
-    color: '#D97706', // Amber text
-    fontWeight: '600',
+    color: theme.colors.sortieText,
   },
   absentBadge: {
-    backgroundColor: '#DC2626',
-    borderRadius: 4,
-    paddingHorizontal: 4,
+    backgroundColor: theme.colors.absentBadge,
+    borderRadius: theme.radius.full,
+    paddingHorizontal: 5,
     paddingVertical: 1,
     marginTop: 2,
   },
   absentBadgeText: {
+    fontFamily: theme.fonts.bodyBold,
     color: '#FFFFFF',
-    fontSize: 7,
-    fontWeight: '700',
+    fontSize: 7.5,
   },
   sortieBadge: {
-    backgroundColor: '#F59E0B',
-    borderRadius: 4,
-    paddingHorizontal: 3,
+    backgroundColor: theme.colors.sortieBorder,
+    borderRadius: theme.radius.full,
+    paddingHorizontal: 5,
     paddingVertical: 1,
     marginTop: 2,
   },
   sortieBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 7,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodyBold,
+    color: theme.colors.sortieText,
+    fontSize: 7.5,
   },
   countersRow: {
     flexDirection: 'row',
@@ -2318,38 +2410,27 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   counterBadge: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    borderRadius: theme.radius.full,
+    paddingHorizontal: 4,
+    minWidth: 15,
     justifyContent: 'center',
     alignItems: 'center',
   },
   counterParticipation: {
-    backgroundColor: theme.colors.participation,
+    backgroundColor: theme.colors.actionSoft,
   },
   counterBavardage: {
-    backgroundColor: theme.colors.bavardage,
+    backgroundColor: theme.colors.bavardageSoft,
   },
   counterText: {
-    color: theme.colors.textInverse,
-    fontSize: 8,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 9,
   },
-  selectedIndicator: {
-    position: 'absolute',
-    bottom: 20,
-    left: 20,
-    right: 20,
-    backgroundColor: theme.colors.participation,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.md,
-    alignItems: 'center',
-    ...theme.shadows.md,
+  counterTextParticipation: {
+    color: theme.colors.action,
   },
-  selectedText: {
-    color: theme.colors.textInverse,
-    fontSize: 16,
-    fontWeight: '600',
+  counterTextBavardage: {
+    color: theme.colors.bavardageText,
   },
   // Progress circle
   progressCircle: {
@@ -2759,32 +2840,31 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // View mode toggle
+  // View mode toggle (track #EDEEF2 radius 10, actif = carte blanche)
   viewModeToggle: {
+    flex: 1,
     flexDirection: 'row',
-    backgroundColor: theme.colors.background,
-    padding: 4,
-    marginHorizontal: theme.spacing.md,
-    marginVertical: theme.spacing.xs,
-    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.segmentTrack,
+    padding: 3,
+    borderRadius: 10,
   },
   viewModeTab: {
     flex: 1,
     paddingVertical: theme.spacing.sm,
     alignItems: 'center',
-    borderRadius: theme.radius.md,
+    borderRadius: 8,
   },
   viewModeTabActive: {
     backgroundColor: theme.colors.surface,
     ...theme.shadows.sm,
   },
   viewModeTabText: {
-    fontSize: 14,
-    fontWeight: '500' as const,
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 13.5,
     color: theme.colors.textSecondary,
   },
   viewModeTabTextActive: {
-    color: theme.colors.primary,
-    fontWeight: '600' as const,
+    fontFamily: theme.fonts.bodySemibold,
+    color: theme.colors.text,
   },
 });

@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, View, Animated } from 'react-native';
 import { MenuItemType, SUBMENU_RADIUS } from '../../constants/menuItems';
 import { RadialMenuItem } from './RadialMenuItem';
-import { EdgeProximity, calculateSubmenuPosition } from '../../utils/menuPositioning';
+import { EdgeProximity, MenuBounds, calculateSubmenuPosition } from '../../utils/menuPositioning';
 
 interface SubMenuProps {
   parentItem: MenuItemType;
@@ -11,6 +11,8 @@ interface SubMenuProps {
   edgeProximity: EdgeProximity;
   submenuScale: Animated.Value;
   submenuOpacity: Animated.Value;
+  /** Limites de la zone de rendu (doivent matcher celles passees a openMenu). */
+  bounds?: MenuBounds;
 }
 
 export function SubMenu({
@@ -20,11 +22,12 @@ export function SubMenu({
   edgeProximity,
   submenuScale,
   submenuOpacity,
+  bounds,
 }: SubMenuProps) {
   if (!parentItem.subItems) return null;
 
   // Use shared utility for position calculation
-  const submenuPos = calculateSubmenuPosition(parentItem, menuPosition);
+  const submenuPos = calculateSubmenuPosition(parentItem, menuPosition, bounds);
 
   return (
     <View
@@ -48,6 +51,7 @@ export function SubMenu({
           isHovered={hoveredItem?.id === subItem.id}
           menuScale={submenuScale}
           menuOpacity={submenuOpacity}
+          variant="circle"
         />
       ))}
     </View>
@@ -65,6 +69,6 @@ const styles = StyleSheet.create({
     width: SUBMENU_RADIUS * 2 + 80,
     height: SUBMENU_RADIUS * 2 + 80,
     borderRadius: SUBMENU_RADIUS + 40,
-    backgroundColor: 'rgba(0, 0, 0, 0.15)',
+    backgroundColor: 'rgba(0, 0, 0, 0.18)',
   },
 });

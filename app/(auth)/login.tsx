@@ -9,18 +9,16 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Dimensions,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router, Link } from 'expo-router';
+import { BookOpen, Eye, EyeOff } from 'lucide-react-native';
 import { useAuthStore } from '../../stores';
 import { theme } from '../../constants/theme';
-
-const HEADER_HEIGHT = 220;
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const { signIn, isLoading, error, clearError } = useAuthStore();
@@ -56,13 +54,6 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Gradient Header Background */}
-      <LinearGradient
-        colors={['#4F46E5', '#7C3AED', '#9333EA']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.headerGradient}
-      />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
@@ -72,42 +63,43 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* Header on gradient */}
+          {/* Logo + titre */}
           <View style={styles.header}>
+            <View style={styles.logoSquare}>
+              <BookOpen size={30} color={theme.colors.textInverse} strokeWidth={2} />
+            </View>
             <Text style={styles.title}>Bienvenue</Text>
             <Text style={styles.subtitle}>
               Connectez-vous pour accéder à vos classes
             </Text>
           </View>
 
-          {/* Form on white background */}
+          {/* Formulaire */}
           <View style={styles.form}>
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Email</Text>
-              <View style={styles.inputContainer}>
-                <TextInput
-                  style={[styles.input, displayError && styles.inputError]}
-                  placeholder="votre@email.fr"
-                  placeholderTextColor={theme.colors.textTertiary}
-                  value={email}
-                  onChangeText={(text) => {
-                    setEmail(text);
-                    setValidationError(null);
-                    clearError();
-                  }}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoComplete="email"
-                  editable={!isLoading}
-                />
-              </View>
+              <TextInput
+                style={[styles.input, displayError && styles.inputError]}
+                placeholder="votre@email.fr"
+                placeholderTextColor={theme.colors.textTertiary}
+                value={email}
+                onChangeText={(text) => {
+                  setEmail(text);
+                  setValidationError(null);
+                  clearError();
+                }}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoComplete="email"
+                editable={!isLoading}
+              />
             </View>
 
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Mot de passe</Text>
-              <View style={styles.inputContainer}>
+              <View style={styles.passwordRow}>
                 <TextInput
-                  style={[styles.input, displayError && styles.inputError]}
+                  style={[styles.input, styles.passwordInput, displayError && styles.inputError]}
                   placeholder="Votre mot de passe"
                   placeholderTextColor={theme.colors.textTertiary}
                   value={password}
@@ -116,11 +108,22 @@ export default function LoginScreen() {
                     setValidationError(null);
                     clearError();
                   }}
-                  secureTextEntry
+                  secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   autoComplete="password"
                   editable={!isLoading}
                 />
+                <Pressable
+                  style={styles.eyeButton}
+                  onPress={() => setShowPassword((v) => !v)}
+                  hitSlop={8}
+                >
+                  {showPassword ? (
+                    <EyeOff size={20} color={theme.colors.textTertiary} strokeWidth={1.8} />
+                  ) : (
+                    <Eye size={20} color={theme.colors.textTertiary} strokeWidth={1.8} />
+                  )}
+                </Pressable>
               </View>
             </View>
 
@@ -139,18 +142,11 @@ export default function LoginScreen() {
               onPress={handleLogin}
               disabled={isLoading}
             >
-              <LinearGradient
-                colors={['#4F46E5', '#7C3AED']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.buttonGradient}
-              >
-                {isLoading ? (
-                  <ActivityIndicator color={theme.colors.textInverse} />
-                ) : (
-                  <Text style={styles.buttonText}>Se connecter</Text>
-                )}
-              </LinearGradient>
+              {isLoading ? (
+                <ActivityIndicator color={theme.colors.textInverse} />
+              ) : (
+                <Text style={styles.buttonText}>Se connecter</Text>
+              )}
             </Pressable>
 
             <View style={styles.footer}>
@@ -173,113 +169,102 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  headerGradient: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: HEADER_HEIGHT,
-    borderBottomLeftRadius: 80,
-    borderBottomRightRadius: 80,
-  },
   keyboardView: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
+    justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
   },
   header: {
     alignItems: 'center',
-    paddingTop: Platform.OS === 'ios' ? 80 : 60,
-    paddingBottom: theme.spacing.xl,
+    marginBottom: theme.spacing.xl,
   },
-  logoContainer: {
-    marginBottom: theme.spacing.lg,
-  },
-  logoCircle: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+  logoSquare: {
+    width: 60,
+    height: 60,
+    borderRadius: 16,
+    backgroundColor: theme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  logoText: {
-    fontSize: 34,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    marginBottom: theme.spacing.lg,
   },
   title: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
+    color: theme.colors.text,
     marginBottom: theme.spacing.xs,
-    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.8)',
+    fontFamily: theme.fonts.body,
+    fontSize: 15,
+    color: theme.colors.textSecondary,
     textAlign: 'center',
   },
   form: {
     width: '100%',
     maxWidth: 400,
     alignSelf: 'center',
-    marginTop: HEADER_HEIGHT - 140,
   },
   inputGroup: {
     marginBottom: theme.spacing.lg,
   },
   label: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 14,
-    fontWeight: '600',
     color: theme.colors.text,
     marginBottom: theme.spacing.sm,
   },
-  inputContainer: {
-    borderRadius: theme.radius.xl,
-    backgroundColor: theme.colors.surface,
-    ...theme.shadows.sm,
-  },
   input: {
-    borderWidth: 0,
-    borderRadius: theme.radius.xl,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
+    paddingVertical: 15,
+    paddingHorizontal: 18,
+    fontFamily: theme.fonts.body,
     fontSize: 16,
     color: theme.colors.text,
   },
+  passwordRow: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  passwordInput: {
+    paddingRight: 50,
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 16,
+    height: '100%',
+    justifyContent: 'center',
+  },
   inputError: {
-    borderWidth: 2,
     borderColor: theme.colors.error,
   },
   errorContainer: {
     backgroundColor: theme.colors.errorSoft,
-    borderRadius: theme.radius.lg,
+    borderRadius: 12,
     padding: theme.spacing.md,
     marginBottom: theme.spacing.md,
   },
   errorText: {
     color: theme.colors.error,
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 14,
     textAlign: 'center',
-    fontWeight: '500',
   },
   button: {
-    borderRadius: theme.radius.xl,
-    overflow: 'hidden',
-    marginTop: theme.spacing.sm,
-    ...theme.shadows.primary,
-  },
-  buttonGradient: {
-    paddingVertical: theme.spacing.md + 2,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 12,
+    paddingVertical: 16,
     alignItems: 'center',
+    marginTop: theme.spacing.sm,
   },
   buttonPressed: {
-    opacity: 0.9,
+    backgroundColor: theme.colors.primaryStrong,
     transform: [{ scale: 0.98 }],
   },
   buttonDisabled: {
@@ -287,8 +272,8 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     color: theme.colors.textInverse,
-    fontSize: 17,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 16,
   },
   footer: {
     flexDirection: 'row',
@@ -297,11 +282,12 @@ const styles = StyleSheet.create({
   },
   footerText: {
     color: theme.colors.textSecondary,
+    fontFamily: theme.fonts.body,
     fontSize: 15,
   },
   footerLink: {
     color: theme.colors.primary,
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 15,
-    fontWeight: '600',
   },
 });

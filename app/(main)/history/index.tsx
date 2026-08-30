@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { ChevronRight, Clock, Search, X } from 'lucide-react-native';
 import { useAuthStore, useClassStore, useRoomStore, useHistoryStore, useSyncStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
 import { type Session, deleteSession, getGroupSessionByLinkedSessionId } from '../../../services/database';
@@ -208,6 +209,7 @@ export default function HistoryScreen() {
     setSelectedClassId(classId);
   };
 
+  // Suppression via appui long sur la carte (plus de corbeille inline)
   const handleDeleteSession = async (session: Session) => {
     if (isDeleting) return;
 
@@ -245,18 +247,7 @@ export default function HistoryScreen() {
     );
   };
 
-  const getClassColor = (index: number) => {
-    const colors = [
-      theme.colors.primarySoft,
-      theme.colors.participationSoft,
-      theme.colors.sortieSoft,
-      theme.colors.remarqueSoft,
-      theme.colors.bavardageSoft,
-    ];
-    return colors[index % colors.length];
-  };
-
-  const renderSessionItem = ({ item, index }: { item: Session; index: number }) => {
+  const renderSessionItem = ({ item }: { item: Session }) => {
     const className = classMap.get(item.class_id) || 'Classe inconnue';
     const roomName = roomMap.get(item.room_id) || 'Salle inconnue';
     const duration = formatDuration(item.started_at, item.ended_at);
@@ -269,43 +260,29 @@ export default function HistoryScreen() {
           pressed && styles.sessionCardPressed,
         ]}
         onPress={() => handleSessionPress(item)}
+        onLongPress={() => handleDeleteSession(item)}
+        delayLongPress={500}
       >
-        <View style={[styles.sessionIconContainer, { backgroundColor: getClassColor(index) }]}>
-          <Text style={styles.sessionIconText}>📋</Text>
+        <View style={styles.sessionHeader}>
+          <Text style={styles.sessionClassName}>{className}</Text>
+          <ChevronRight size={17} color={theme.colors.textTertiary} strokeWidth={1.8} />
         </View>
-        <View style={styles.sessionContent}>
-          <View style={styles.sessionHeader}>
-            <Text style={styles.sessionClassName}>{className}</Text>
-            <Pressable
-              style={styles.deleteButton}
-              onPress={() => handleDeleteSession(item)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Text style={styles.deleteButtonText}>🗑️</Text>
-            </Pressable>
+        {item.topic ? (
+          <Text style={styles.sessionTopic} numberOfLines={1}>{item.topic}</Text>
+        ) : null}
+        <View style={styles.sessionMeta}>
+          <View style={styles.metaItem}>
+            <Text style={styles.metaLabel}>Heure</Text>
+            <Text style={styles.metaValue}>{timeStr}</Text>
           </View>
-          {item.topic ? (
-            <Text style={styles.sessionTopic} numberOfLines={1}>{item.topic}</Text>
-          ) : null}
-          <View style={styles.sessionMeta}>
-            <View style={styles.metaItem}>
-              <Text style={styles.metaLabel}>Heure</Text>
-              <Text style={styles.metaValue}>{timeStr}</Text>
-            </View>
-            <View style={styles.metaDivider} />
-            <View style={styles.metaItem}>
-              <Text style={styles.metaLabel}>Salle</Text>
-              <Text style={styles.metaValue}>{roomName}</Text>
-            </View>
-            <View style={styles.metaDivider} />
-            <View style={styles.metaItem}>
-              <Text style={styles.metaLabel}>Durée</Text>
-              <Text style={styles.metaValue}>{duration}</Text>
-            </View>
+          <View style={styles.metaItem}>
+            <Text style={styles.metaLabel}>Salle</Text>
+            <Text style={styles.metaValue}>{roomName}</Text>
           </View>
-        </View>
-        <View style={styles.chevronContainer}>
-          <Text style={styles.chevron}>›</Text>
+          <View style={styles.metaItem}>
+            <Text style={styles.metaLabel}>Durée</Text>
+            <Text style={styles.metaValue}>{duration}</Text>
+          </View>
         </View>
       </Pressable>
     );
@@ -314,7 +291,7 @@ export default function HistoryScreen() {
   const renderEmptyList = () => (
     <View style={styles.placeholder}>
       <View style={styles.placeholderIconContainer}>
-        <Text style={styles.placeholderEmoji}>📋</Text>
+        <Clock size={32} color={theme.colors.primary} strokeWidth={1.7} />
       </View>
       <Text style={styles.placeholderTitle}>
         {searchQuery ? 'Aucun résultat' : 'Aucune séance'}
@@ -329,9 +306,6 @@ export default function HistoryScreen() {
     </View>
   );
 
-  // Get selected class name for display
-  const selectedClassName = selectedClassId ? classMap.get(selectedClassId) : null;
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.screenHeader}>
@@ -341,10 +315,10 @@ export default function HistoryScreen() {
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         <View style={styles.searchBar}>
-          <Text style={styles.searchIcon}>🔍</Text>
+          <Search size={17} color={theme.colors.textTertiary} strokeWidth={1.8} />
           <TextInput
             style={styles.searchInput}
-            placeholder="Rechercher (classe, salle, thème)..."
+            placeholder="Rechercher (classe, salle, thème)…"
             placeholderTextColor={theme.colors.textTertiary}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -352,11 +326,8 @@ export default function HistoryScreen() {
             autoCorrect={false}
           />
           {searchQuery.length > 0 && (
-            <Pressable
-              onPress={() => setSearchQuery('')}
-              style={styles.clearButton}
-            >
-              <Text style={styles.clearButtonText}>✕</Text>
+            <Pressable onPress={() => setSearchQuery('')} style={styles.clearButton} hitSlop={8}>
+              <X size={16} color={theme.colors.textTertiary} strokeWidth={2} />
             </Pressable>
           )}
         </View>
@@ -430,7 +401,6 @@ export default function HistoryScreen() {
           renderSectionHeader={({ section }) => (
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionHeaderText}>{section.title}</Text>
-              <View style={styles.sectionHeaderLine} />
             </View>
           )}
           keyExtractor={(item) => item.id}
@@ -446,16 +416,6 @@ export default function HistoryScreen() {
               tintColor={theme.colors.primary}
             />
           }
-          ListHeaderComponent={
-            filteredSessions.length > 0 ? (
-              <View style={styles.listHeaderContainer}>
-                <Text style={styles.listHeader}>
-                  {filteredSessions.length} séance{filteredSessions.length > 1 ? 's' : ''}
-                  {searchQuery ? ` pour "${searchQuery}"` : ''}
-                </Text>
-              </View>
-            ) : null
-          }
         />
       )}
     </SafeAreaView>
@@ -469,47 +429,41 @@ const styles = StyleSheet.create({
   },
   screenHeader: {
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
   },
   screenTitle: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
     color: theme.colors.text,
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
   searchContainer: {
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
     paddingHorizontal: theme.spacing.md,
-    ...theme.shadows.sm,
-  },
-  searchIcon: {
-    fontSize: 16,
-    marginRight: theme.spacing.sm,
   },
   searchInput: {
     flex: 1,
     height: 44,
-    fontSize: 16,
+    fontFamily: theme.fonts.body,
+    fontSize: 15,
     color: theme.colors.text,
   },
   clearButton: {
     padding: theme.spacing.xs,
   },
-  clearButtonText: {
-    fontSize: 16,
-    color: theme.colors.textTertiary,
-  },
   filterContainer: {
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    paddingBottom: theme.spacing.sm,
   },
   filterScroll: {
     paddingHorizontal: theme.spacing.lg,
@@ -520,32 +474,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.surface,
-    ...theme.shadows.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
   filterChipActive: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.text,
+    borderColor: theme.colors.text,
   },
   filterChipText: {
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 14,
     color: theme.colors.text,
-    fontWeight: '500',
   },
   filterChipTextActive: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.textInverse,
-    fontWeight: '600',
   },
   errorBanner: {
     backgroundColor: theme.colors.errorSoft,
     padding: theme.spacing.md,
     marginHorizontal: theme.spacing.lg,
     marginTop: theme.spacing.md,
-    borderRadius: theme.radius.lg,
+    borderRadius: 12,
   },
   errorText: {
+    fontFamily: theme.fonts.bodyMedium,
     color: theme.colors.error,
     fontSize: 14,
     textAlign: 'center',
-    fontWeight: '500',
   },
   loadingContainer: {
     flex: 1,
@@ -554,70 +510,39 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: theme.spacing.md,
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
   },
   list: {
     padding: theme.spacing.lg,
+    paddingTop: 0,
   },
   emptyList: {
     flex: 1,
     padding: theme.spacing.lg,
   },
-  listHeaderContainer: {
-    marginBottom: theme.spacing.md,
-  },
-  listHeader: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
   sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
     marginTop: theme.spacing.lg,
     marginBottom: theme.spacing.sm,
   },
   sectionHeaderText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: theme.colors.primary,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.textSecondary,
     textTransform: 'capitalize',
-    marginRight: theme.spacing.md,
-  },
-  sectionHeaderLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: theme.colors.border,
   },
   sessionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-    ...theme.shadows.sm,
+    marginBottom: theme.spacing.sm + 2,
   },
   sessionCardPressed: {
     backgroundColor: theme.colors.surfaceHover,
     transform: [{ scale: 0.98 }],
-  },
-  sessionIconContainer: {
-    width: 52,
-    height: 52,
-    borderRadius: theme.radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: theme.spacing.md,
-  },
-  sessionIconText: {
-    fontSize: 24,
-  },
-  sessionContent: {
-    flex: 1,
   },
   sessionHeader: {
     flexDirection: 'row',
@@ -625,89 +550,67 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sessionClassName: {
-    fontSize: 17,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 16,
     color: theme.colors.text,
   },
   sessionTopic: {
-    fontSize: 13,
+    fontFamily: theme.fonts.body,
+    fontSize: 13.5,
     color: theme.colors.textSecondary,
     marginTop: 2,
-    fontStyle: 'italic',
-  },
-  deleteButton: {
-    padding: theme.spacing.xs,
-  },
-  deleteButtonText: {
-    fontSize: 14,
   },
   sessionMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: theme.spacing.sm,
+    marginTop: theme.spacing.sm + 2,
+    paddingTop: theme.spacing.sm + 2,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderLight,
   },
   metaItem: {
     flex: 1,
   },
   metaLabel: {
-    fontSize: 10,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 10.5,
     color: theme.colors.textTertiary,
     textTransform: 'uppercase',
     letterSpacing: 0.3,
   },
   metaValue: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: theme.colors.textSecondary,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.text,
     marginTop: 1,
-  },
-  metaDivider: {
-    width: 1,
-    height: 20,
-    backgroundColor: theme.colors.border,
-    marginHorizontal: theme.spacing.sm,
-  },
-  chevronContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.surfaceSecondary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chevron: {
-    fontSize: 20,
-    color: theme.colors.textTertiary,
-    fontWeight: '600',
   },
   placeholder: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xxl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.xl,
-    ...theme.shadows.sm,
   },
   placeholderIconContainer: {
-    width: 80,
-    height: 80,
+    width: 72,
+    height: 72,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.primarySoft,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: theme.spacing.lg,
   },
-  placeholderEmoji: {
-    fontSize: 40,
-  },
   placeholderTitle: {
+    fontFamily: theme.fonts.bodyBold,
     fontSize: 20,
-    fontWeight: '700',
     color: theme.colors.text,
     marginBottom: theme.spacing.sm,
   },
   placeholderText: {
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
     textAlign: 'center',

@@ -95,16 +95,29 @@ describe('calculateClampedMenuPosition', () => {
     expect(result.position.x).toBe(200);
   });
 
-  it('should clamp correctly on very small screen', () => {
+  it('should center the menu on axes too narrow to fit it', () => {
     mockDimensions.mockReturnValue({ width: 300, height: 500 });
 
     const result = calculateClampedMenuPosition(10, 10);
 
-    // On a small screen, menuMargin (165) > position → gets clamped
-    expect(result.position.x).toBe(menuMargin);
+    // Width 300 < 2 * menuMargin (330) → axe centre pour repartir le debordement
+    expect(result.position.x).toBe(150);
+    // Height 500 >= 2 * menuMargin → clamp normal
     expect(result.position.y).toBe(menuMargin);
     expect(result.edgeProximity.left).toBe(true);
     expect(result.edgeProximity.top).toBe(true);
+  });
+
+  it('should clamp within explicit bounds instead of screen dimensions', () => {
+    // Zone de contenu plus petite que l'ecran (ex : sous le header de seance)
+    const bounds = { width: 1080, height: 2000 };
+
+    const nearBottom = calculateClampedMenuPosition(540, 1990, bounds);
+    expect(nearBottom.position.y).toBe(bounds.height - menuMargin);
+    expect(nearBottom.edgeProximity.bottom).toBe(true);
+
+    const center = calculateClampedMenuPosition(540, 1000, bounds);
+    expect(center.position).toEqual({ x: 540, y: 1000 });
   });
 });
 

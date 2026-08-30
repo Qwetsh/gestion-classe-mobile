@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,9 +8,9 @@ import {
   ScrollView,
   TextInput,
 } from 'react-native';
-import { router, Stack, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Library, School, FileText, Check, Play } from 'lucide-react-native';
+import { Check, ChevronLeft, Play } from 'lucide-react-native';
 import {
   useAuthStore,
   useClassStore,
@@ -44,11 +44,6 @@ export default function StartSessionScreen() {
     }, [user?.id, loadClasses, loadRooms, loadActiveSession])
   );
 
-  // Memoize displayed classes to avoid recalculation on each render
-  const displayedClasses = useMemo(() => {
-    return selectedClass ? classes.filter(c => c.id === selectedClass.id) : classes;
-  }, [selectedClass, classes]);
-
   const handleStartSession = async () => {
     if (!user?.id || !selectedClass || !selectedRoom) return;
 
@@ -62,240 +57,174 @@ export default function StartSessionScreen() {
 
   const canStart = selectedClass && selectedRoom && !sessionLoading;
 
-  const getClassColor = (index: number) => {
-    const colors = [
-      theme.colors.primarySoft,
-      theme.colors.participationSoft,
-      theme.colors.sortieSoft,
-      theme.colors.remarqueSoft,
-      theme.colors.bavardageSoft,
-    ];
-    return colors[index % colors.length];
-  };
-
   return (
-    <>
-      <Stack.Screen
-        options={{
-          headerShown: true,
-          title: 'Nouvelle séance',
-          headerStyle: { backgroundColor: theme.colors.background },
-          headerTintColor: theme.colors.text,
-          headerShadowVisible: false,
-          headerTitleStyle: {
-            fontFamily: theme.fonts.display,
-            fontSize: 18,
-          },
-          headerLeft: () => (
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-            >
-              <Text style={styles.backButtonText}>← Retour</Text>
-            </Pressable>
-          ),
-        }}
-      />
-      <SafeAreaView style={styles.container} edges={['bottom']}>
-        <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
-          {/* Class Selection */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.primarySoft }]}>
-                <Library size={20} color={theme.colors.primary} strokeWidth={2} />
-              </View>
-              <Text style={styles.sectionTitle}>Choisir une classe</Text>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      {/* Header : back chevron + titre */}
+      <View style={styles.header}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
+          hitSlop={8}
+        >
+          <ChevronLeft size={22} color={theme.colors.text} strokeWidth={2} />
+        </Pressable>
+        <Text style={styles.headerTitle}>Nouvelle séance</Text>
+        <View style={styles.headerSpacer} />
+      </View>
+
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentContainer}>
+        {/* 1 · Choisir une classe */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>1 · CHOISIR UNE CLASSE</Text>
+          {classesLoading ? (
+            <View style={styles.loadingSection}>
+              <ActivityIndicator color={theme.colors.primary} />
             </View>
-            {classesLoading ? (
-              <View style={styles.loadingSection}>
-                <ActivityIndicator color={theme.colors.primary} />
-              </View>
-            ) : classes.length === 0 ? (
-              <View style={styles.emptyState}>
-                <Library size={36} color={theme.colors.textTertiary} strokeWidth={1.6} style={styles.emptyIcon} />
-                <Text style={styles.emptyText}>Aucune classe disponible</Text>
-                <Pressable
-                  style={styles.linkButton}
-                  onPress={() => router.push('/(main)/')}
-                >
-                  <Text style={styles.linkButtonText}>Synchroniser les classes</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <View style={styles.optionsList}>
-                {displayedClasses.map((cls, index) => (
+          ) : classes.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>Aucune classe disponible</Text>
+              <Pressable style={styles.linkButton} onPress={() => router.push('/(main)/')}>
+                <Text style={styles.linkButtonText}>Synchroniser les classes</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.classTilesRow}>
+              {classes.map((cls) => {
+                const isSelected = selectedClass?.id === cls.id;
+                return (
                   <Pressable
                     key={cls.id}
                     style={({ pressed }) => [
-                      styles.optionCard,
-                      selectedClass?.id === cls.id && styles.optionCardSelected,
-                      pressed && styles.optionCardPressed,
+                      styles.classTile,
+                      isSelected && styles.classTileSelected,
+                      pressed && !isSelected && styles.classTilePressed,
                     ]}
                     onPress={() => {
-                      if (selectedClass?.id === cls.id) {
-                        setSelectedClass(null);
-                        setSelectedRoom(null);
-                      } else {
-                        setSelectedClass(cls);
-                      }
+                      setSelectedClass(isSelected ? null : cls);
                     }}
                   >
-                    <View style={[styles.optionIconContainer, { backgroundColor: getClassColor(index) }]}>
-                      <Text style={styles.optionIconText}>{cls.name.substring(0, 2).toUpperCase()}</Text>
-                    </View>
-                    <View style={styles.optionInfo}>
-                      <Text
-                        style={[
-                          styles.optionName,
-                          selectedClass?.id === cls.id && styles.optionNameSelected,
-                        ]}
-                      >
-                        {cls.name}
-                      </Text>
-                    </View>
-                    {selectedClass?.id === cls.id ? (
-                      <View style={styles.changeButton}>
-                        <Text style={styles.changeButtonText}>Changer</Text>
-                      </View>
-                    ) : null}
+                    <Text
+                      style={[styles.classTileText, isSelected && styles.classTileTextSelected]}
+                      numberOfLines={1}
+                    >
+                      {cls.name}
+                    </Text>
                   </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* Room Selection */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.sortieSoft }]}>
-                <School size={20} color={theme.colors.sortie} strokeWidth={2} />
-              </View>
-              <Text style={styles.sectionTitle}>Choisir une salle</Text>
+                );
+              })}
             </View>
-            {roomsLoading ? (
-              <View style={styles.loadingSection}>
-                <ActivityIndicator color={theme.colors.primary} />
-              </View>
-            ) : rooms.length === 0 ? (
-              <View style={styles.emptyState}>
-                <School size={36} color={theme.colors.textTertiary} strokeWidth={1.6} style={styles.emptyIcon} />
-                <Text style={styles.emptyText}>Aucune salle configurée</Text>
-                <Pressable
-                  style={styles.linkButton}
-                  onPress={() => router.push('/(main)/rooms')}
-                >
-                  <Text style={styles.linkButtonText}>Configurer une salle</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <View style={styles.optionsList}>
-                {rooms.map((room, index) => (
+          )}
+        </View>
+
+        {/* 2 · Choisir une salle */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>2 · CHOISIR UNE SALLE</Text>
+          {roomsLoading ? (
+            <View style={styles.loadingSection}>
+              <ActivityIndicator color={theme.colors.primary} />
+            </View>
+          ) : rooms.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>Aucune salle configurée</Text>
+              <Pressable style={styles.linkButton} onPress={() => router.push('/(main)/rooms')}>
+                <Text style={styles.linkButtonText}>Configurer une salle</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.roomList}>
+              {rooms.map((room, index) => {
+                const isSelected = selectedRoom?.id === room.id;
+                return (
                   <Pressable
                     key={room.id}
                     style={({ pressed }) => [
-                      styles.optionCard,
-                      selectedRoom?.id === room.id && styles.optionCardSelected,
-                      pressed && styles.optionCardPressed,
+                      styles.roomRow,
+                      index < rooms.length - 1 && styles.roomRowBorder,
+                      isSelected && styles.roomRowSelected,
+                      pressed && !isSelected && styles.roomRowPressed,
                     ]}
                     onPress={() => setSelectedRoom(room)}
                   >
-                    <View style={[styles.optionIconContainer, { backgroundColor: theme.colors.sortieSoft }]}>
-                      <Text style={styles.optionIconText}>{room.name.substring(0, 2).toUpperCase()}</Text>
-                    </View>
-                    <View style={styles.optionInfo}>
+                    <View style={styles.roomInfo}>
                       <Text
-                        style={[
-                          styles.optionName,
-                          selectedRoom?.id === room.id && styles.optionNameSelected,
-                        ]}
+                        style={[styles.roomName, isSelected && styles.roomNameSelected]}
                       >
                         {room.name}
                       </Text>
-                      <Text style={styles.optionDetail}>
-                        {room.grid_rows} x {room.grid_cols} places
+                      <Text style={styles.roomDetail}>
+                        {room.grid_rows} × {room.grid_cols} places
                       </Text>
                     </View>
-                    {selectedRoom?.id === room.id && (
+                    {isSelected && (
                       <View style={styles.checkmarkContainer}>
-                        <Check size={16} color={theme.colors.textInverse} strokeWidth={3} />
+                        <Check size={14} color={theme.colors.textInverse} strokeWidth={3} />
                       </View>
                     )}
                   </Pressable>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* Topic/Theme Section */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.remarqueSoft }]}>
-                <FileText size={20} color={theme.colors.remarque} strokeWidth={2} />
-              </View>
-              <Text style={styles.sectionTitle}>Thème de la séance</Text>
-              <Text style={styles.optionalBadge}>Optionnel</Text>
-            </View>
-            <View style={styles.topicInputContainer}>
-              <TextInput
-                style={styles.topicInput}
-                placeholder="Ex: Chapitre 3 - Les fonctions linéaires..."
-                placeholderTextColor={theme.colors.textTertiary}
-                value={topic}
-                onChangeText={setTopic}
-                multiline
-                numberOfLines={2}
-                maxLength={200}
-              />
-              {topic.length > 0 && (
-                <Text style={styles.topicCharCount}>{topic.length}/200</Text>
-              )}
-            </View>
-          </View>
-        </ScrollView>
-
-        {/* Start Button */}
-        <View style={styles.footer}>
-          {selectedClass && selectedRoom && (
-            <View style={styles.selectionSummaryCard}>
-              <Text style={styles.selectionSummaryLabel}>Sélection</Text>
-              <Text style={styles.selectionSummary}>
-                {selectedClass.name} • {selectedRoom.name}
-              </Text>
+                );
+              })}
             </View>
           )}
-          <Pressable
-            style={({ pressed }) => [
-              styles.startButton,
-              !canStart && styles.startButtonDisabled,
-              pressed && canStart && styles.startButtonPressed,
-            ]}
-            onPress={handleStartSession}
-            disabled={!canStart}
-          >
-            {canStart ? (
-              <View style={styles.startButtonInner}>
-                {sessionLoading ? (
-                  <ActivityIndicator color={theme.colors.textInverse} />
-                ) : (
-                  <>
-                    <Play size={18} color={theme.colors.textInverse} fill={theme.colors.textInverse} />
-                    <Text style={styles.startButtonText}>Démarrer la séance</Text>
-                  </>
-                )}
-              </View>
-            ) : (
-              <View style={styles.startButtonDisabledInner}>
-                <Play size={18} color={theme.colors.textTertiary} />
-                <Text style={styles.startButtonTextDisabled}>Sélectionnez une classe et une salle</Text>
-              </View>
-            )}
-          </Pressable>
         </View>
-      </SafeAreaView>
-    </>
+
+        {/* 3 · Theme */}
+        <View style={styles.section}>
+          <View style={styles.sectionLabelRow}>
+            <Text style={styles.sectionLabel}>3 · THÈME DE LA SÉANCE</Text>
+            <Text style={styles.optionalBadge}>Optionnel</Text>
+          </View>
+          <View style={styles.topicInputContainer}>
+            <TextInput
+              style={styles.topicInput}
+              placeholder="Ex : Chapitre 3 - Les fonctions linéaires..."
+              placeholderTextColor={theme.colors.textTertiary}
+              value={topic}
+              onChangeText={setTopic}
+              multiline
+              numberOfLines={2}
+              maxLength={200}
+            />
+            {topic.length > 0 && (
+              <Text style={styles.topicCharCount}>{topic.length}/200</Text>
+            )}
+          </View>
+        </View>
+      </ScrollView>
+
+      {/* Footer */}
+      <View style={styles.footer}>
+        {selectedClass && selectedRoom && (
+          <Text style={styles.selectionSummary}>
+            {selectedClass.name} · {selectedRoom.name}
+          </Text>
+        )}
+        <Pressable
+          style={({ pressed }) => [
+            styles.startButton,
+            !canStart && styles.startButtonDisabled,
+            pressed && canStart && styles.startButtonPressed,
+          ]}
+          onPress={handleStartSession}
+          disabled={!canStart}
+        >
+          {sessionLoading ? (
+            <ActivityIndicator color={theme.colors.textInverse} />
+          ) : (
+            <>
+              <Play
+                size={17}
+                color={canStart ? theme.colors.textInverse : theme.colors.textTertiary}
+                fill={canStart ? theme.colors.textInverse : theme.colors.textTertiary}
+                strokeWidth={0}
+              />
+              <Text style={[styles.startButtonText, !canStart && styles.startButtonTextDisabled]}>
+                {canStart ? 'Démarrer la séance' : 'Sélectionnez une classe et une salle'}
+              </Text>
+            </>
+          )}
+        </Pressable>
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -304,48 +233,54 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm + 2,
+  },
   backButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.md,
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.full,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   backButtonPressed: {
     backgroundColor: theme.colors.surfaceHover,
   },
-  backButtonText: {
-    color: theme.colors.primary,
-    fontSize: 16,
-    fontWeight: '600',
+  headerTitle: {
+    flex: 1,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 19,
+    color: theme.colors.text,
+    textAlign: 'center',
+  },
+  headerSpacer: {
+    width: 38,
   },
   content: {
     flex: 1,
   },
   contentContainer: {
     padding: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
   },
   section: {
     marginBottom: theme.spacing.xl,
   },
-  sectionHeader: {
+  sectionLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: theme.spacing.md,
+    justifyContent: 'space-between',
   },
-  sectionIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: theme.spacing.sm,
-  },
-  sectionIcon: {
-    fontSize: 20,
-  },
-  sectionTitle: {
-    fontFamily: theme.fonts.display,
-    fontSize: 18,
-    color: theme.colors.text,
+  sectionLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: theme.spacing.sm + 2,
   },
   loadingSection: {
     padding: theme.spacing.xl,
@@ -353,13 +288,11 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.xl,
     alignItems: 'center',
-    ...theme.shadows.sm,
-  },
-  emptyIcon: {
-    marginBottom: theme.spacing.md,
   },
   emptyText: {
     fontFamily: theme.fonts.body,
@@ -372,162 +305,105 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
   },
   linkButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.primary,
     fontSize: 15,
-    fontWeight: '600',
   },
-  optionsList: {
+
+  // Classes en tuiles
+  classTilesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
-  optionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  classTile: {
+    flexGrow: 1,
+    flexBasis: '22%',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
-    padding: theme.spacing.md,
-    ...theme.shadows.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: theme.spacing.sm,
+    alignItems: 'center',
   },
-  optionCardPressed: {
+  classTilePressed: {
     backgroundColor: theme.colors.surfaceHover,
-    transform: [{ scale: 0.98 }],
   },
-  optionCardSelected: {
-    backgroundColor: theme.colors.primarySoft,
-    borderWidth: 2,
+  classTileSelected: {
+    backgroundColor: theme.colors.primary,
     borderColor: theme.colors.primary,
   },
-  optionIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: theme.radius.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: theme.spacing.md,
-  },
-  optionIconText: {
-    fontFamily: theme.fonts.displaySemibold,
-    fontSize: 16,
+  classTileText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 15,
     color: theme.colors.text,
   },
-  optionInfo: {
+  classTileTextSelected: {
+    color: theme.colors.textInverse,
+  },
+
+  // Salles en liste
+  roomList: {
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
+    overflow: 'hidden',
+  },
+  roomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 13,
+    paddingHorizontal: theme.spacing.md,
+  },
+  roomRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderLight,
+  },
+  roomRowSelected: {
+    backgroundColor: theme.colors.primarySoft,
+  },
+  roomRowPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+  },
+  roomInfo: {
     flex: 1,
   },
-  optionName: {
+  roomName: {
     fontFamily: theme.fonts.bodySemibold,
-    fontSize: 16,
+    fontSize: 15,
     color: theme.colors.text,
   },
-  optionNameSelected: {
-    fontFamily: theme.fonts.bodySemibold,
+  roomNameSelected: {
     color: theme.colors.primary,
   },
-  optionDetail: {
+  roomDetail: {
     fontFamily: theme.fonts.body,
-    fontSize: 13,
+    fontSize: 12.5,
     color: theme.colors.textTertiary,
-    marginTop: 2,
+    marginTop: 1,
   },
   checkmarkContainer: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.radius.full,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     backgroundColor: theme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  checkmark: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: theme.colors.textInverse,
-  },
-  changeButton: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.surfaceSecondary,
-  },
-  changeButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: theme.colors.textSecondary,
-  },
-  footer: {
-    padding: theme.spacing.lg,
-    backgroundColor: theme.colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-    ...theme.shadows.md,
-  },
-  selectionSummaryCard: {
-    backgroundColor: theme.colors.primarySoft,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-  },
-  selectionSummaryLabel: {
-    fontFamily: theme.fonts.bodySemibold,
-    fontSize: 11,
-    color: theme.colors.primary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.7,
-    marginBottom: theme.spacing.xs,
-  },
-  selectionSummary: {
-    fontFamily: theme.fonts.bodySemibold,
-    fontSize: 15,
-    color: theme.colors.text,
-  },
-  startButton: {
-    borderRadius: theme.radius.lg,
-    overflow: 'hidden',
-  },
-  startButtonInner: {
-    flexDirection: 'row',
-    backgroundColor: theme.colors.success,
-    paddingVertical: theme.spacing.md + 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-  },
-  startButtonPressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.98 }],
-  },
-  startButtonDisabled: {
-    backgroundColor: theme.colors.surfaceSecondary,
-  },
-  startButtonDisabledInner: {
-    flexDirection: 'row',
-    paddingVertical: theme.spacing.md + 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-  },
-  startButtonIcon: {
-    fontSize: 16,
-    color: theme.colors.textInverse,
-  },
-  startButtonText: {
-    fontFamily: theme.fonts.bodySemibold,
-    color: theme.colors.textInverse,
-    fontSize: 17,
-  },
-  startButtonTextDisabled: {
-    fontFamily: theme.fonts.bodyMedium,
-    color: theme.colors.textTertiary,
-    fontSize: 15,
-  },
   optionalBadge: {
     fontFamily: theme.fonts.body,
-    marginLeft: 'auto',
     fontSize: 12,
     color: theme.colors.textTertiary,
+    marginBottom: theme.spacing.sm + 2,
   },
   topicInputContainer: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
     padding: theme.spacing.md,
-    ...theme.shadows.sm,
   },
   topicInput: {
     fontFamily: theme.fonts.body,
@@ -537,9 +413,50 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   topicCharCount: {
+    fontFamily: theme.fonts.body,
     fontSize: 11,
     color: theme.colors.textTertiary,
     textAlign: 'right',
     marginTop: theme.spacing.xs,
+  },
+
+  // Footer
+  footer: {
+    padding: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  selectionSummary: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.sm + 2,
+  },
+  startButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    backgroundColor: theme.colors.action,
+    borderRadius: 12,
+    paddingVertical: 16,
+  },
+  startButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  startButtonDisabled: {
+    backgroundColor: theme.colors.segmentTrack,
+  },
+  startButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
+    color: theme.colors.textInverse,
+    fontSize: 16,
+  },
+  startButtonTextDisabled: {
+    color: theme.colors.textTertiary,
   },
 });

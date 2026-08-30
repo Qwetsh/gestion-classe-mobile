@@ -1,3 +1,8 @@
+// Menu radial 4 directions (reskin Direction B, maquette 7a) :
+// participation (haut), bavardage (droite), sortie (bas), absence (gauche).
+// La remarque est deplacee dans la toolbar de l'ecran de seance.
+// `icon` = nom d'icone lucide, rendu par components/radial/RadialIcon.
+
 export type MenuItemType = {
   id: string;
   label: string;
@@ -10,57 +15,51 @@ export const MENU_ITEMS: MenuItemType[] = [
   {
     id: 'participation',
     label: 'Implication',
-    icon: '✋',
+    icon: 'hand',
     color: '#34D399',
   },
   {
     id: 'bavardage',
     label: 'Malus',
-    icon: '💬',
+    icon: 'message-circle',
     color: '#FBBF24',
   },
   {
     id: 'sortie',
     label: 'Sortie',
-    icon: '🚪',
+    icon: 'log-out',
     color: '#A78BFA',
     subItems: [
       {
         id: 'infirmerie',
         label: 'Infirmerie',
-        icon: '🏥',
+        icon: 'cross',
         color: '#F472B6',
       },
       {
         id: 'toilettes',
         label: 'Toilettes',
-        icon: '🚻',
+        icon: 'door-open',
         color: '#22D3EE',
       },
       {
         id: 'convocation',
         label: 'Convocation',
-        icon: '📋',
+        icon: 'clipboard-list',
         color: '#A8A29E',
       },
       {
         id: 'exclusion',
         label: 'Exclusion',
-        icon: '⛔',
+        icon: 'ban',
         color: '#F87171',
       },
     ],
   },
   {
-    id: 'remarque',
-    label: 'Remarque',
-    icon: '📝',
-    color: '#60A5FA',
-  },
-  {
     id: 'absence',
     label: 'Absence',
-    icon: '❌',
+    icon: 'x-circle',
     color: '#FB7185',
   },
 ];
@@ -68,4 +67,10 @@ export const MENU_ITEMS: MenuItemType[] = [
 export const MENU_RADIUS = 120;
 export const ITEM_SIZE = 70;
 export const SUBMENU_RADIUS = 100;
-export const LONG_PRESS_DURATION = 250;
+export const SUBMENU_ITEM_SIZE = 58;
+/** Rayon du disque central blanc (70px de diametre) : relacher dedans = annulation. */
+export const CENTER_RADIUS = 35;
+export const LONG_PRESS_DURATION = 400;
+/** Mode expert : pause >= 250 ms => menu normal ; deplacement > seuil avant => flick. */
+export const FLICK_PAUSE_DURATION = 250;
+export const FLICK_DISTANCE_THRESHOLD = 30;

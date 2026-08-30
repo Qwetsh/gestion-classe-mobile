@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -9,17 +9,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { BookOpen, ChevronRight } from 'lucide-react-native';
 import { useAuthStore, useClassStore } from '../../../stores';
+import { getStudentsByClassId, getSessionsByClassId } from '../../../services/database';
 import { theme } from '../../../constants/theme';
 import { Class } from '../../../types';
 
+// Couleurs soft tournantes des tuiles (1f)
+const TILE_COLORS: { bg: string; text: string }[] = [
+  { bg: theme.colors.primarySoft, text: theme.colors.primary },
+  { bg: theme.colors.actionSoft, text: theme.colors.action },
+  { bg: theme.colors.bavardageSoft, text: theme.colors.bavardageText },
+];
+
+interface ClassCounts {
+  students: number;
+  sessions: number;
+}
+
 export default function ClassesListScreen() {
   const { user } = useAuthStore();
-  const {
-    classes,
-    isLoading: classesLoading,
-    loadClasses,
-  } = useClassStore();
+  const { classes, isLoading: classesLoading, loadClasses } = useClassStore();
+  const [counts, setCounts] = useState<Record<string, ClassCounts>>({});
 
   useEffect(() => {
     if (user?.id) {
@@ -27,46 +38,66 @@ export default function ClassesListScreen() {
     }
   }, [user?.id]);
 
-  const renderClassItem = ({ item, index }: { item: Class; index: number }) => (
-    <Pressable
-      style={({ pressed }) => [
-        styles.classCard,
-        pressed && styles.classCardPressed,
-      ]}
-      onPress={() => {
-        router.push(`/(main)/classes/${item.id}`);
-      }}
-    >
-      <View style={[styles.classIconContainer, { backgroundColor: getClassColor(index) }]}>
-        <Text style={styles.classIconText}>{item.name.substring(0, 2).toUpperCase()}</Text>
-      </View>
-      <View style={styles.classInfo}>
-        <Text style={styles.className}>{item.name}</Text>
-        <Text style={styles.classDate}>
-          Créée le {new Date(item.createdAt).toLocaleDateString('fr-FR')}
-        </Text>
-      </View>
-      <View style={styles.chevronContainer}>
-        <Text style={styles.chevron}>›</Text>
-      </View>
-    </Pressable>
-  );
+  useEffect(() => {
+    let cancelled = false;
+    const loadCounts = async () => {
+      const result: Record<string, ClassCounts> = {};
+      for (const cls of classes) {
+        try {
+          const [students, sessions] = await Promise.all([
+            getStudentsByClassId(cls.id),
+            getSessionsByClassId(cls.id),
+          ]);
+          result[cls.id] = {
+            students: students.length,
+            sessions: sessions.filter((s) => s.ended_at !== null).length,
+          };
+        } catch {
+          result[cls.id] = { students: 0, sessions: 0 };
+        }
+      }
+      if (!cancelled) setCounts(result);
+    };
+    if (classes.length > 0) loadCounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [classes]);
 
-  const getClassColor = (index: number) => {
-    const colors = [
-      theme.colors.primarySoft,
-      theme.colors.participationSoft,
-      theme.colors.sortieSoft,
-      theme.colors.remarqueSoft,
-      theme.colors.bavardageSoft,
-    ];
-    return colors[index % colors.length];
+  const totalStudents = Object.values(counts).reduce((sum, c) => sum + c.students, 0);
+
+  const renderClassItem = ({ item, index }: { item: Class; index: number }) => {
+    const tile = TILE_COLORS[index % TILE_COLORS.length];
+    const classCounts = counts[item.id];
+    return (
+      <Pressable
+        style={({ pressed }) => [styles.classCard, pressed && styles.classCardPressed]}
+        onPress={() => {
+          router.push(`/(main)/classes/${item.id}`);
+        }}
+      >
+        <View style={[styles.classTile, { backgroundColor: tile.bg }]}>
+          <Text style={[styles.classTileText, { color: tile.text }]} numberOfLines={1}>
+            {item.name.length <= 4 ? item.name : item.name.substring(0, 3)}
+          </Text>
+        </View>
+        <View style={styles.classInfo}>
+          <Text style={styles.className}>{item.name}</Text>
+          <Text style={styles.classMeta}>
+            {classCounts
+              ? `${classCounts.students} élève${classCounts.students > 1 ? 's' : ''} · ${classCounts.sessions} séance${classCounts.sessions > 1 ? 's' : ''}`
+              : '…'}
+          </Text>
+        </View>
+        <ChevronRight size={18} color={theme.colors.textTertiary} strokeWidth={1.8} />
+      </Pressable>
+    );
   };
 
   const renderEmptyList = () => (
     <View style={styles.placeholder}>
       <View style={styles.placeholderIconContainer}>
-        <Text style={styles.placeholderEmoji}>📚</Text>
+        <BookOpen size={32} color={theme.colors.primary} strokeWidth={1.7} />
       </View>
       <Text style={styles.placeholderTitle}>Aucune classe</Text>
       <Text style={styles.placeholderText}>
@@ -79,6 +110,12 @@ export default function ClassesListScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.screenHeader}>
         <Text style={styles.screenTitle}>Mes classes</Text>
+        {classes.length > 0 && (
+          <Text style={styles.screenSubtitle}>
+            {classes.length} classe{classes.length > 1 ? 's' : ''} · {totalStudents} élève
+            {totalStudents > 1 ? 's' : ''}
+          </Text>
+        )}
       </View>
       <View style={styles.container}>
         {classesLoading && classes.length === 0 ? (
@@ -94,15 +131,6 @@ export default function ClassesListScreen() {
             ListEmptyComponent={renderEmptyList}
             contentContainerStyle={classes.length === 0 ? styles.emptyList : styles.list}
             showsVerticalScrollIndicator={false}
-            ListHeaderComponent={
-              classes.length > 0 ? (
-                <View style={styles.listHeaderContainer}>
-                  <Text style={styles.listHeader}>
-                    {classes.length} classe{classes.length > 1 ? 's' : ''}
-                  </Text>
-                </View>
-              ) : null
-            }
           />
         )}
       </View>
@@ -121,13 +149,20 @@ const styles = StyleSheet.create({
   },
   screenHeader: {
     paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
   },
   screenTitle: {
-    fontSize: 28,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 26,
     color: theme.colors.text,
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
+  },
+  screenSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 14,
+    color: theme.colors.textSecondary,
+    marginTop: 2,
   },
   loadingContainer: {
     flex: 1,
@@ -136,106 +171,85 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: theme.spacing.md,
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
   },
   list: {
     padding: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
   },
   emptyList: {
     flex: 1,
     padding: theme.spacing.lg,
   },
-  listHeaderContainer: {
-    marginBottom: theme.spacing.md,
-  },
-  listHeader: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.textTertiary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
   classCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-    ...theme.shadows.sm,
+    marginBottom: theme.spacing.sm + 2,
   },
   classCardPressed: {
     backgroundColor: theme.colors.surfaceHover,
     transform: [{ scale: 0.98 }],
   },
-  classIconContainer: {
-    width: 52,
-    height: 52,
-    borderRadius: theme.radius.lg,
+  classTile: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: theme.spacing.md,
   },
-  classIconText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: theme.colors.text,
+  classTileText: {
+    fontFamily: theme.fonts.bodyBold,
+    fontSize: 14,
   },
   classInfo: {
     flex: 1,
   },
   className: {
-    fontSize: 17,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 16,
     color: theme.colors.text,
-    marginBottom: theme.spacing.xs,
+    marginBottom: 2,
   },
-  classDate: {
+  classMeta: {
+    fontFamily: theme.fonts.body,
     fontSize: 13,
-    color: theme.colors.textTertiary,
-  },
-  chevronContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.surfaceSecondary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chevron: {
-    fontSize: 20,
-    color: theme.colors.textTertiary,
-    fontWeight: '600',
+    color: theme.colors.textSecondary,
   },
   placeholder: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.xxl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.xl,
-    ...theme.shadows.sm,
   },
   placeholderIconContainer: {
-    width: 80,
-    height: 80,
+    width: 72,
+    height: 72,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.primarySoft,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: theme.spacing.lg,
   },
-  placeholderEmoji: {
-    fontSize: 40,
-  },
   placeholderTitle: {
+    fontFamily: theme.fonts.bodyBold,
     fontSize: 20,
-    fontWeight: '700',
     color: theme.colors.text,
     marginBottom: theme.spacing.sm,
   },
   placeholderText: {
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
     textAlign: 'center',

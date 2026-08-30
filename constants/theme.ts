@@ -1,20 +1,20 @@
 /**
  * Design tokens for Gestion Classe
- * Reskin "identite web" : neutres clairs, indigo primaire, serif Playfair (romain) + Inter,
- * aplats sans degrade, une seule ombre douce. Cf. design_handoff_mobile_reskin/README.md.
- *
- * NOTE : on conserve toutes les cles existantes (gradients, shadows.primary/success...) pour
- * ne casser aucun ecran ; leurs USAGES sont retires ecran par ecran lors du reskin (R2+).
+ * Reskin "Direction B" : neutres clairs, indigo primaire #4F46E5, action verte #059669,
+ * IBM Plex Sans partout, aplats sans degrade, une seule ombre douce ou bordure 1px.
+ * Cf. design_handoff_reskin_direction_b/README.md.
  */
 
 export const theme = {
   colors: {
-    // Neutres - cible web (famille gris neutre, plus "slate")
-    background: '#F4F5F8',
+    // Neutres
+    background: '#F7F7F9',
     surface: '#FFFFFF',
     surfaceHover: '#FAFBFC',
     surfaceSecondary: '#F3F4F7',
-    surface3: '#F3F4F7', // inputs, segments, puits
+    surface3: '#F3F4F7', // inputs, puits
+    surfaceDisabled: '#F1F2F5', // cellules desactivees / allees
+    segmentTrack: '#EDEEF2', // track des toggles segmentes
     border: '#E5E7EB',
     borderLight: '#F1F5F9',
     borderStrong: '#D4D8E1',
@@ -25,12 +25,16 @@ export const theme = {
     textTertiary: '#9CA3AF',
     textInverse: '#FFFFFF',
 
-    // Primaire (indigo) = action / nav active
-    primary: '#6366F1',
+    // Primaire (indigo) = nav / selection
+    primary: '#4F46E5',
     primaryLight: '#818CF8',
-    primaryDark: '#4F46E5',
-    primaryStrong: '#4F46E5', // pressed
+    primaryDark: '#4338CA',
+    primaryStrong: '#4338CA', // pressed
     primarySoft: '#EEF0FF',
+
+    // Action verte (demarrer / terminer / valider)
+    action: '#059669',
+    actionSoft: '#ECFDF5',
 
     // Actions (menu radial / semantique)
     participation: '#10B981',
@@ -39,8 +43,9 @@ export const theme = {
     bavardage: '#F59E0B',
     bavardageLight: '#FBBF24',
     bavardageSoft: '#FFFBEB',
+    bavardageText: '#B45309',
     absence: '#EF4444',
-    absenceLight: '#F87171',
+    absenceLight: '#FB7185',
     absenceSoft: '#FEF2F2',
     remarque: '#3B82F6',
     remarqueLight: '#60A5FA',
@@ -49,15 +54,24 @@ export const theme = {
     sortieLight: '#A78BFA',
     sortieSoft: '#F5F3FF',
 
+    // Etats cellules du plan
+    absentBg: '#FEF2F2',
+    absentBorder: '#FECACA',
+    absentText: '#B91C1C',
+    absentBadge: '#EF4444',
+    sortieBg: '#F5F3FF',
+    sortieBorder: '#DDD6FE',
+    sortieText: '#6D28D9',
+
     // Sous-actions Sortie
-    infirmerie: '#EC4899',
-    toilettes: '#06B6D4',
-    convocation: '#78716C',
-    exclusion: '#DC2626',
+    infirmerie: '#F472B6',
+    toilettes: '#22D3EE',
+    convocation: '#A8A29E',
+    exclusion: '#F87171',
 
     // Etats systeme
-    success: '#10B981',
-    successSoft: '#E4F6ED',
+    success: '#059669',
+    successSoft: '#ECFDF5',
     error: '#EF4444',
     errorSoft: '#FDE8E8',
     danger: '#EF4444',
@@ -66,33 +80,22 @@ export const theme = {
     warningSoft: '#FEF1D8',
     offline: '#F59E0B',
 
-    // Menu radial (re-style en R4)
+    // Menu radial
     menuCenter: 'rgba(255,255,255,0.98)',
-    menuPeriphery: 'rgba(255,255,255,0.85)',
+    menuPeriphery: 'rgba(15,23,42,0.78)',
     menuOverlay: 'rgba(15,23,42,0.4)',
-
-    // Glassmorphism (deprecie - retire au reskin)
-    glass: 'rgba(255,255,255,0.7)',
-    glassBorder: 'rgba(255,255,255,0.5)',
+    sheetBackdrop: 'rgba(15,23,42,0.35)',
   },
 
-  // Polices (familles exactes chargees dans app/_layout.tsx)
+  // Polices (familles exactes chargees dans app/_layout.tsx) — IBM Plex Sans partout
   fonts: {
-    display: 'PlayfairDisplay_500Medium',       // titres + grands chiffres (romain)
-    displayRegular: 'PlayfairDisplay_400Regular',
-    displaySemibold: 'PlayfairDisplay_600SemiBold', // ClassChip
-    body: 'Inter_400Regular',
-    bodyMedium: 'Inter_500Medium',
-    bodySemibold: 'Inter_600SemiBold',
-    bodyBold: 'Inter_700Bold',
-  },
-
-  // Degrades : DEPRECIES (aplats vises). Conserves le temps de retirer les usages (R2+).
-  gradients: {
-    primary: ['#6366F1', '#8B5CF6'],
-    success: ['#10B981', '#34D399'],
-    warm: ['#F59E0B', '#F97316'],
-    cool: ['#3B82F6', '#6366F1'],
+    display: 'IBMPlexSans_700Bold', // titres + grands chiffres
+    displayRegular: 'IBMPlexSans_400Regular',
+    displaySemibold: 'IBMPlexSans_600SemiBold',
+    body: 'IBMPlexSans_400Regular',
+    bodyMedium: 'IBMPlexSans_500Medium',
+    bodySemibold: 'IBMPlexSans_600SemiBold',
+    bodyBold: 'IBMPlexSans_700Bold',
   },
 
   spacing: {
@@ -105,40 +108,37 @@ export const theme = {
   },
 
   radius: {
-    sm: 8,
-    md: 11,   // controle (bouton/input)
+    sm: 8,    // cellules du plan (8-9)
+    md: 12,   // controle (bouton/input)
     lg: 16,   // carte
-    xl: 16,   // aplati (etait 24)
-    xxl: 16,  // aplati (etait 32)
-    full: 9999,
+    xl: 16,
+    xxl: 20,  // bottom sheets (haut)
+    full: 999,
   },
 
   typography: {
-    // Titres - serif Playfair romain
-    h1: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 28, fontWeight: '500' as const, lineHeight: 36, letterSpacing: -0.5 },
-    h2: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 22, fontWeight: '500' as const, lineHeight: 30 },
-    h3: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 18, fontWeight: '500' as const, lineHeight: 26 },
+    // Titres — IBM Plex Sans Bold
+    h1: { fontFamily: 'IBMPlexSans_700Bold', fontSize: 26, fontWeight: '700' as const, lineHeight: 34, letterSpacing: -0.3 },
+    h2: { fontFamily: 'IBMPlexSans_700Bold', fontSize: 22, fontWeight: '700' as const, lineHeight: 30 },
+    h3: { fontFamily: 'IBMPlexSans_600SemiBold', fontSize: 18, fontWeight: '600' as const, lineHeight: 26 },
 
-    // Corps - Inter
-    body: { fontFamily: 'Inter_400Regular', fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
-    bodyMedium: { fontFamily: 'Inter_500Medium', fontSize: 16, fontWeight: '500' as const, lineHeight: 24 },
-    bodySmall: { fontFamily: 'Inter_400Regular', fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
+    // Corps
+    body: { fontFamily: 'IBMPlexSans_400Regular', fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
+    bodyMedium: { fontFamily: 'IBMPlexSans_500Medium', fontSize: 16, fontWeight: '500' as const, lineHeight: 24 },
+    bodySmall: { fontFamily: 'IBMPlexSans_400Regular', fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
 
-    // UI - Inter
-    label: { fontFamily: 'Inter_600SemiBold', fontSize: 14, fontWeight: '600' as const, lineHeight: 20 },
-    labelSmall: { fontFamily: 'Inter_600SemiBold', fontSize: 12, fontWeight: '600' as const, lineHeight: 16 },
-    caption: { fontFamily: 'Inter_400Regular', fontSize: 12, fontWeight: '400' as const, lineHeight: 16 },
+    // UI
+    label: { fontFamily: 'IBMPlexSans_600SemiBold', fontSize: 14, fontWeight: '600' as const, lineHeight: 20 },
+    labelSmall: { fontFamily: 'IBMPlexSans_600SemiBold', fontSize: 12, fontWeight: '600' as const, lineHeight: 16 },
+    caption: { fontFamily: 'IBMPlexSans_400Regular', fontSize: 12, fontWeight: '400' as const, lineHeight: 16 },
 
-    // Donnees - Inter / tabular
-    counter: { fontFamily: 'Inter_700Bold', fontSize: 12, fontWeight: '700' as const, lineHeight: 16 },
-    studentName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, fontWeight: '600' as const, lineHeight: 20 },
-
-    // Grand chiffre (KPI, note) - Playfair romain, tabular-nums (a appliquer au usage)
-    bigNumber: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 40, fontWeight: '500' as const, lineHeight: 48 },
+    // Donnees
+    counter: { fontFamily: 'IBMPlexSans_700Bold', fontSize: 12, fontWeight: '700' as const, lineHeight: 16 },
+    studentName: { fontFamily: 'IBMPlexSans_600SemiBold', fontSize: 15, fontWeight: '600' as const, lineHeight: 20 },
+    bigNumber: { fontFamily: 'IBMPlexSans_700Bold', fontSize: 40, fontWeight: '700' as const, lineHeight: 48 },
   },
 
-  // Une seule ombre douce, neutre (pas d'empilement, pas d'ombres colorees).
-  // Les cles sm/md/lg/xl + primary/success rendent toutes la meme ombre douce.
+  // Une seule ombre douce, neutre (sinon bordure 1px #E5E7EB).
   shadows: {
     none: {
       shadowColor: 'transparent',
@@ -182,7 +182,6 @@ export const theme = {
       shadowRadius: 3,
       elevation: 2,
     },
-    // Ombres colorees DEPRECIEES -> rendues neutres (usages retires au reskin)
     primary: {
       shadowColor: '#141928',
       shadowOffset: { width: 0, height: 1 },
