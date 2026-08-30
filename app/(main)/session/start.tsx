@@ -8,9 +8,9 @@ import {
   ScrollView,
   TextInput,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Library, School, FileText, Check, Play } from 'lucide-react-native';
 import {
   useAuthStore,
   useClassStore,
@@ -83,7 +83,7 @@ export default function StartSessionScreen() {
           headerTintColor: theme.colors.text,
           headerShadowVisible: false,
           headerTitleStyle: {
-            fontWeight: '700',
+            fontFamily: theme.fonts.display,
             fontSize: 18,
           },
           headerLeft: () => (
@@ -105,7 +105,7 @@ export default function StartSessionScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.primarySoft }]}>
-                <Text style={styles.sectionIcon}>📚</Text>
+                <Library size={20} color={theme.colors.primary} strokeWidth={2} />
               </View>
               <Text style={styles.sectionTitle}>Choisir une classe</Text>
             </View>
@@ -115,7 +115,7 @@ export default function StartSessionScreen() {
               </View>
             ) : classes.length === 0 ? (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyEmoji}>📚</Text>
+                <Library size={36} color={theme.colors.textTertiary} strokeWidth={1.6} style={styles.emptyIcon} />
                 <Text style={styles.emptyText}>Aucune classe disponible</Text>
                 <Pressable
                   style={styles.linkButton}
@@ -171,7 +171,7 @@ export default function StartSessionScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.sortieSoft }]}>
-                <Text style={styles.sectionIcon}>🏫</Text>
+                <School size={20} color={theme.colors.sortie} strokeWidth={2} />
               </View>
               <Text style={styles.sectionTitle}>Choisir une salle</Text>
             </View>
@@ -181,7 +181,7 @@ export default function StartSessionScreen() {
               </View>
             ) : rooms.length === 0 ? (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyEmoji}>🏫</Text>
+                <School size={36} color={theme.colors.textTertiary} strokeWidth={1.6} style={styles.emptyIcon} />
                 <Text style={styles.emptyText}>Aucune salle configurée</Text>
                 <Pressable
                   style={styles.linkButton}
@@ -220,7 +220,7 @@ export default function StartSessionScreen() {
                     </View>
                     {selectedRoom?.id === room.id && (
                       <View style={styles.checkmarkContainer}>
-                        <Text style={styles.checkmark}>✓</Text>
+                        <Check size={16} color={theme.colors.textInverse} strokeWidth={3} />
                       </View>
                     )}
                   </Pressable>
@@ -233,7 +233,7 @@ export default function StartSessionScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View style={[styles.sectionIconContainer, { backgroundColor: theme.colors.remarqueSoft }]}>
-                <Text style={styles.sectionIcon}>📝</Text>
+                <FileText size={20} color={theme.colors.remarque} strokeWidth={2} />
               </View>
               <Text style={styles.sectionTitle}>Thème de la séance</Text>
               <Text style={styles.optionalBadge}>Optionnel</Text>
@@ -276,24 +276,19 @@ export default function StartSessionScreen() {
             disabled={!canStart}
           >
             {canStart ? (
-              <LinearGradient
-                colors={theme.gradients.success}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.startButtonGradient}
-              >
+              <View style={styles.startButtonInner}>
                 {sessionLoading ? (
                   <ActivityIndicator color={theme.colors.textInverse} />
                 ) : (
                   <>
-                    <Text style={styles.startButtonIcon}>▶</Text>
+                    <Play size={18} color={theme.colors.textInverse} fill={theme.colors.textInverse} />
                     <Text style={styles.startButtonText}>Démarrer la séance</Text>
                   </>
                 )}
-              </LinearGradient>
+              </View>
             ) : (
               <View style={styles.startButtonDisabledInner}>
-                <Text style={styles.startButtonIcon}>▶</Text>
+                <Play size={18} color={theme.colors.textTertiary} />
                 <Text style={styles.startButtonTextDisabled}>Sélectionnez une classe et une salle</Text>
               </View>
             )}
@@ -348,8 +343,8 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   sectionTitle: {
+    fontFamily: theme.fonts.display,
     fontSize: 18,
-    fontWeight: '700',
     color: theme.colors.text,
   },
   loadingSection: {
@@ -363,11 +358,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     ...theme.shadows.sm,
   },
-  emptyEmoji: {
-    fontSize: 40,
+  emptyIcon: {
     marginBottom: theme.spacing.md,
   },
   emptyText: {
+    fontFamily: theme.fonts.body,
     color: theme.colors.textSecondary,
     fontSize: 15,
     marginBottom: theme.spacing.md,
@@ -410,23 +405,24 @@ const styles = StyleSheet.create({
     marginRight: theme.spacing.md,
   },
   optionIconText: {
+    fontFamily: theme.fonts.displaySemibold,
     fontSize: 16,
-    fontWeight: '700',
     color: theme.colors.text,
   },
   optionInfo: {
     flex: 1,
   },
   optionName: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 16,
-    fontWeight: '600',
     color: theme.colors.text,
   },
   optionNameSelected: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.primary,
-    fontWeight: '700',
   },
   optionDetail: {
+    fontFamily: theme.fonts.body,
     fontSize: 13,
     color: theme.colors.textTertiary,
     marginTop: 2,
@@ -469,24 +465,25 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   selectionSummaryLabel: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
     color: theme.colors.primary,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.7,
     marginBottom: theme.spacing.xs,
   },
   selectionSummary: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 15,
-    fontWeight: '600',
     color: theme.colors.text,
   },
   startButton: {
-    borderRadius: theme.radius.xl,
+    borderRadius: theme.radius.lg,
     overflow: 'hidden',
   },
-  startButtonGradient: {
+  startButtonInner: {
     flexDirection: 'row',
+    backgroundColor: theme.colors.success,
     paddingVertical: theme.spacing.md + 2,
     alignItems: 'center',
     justifyContent: 'center',
@@ -511,20 +508,20 @@ const styles = StyleSheet.create({
     color: theme.colors.textInverse,
   },
   startButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.textInverse,
     fontSize: 17,
-    fontWeight: '700',
   },
   startButtonTextDisabled: {
+    fontFamily: theme.fonts.bodyMedium,
     color: theme.colors.textTertiary,
     fontSize: 15,
-    fontWeight: '500',
   },
   optionalBadge: {
+    fontFamily: theme.fonts.body,
     marginLeft: 'auto',
     fontSize: 12,
     color: theme.colors.textTertiary,
-    fontStyle: 'italic',
   },
   topicInputContainer: {
     backgroundColor: theme.colors.surface,
@@ -533,6 +530,7 @@ const styles = StyleSheet.create({
     ...theme.shadows.sm,
   },
   topicInput: {
+    fontFamily: theme.fonts.body,
     fontSize: 15,
     color: theme.colors.text,
     minHeight: 60,

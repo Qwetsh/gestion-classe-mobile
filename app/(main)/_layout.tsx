@@ -18,6 +18,7 @@ export default function MainLayout() {
       <Stack.Screen name="group-session" />
       <Stack.Screen name="parent-meeting" />
       <Stack.Screen name="plan" />
+      <Stack.Screen name="assessments" />
     </Stack>
   );
 }

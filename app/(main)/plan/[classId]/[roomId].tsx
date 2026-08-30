@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { LayoutGrid, Users, Hand, Check, Frown } from 'lucide-react-native';
 import {
   useAuthStore,
   useClassStore,
@@ -229,8 +230,8 @@ export default function PlanEditorScreen() {
     return (
       <SafeAreaView style={styles.errorContainer} edges={['top']}>
         <View style={styles.errorCard}>
-          <Text style={styles.errorEmoji}>😕</Text>
-          <Text style={styles.errorText}>Donnees introuvables</Text>
+          <Frown size={44} color={theme.colors.textTertiary} strokeWidth={1.6} style={{ marginBottom: theme.spacing.md }} />
+          <Text style={styles.errorText}>Données introuvables</Text>
           <Pressable style={styles.backLink} onPress={() => router.back()}>
             <Text style={styles.backLinkText}>Retour</Text>
           </Pressable>
@@ -249,7 +250,7 @@ export default function PlanEditorScreen() {
           headerTintColor: theme.colors.text,
           headerShadowVisible: false,
           headerTitleStyle: {
-            fontWeight: '700',
+            fontFamily: theme.fonts.display,
             fontSize: 18,
           },
           headerLeft: () => (
@@ -277,7 +278,7 @@ export default function PlanEditorScreen() {
         {/* Header info */}
         <View style={styles.header}>
           <View style={[styles.headerIconContainer, { backgroundColor: theme.colors.primarySoft }]}>
-            <Text style={styles.headerIcon}>📐</Text>
+            <LayoutGrid size={22} color={theme.colors.primary} strokeWidth={2} />
           </View>
           <View style={styles.headerInfo}>
             <Text style={styles.className}>{currentClass.name}</Text>
@@ -298,13 +299,22 @@ export default function PlanEditorScreen() {
 
         {/* Unplaced students */}
         <View style={[styles.unplacedSection, { paddingBottom: Math.max(insets.bottom, theme.spacing.md) + theme.spacing.md }]}>
-          <Text style={styles.unplacedTitle}>
-            {selectedStudent
-              ? '👆 Appuyez sur une place libre'
-              : unplacedStudents.length > 0
-              ? `👥 Eleves a placer (${unplacedStudents.length})`
-              : '✓ Tous les eleves sont places'}
-          </Text>
+          <View style={styles.unplacedTitleRow}>
+            {selectedStudent ? (
+              <Hand size={16} color={theme.colors.primary} strokeWidth={2} />
+            ) : unplacedStudents.length > 0 ? (
+              <Users size={16} color={theme.colors.textSecondary} strokeWidth={2} />
+            ) : (
+              <Check size={16} color={theme.colors.success} strokeWidth={2} />
+            )}
+            <Text style={styles.unplacedTitle}>
+              {selectedStudent
+                ? 'Appuyez sur une place libre'
+                : unplacedStudents.length > 0
+                ? `Élèves à placer (${unplacedStudents.length})`
+                : 'Tous les élèves sont placés'}
+            </Text>
+          </View>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -382,8 +392,8 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   errorText: {
+    fontFamily: theme.fonts.display,
     fontSize: 18,
-    fontWeight: '600',
     color: theme.colors.text,
     marginBottom: theme.spacing.lg,
   },
@@ -444,11 +454,12 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   className: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontFamily: theme.fonts.display,
+    fontSize: 20,
     color: theme.colors.text,
   },
   subtitle: {
+    fontFamily: theme.fonts.body,
     fontSize: 13,
     color: theme.colors.textTertiary,
     marginTop: 2,
@@ -477,11 +488,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   teacherText: {
-    fontSize: 12,
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
     color: theme.colors.textSecondary,
-    fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0.7,
   },
   gridContainer: {
     alignItems: 'center',
@@ -513,8 +524,8 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   cellText: {
+    fontFamily: theme.fonts.bodySemibold,
     fontSize: 9,
-    fontWeight: '600',
     color: theme.colors.text,
     textAlign: 'center',
     padding: 2,
@@ -524,8 +535,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   gridStatsText: {
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 13,
-    fontWeight: '500',
     color: theme.colors.textSecondary,
   },
 
@@ -537,11 +548,16 @@ const styles = StyleSheet.create({
     padding: theme.spacing.md,
     ...theme.shadows.md,
   },
-  unplacedTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: theme.colors.text,
+  unplacedTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
     marginBottom: theme.spacing.sm,
+  },
+  unplacedTitle: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 14,
+    color: theme.colors.text,
   },
   unplacedList: {
     paddingVertical: theme.spacing.xs,
@@ -561,13 +577,13 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.primary,
   },
   unplacedStudentText: {
+    fontFamily: theme.fonts.bodyMedium,
     fontSize: 14,
     color: theme.colors.text,
-    fontWeight: '500',
   },
   unplacedStudentTextSelected: {
+    fontFamily: theme.fonts.bodySemibold,
     color: theme.colors.textInverse,
-    fontWeight: '600',
   },
 
   // Loading overlay

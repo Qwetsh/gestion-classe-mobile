@@ -1,31 +1,38 @@
 /**
  * Design tokens for Gestion Classe
- * Modern UI with soft shadows, gradients, and clean aesthetics
+ * Reskin "identite web" : neutres clairs, indigo primaire, serif Playfair (romain) + Inter,
+ * aplats sans degrade, une seule ombre douce. Cf. design_handoff_mobile_reskin/README.md.
+ *
+ * NOTE : on conserve toutes les cles existantes (gradients, shadows.primary/success...) pour
+ * ne casser aucun ecran ; leurs USAGES sont retires ecran par ecran lors du reskin (R2+).
  */
 
 export const theme = {
   colors: {
-    // Neutres - Plus doux et modernes
-    background: '#F8FAFC',
+    // Neutres - cible web (famille gris neutre, plus "slate")
+    background: '#F4F5F8',
     surface: '#FFFFFF',
-    surfaceHover: '#F1F5F9',
-    surfaceSecondary: '#F8FAFC',
-    border: '#E2E8F0',
+    surfaceHover: '#FAFBFC',
+    surfaceSecondary: '#F3F4F7',
+    surface3: '#F3F4F7', // inputs, segments, puits
+    border: '#E5E7EB',
     borderLight: '#F1F5F9',
+    borderStrong: '#D4D8E1',
 
-    // Texte
-    text: '#0F172A',
-    textSecondary: '#64748B',
-    textTertiary: '#94A3B8',
+    // Texte (encre)
+    text: '#1F2433',
+    textSecondary: '#6B7280',
+    textTertiary: '#9CA3AF',
     textInverse: '#FFFFFF',
 
-    // Couleur primaire moderne (bleu-violet)
+    // Primaire (indigo) = action / nav active
     primary: '#6366F1',
     primaryLight: '#818CF8',
     primaryDark: '#4F46E5',
-    primarySoft: '#EEF2FF',
+    primaryStrong: '#4F46E5', // pressed
+    primarySoft: '#EEF0FF',
 
-    // Actions (menu radial) - Couleurs plus douces
+    // Actions (menu radial / semantique)
     participation: '#10B981',
     participationLight: '#34D399',
     participationSoft: '#ECFDF5',
@@ -50,24 +57,37 @@ export const theme = {
 
     // Etats systeme
     success: '#10B981',
-    successSoft: '#ECFDF5',
+    successSoft: '#E4F6ED',
     error: '#EF4444',
-    errorSoft: '#FEF2F2',
+    errorSoft: '#FDE8E8',
+    danger: '#EF4444',
+    dangerSoft: '#FDE8E8',
     warning: '#F59E0B',
-    warningSoft: '#FFFBEB',
+    warningSoft: '#FEF1D8',
     offline: '#F59E0B',
 
-    // Menu radial
+    // Menu radial (re-style en R4)
     menuCenter: 'rgba(255,255,255,0.98)',
     menuPeriphery: 'rgba(255,255,255,0.85)',
     menuOverlay: 'rgba(15,23,42,0.4)',
 
-    // Glassmorphism
+    // Glassmorphism (deprecie - retire au reskin)
     glass: 'rgba(255,255,255,0.7)',
     glassBorder: 'rgba(255,255,255,0.5)',
   },
 
-  // Gradients pour boutons et accents
+  // Polices (familles exactes chargees dans app/_layout.tsx)
+  fonts: {
+    display: 'PlayfairDisplay_500Medium',       // titres + grands chiffres (romain)
+    displayRegular: 'PlayfairDisplay_400Regular',
+    displaySemibold: 'PlayfairDisplay_600SemiBold', // ClassChip
+    body: 'Inter_400Regular',
+    bodyMedium: 'Inter_500Medium',
+    bodySemibold: 'Inter_600SemiBold',
+    bodyBold: 'Inter_700Bold',
+  },
+
+  // Degrades : DEPRECIES (aplats vises). Conserves le temps de retirer les usages (R2+).
   gradients: {
     primary: ['#6366F1', '#8B5CF6'],
     success: ['#10B981', '#34D399'],
@@ -86,37 +106,39 @@ export const theme = {
 
   radius: {
     sm: 8,
-    md: 12,
-    lg: 16,
-    xl: 24,
-    xxl: 32,
+    md: 11,   // controle (bouton/input)
+    lg: 16,   // carte
+    xl: 16,   // aplati (etait 24)
+    xxl: 16,  // aplati (etait 32)
     full: 9999,
   },
 
   typography: {
-    // Titres - Plus bold et modernes
-    h1: { fontSize: 28, fontWeight: '700' as const, lineHeight: 36 },
-    h2: { fontSize: 22, fontWeight: '700' as const, lineHeight: 30 },
-    h3: { fontSize: 18, fontWeight: '600' as const, lineHeight: 26 },
+    // Titres - serif Playfair romain
+    h1: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 28, fontWeight: '500' as const, lineHeight: 36, letterSpacing: -0.5 },
+    h2: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 22, fontWeight: '500' as const, lineHeight: 30 },
+    h3: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 18, fontWeight: '500' as const, lineHeight: 26 },
 
-    // Corps
-    body: { fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
-    bodyMedium: { fontSize: 16, fontWeight: '500' as const, lineHeight: 24 },
-    bodySmall: { fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
+    // Corps - Inter
+    body: { fontFamily: 'Inter_400Regular', fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
+    bodyMedium: { fontFamily: 'Inter_500Medium', fontSize: 16, fontWeight: '500' as const, lineHeight: 24 },
+    bodySmall: { fontFamily: 'Inter_400Regular', fontSize: 14, fontWeight: '400' as const, lineHeight: 20 },
 
-    // UI
-    label: { fontSize: 14, fontWeight: '600' as const, lineHeight: 20 },
-    labelSmall: { fontSize: 12, fontWeight: '600' as const, lineHeight: 16 },
-    caption: { fontSize: 12, fontWeight: '400' as const, lineHeight: 16 },
+    // UI - Inter
+    label: { fontFamily: 'Inter_600SemiBold', fontSize: 14, fontWeight: '600' as const, lineHeight: 20 },
+    labelSmall: { fontFamily: 'Inter_600SemiBold', fontSize: 12, fontWeight: '600' as const, lineHeight: 16 },
+    caption: { fontFamily: 'Inter_400Regular', fontSize: 12, fontWeight: '400' as const, lineHeight: 16 },
 
-    // Donnees
-    counter: { fontSize: 12, fontWeight: '700' as const, lineHeight: 16 },
-    studentName: { fontSize: 15, fontWeight: '600' as const, lineHeight: 20 },
+    // Donnees - Inter / tabular
+    counter: { fontFamily: 'Inter_700Bold', fontSize: 12, fontWeight: '700' as const, lineHeight: 16 },
+    studentName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, fontWeight: '600' as const, lineHeight: 20 },
 
-    // Large numbers
-    bigNumber: { fontSize: 32, fontWeight: '700' as const, lineHeight: 40 },
+    // Grand chiffre (KPI, note) - Playfair romain, tabular-nums (a appliquer au usage)
+    bigNumber: { fontFamily: 'PlayfairDisplay_500Medium', fontSize: 40, fontWeight: '500' as const, lineHeight: 48 },
   },
 
+  // Une seule ombre douce, neutre (pas d'empilement, pas d'ombres colorees).
+  // Les cles sm/md/lg/xl + primary/success rendent toutes la meme ombre douce.
   shadows: {
     none: {
       shadowColor: 'transparent',
@@ -126,54 +148,54 @@ export const theme = {
       elevation: 0,
     },
     xs: {
-      shadowColor: '#64748B',
+      shadowColor: '#141928',
       shadowOffset: { width: 0, height: 1 },
       shadowOpacity: 0.04,
       shadowRadius: 2,
       elevation: 1,
     },
     sm: {
-      shadowColor: '#64748B',
-      shadowOffset: { width: 0, height: 2 },
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
       shadowOpacity: 0.06,
-      shadowRadius: 4,
+      shadowRadius: 3,
       elevation: 2,
     },
     md: {
-      shadowColor: '#64748B',
-      shadowOffset: { width: 0, height: 4 },
-      shadowOpacity: 0.08,
-      shadowRadius: 8,
-      elevation: 4,
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 2,
     },
     lg: {
-      shadowColor: '#64748B',
-      shadowOffset: { width: 0, height: 8 },
-      shadowOpacity: 0.12,
-      shadowRadius: 16,
-      elevation: 8,
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 2,
     },
     xl: {
-      shadowColor: '#64748B',
-      shadowOffset: { width: 0, height: 12 },
-      shadowOpacity: 0.16,
-      shadowRadius: 24,
-      elevation: 12,
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 2,
     },
-    // Ombres colorées pour les boutons
+    // Ombres colorees DEPRECIEES -> rendues neutres (usages retires au reskin)
     primary: {
-      shadowColor: '#6366F1',
-      shadowOffset: { width: 0, height: 8 },
-      shadowOpacity: 0.3,
-      shadowRadius: 16,
-      elevation: 8,
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 2,
     },
     success: {
-      shadowColor: '#10B981',
-      shadowOffset: { width: 0, height: 8 },
-      shadowOpacity: 0.3,
-      shadowRadius: 16,
-      elevation: 8,
+      shadowColor: '#141928',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 3,
+      elevation: 2,
     },
   },
 

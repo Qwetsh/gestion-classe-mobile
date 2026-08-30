@@ -23,6 +23,7 @@ interface GroupSessionRow {
   completed_at: string | null;
   synced_at: string | null;
   linked_session_id: string | null;
+  template_id: string | null;
 }
 
 interface GradingCriteriaRow {
@@ -72,6 +73,7 @@ function rowToGroupSession(row: GroupSessionRow): GroupSession {
     completedAt: row.completed_at,
     syncedAt: row.synced_at,
     linkedSessionId: row.linked_session_id,
+    templateId: row.template_id,
   };
 }
 
@@ -126,15 +128,16 @@ export async function createGroupSession(
   userId: string,
   classId: string,
   name: string,
-  linkedSessionId?: string
+  linkedSessionId?: string,
+  templateId?: string | null,
 ): Promise<GroupSession> {
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
   await executeSql(
-    `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, linked_session_id)
-     VALUES (?, ?, ?, ?, 'draft', ?, ?)`,
-    [id, userId, classId, name.trim(), now, linkedSessionId ?? null]
+    `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, linked_session_id, template_id)
+     VALUES (?, ?, ?, ?, 'draft', ?, ?, ?)`,
+    [id, userId, classId, name.trim(), now, linkedSessionId ?? null, templateId ?? null]
   );
 
   if (__DEV__) {
@@ -151,6 +154,7 @@ export async function createGroupSession(
     completedAt: null,
     syncedAt: null,
     linkedSessionId: linkedSessionId ?? null,
+    templateId: templateId ?? null,
   };
 }
 

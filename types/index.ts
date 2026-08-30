@@ -59,6 +59,41 @@ export interface Room {
 }
 
 // ============================================
+// Written Assessments (Copies d'éval scannées → correction PC)
+// ============================================
+// Types alignés sur les lignes Supabase (snake_case), car cloud-direct
+// (pas de mirroir SQLite local pour ces tables — cf. PLAN_scan_copies.md).
+
+export interface WrittenAssessment {
+  id: string;
+  user_id: string;
+  class_id: string;
+  name: string;
+  subject: string | null;
+  date: string | null;
+  bareme_total: number;
+  created_at: string;
+  updated_at: string | null;
+  is_deleted: boolean;
+}
+
+export interface AssessmentCopyPage {
+  id: string;
+  assessment_id: string;
+  student_id: string;
+  page_order: number;
+  storage_path: string;
+  created_at: string;
+}
+
+// Élève de la classe + nombre de pages scannées (uploadées) et en attente (offline) pour une éval
+export interface StudentScanStatus {
+  student: Student;
+  pageCount: number;    // pages confirmées côté serveur
+  pendingCount: number; // pages capturées hors-ligne, en file d'upload
+}
+
+// ============================================
 // Group Sessions (Séances de groupe notées)
 // ============================================
 
@@ -74,6 +109,7 @@ export interface GroupSession {
   completedAt: string | null;
   syncedAt: string | null;
   linkedSessionId: string | null;
+  templateId: string | null;
 }
 
 export interface GradingCriteria {

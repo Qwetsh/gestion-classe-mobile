@@ -385,7 +385,37 @@ export async function awardStamp(
   const currentCount = usedSlots.length;
 
   if (currentCount >= 10) {
-    throw new Error('Carte déjà complète');
+    // Card is full locally — check if bonus was already selected on web (RPC completed it)
+    // If so, pull the new card from Supabase and retry
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: serverActive } = await supabase
+          .from('stamp_cards')
+          .select('id, card_number, status, completed_at, created_at')
+          .eq('student_id', studentId)
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .single();
+
+        if (serverActive && serverActive.id !== card.id) {
+          // A newer active card exists on server — pull it locally
+          const now2 = new Date().toISOString();
+          await executeSql(
+            `UPDATE stamp_cards SET status = 'completed', completed_at = COALESCE(completed_at, ?), synced_at = ? WHERE id = ?`,
+            [now2, now2, card.id]
+          );
+          await executeSql(
+            `INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at) VALUES (?, ?, ?, ?, 'active', NULL, ?, ?)`,
+            [serverActive.id, studentId, userId, serverActive.card_number, serverActive.created_at, now2]
+          );
+          // Retry with the new card
+          return awardStamp(userId, studentId, categoryId);
+        }
+      } catch {
+        // Network error — fall through to original error
+      }
+    }
+    throw new Error('Carte déjà complète — l\'élève doit d\'abord choisir son bonus');
   }
 
   const used = new Set(usedSlots.map(s => s.slot_number));
@@ -394,22 +424,14 @@ export async function awardStamp(
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Use transaction to atomically insert stamp (+ mark card complete if 10th)
+  // Insert stamp — card stays 'active' even at 10/10.
+  // Completion is handled by the select_student_bonus RPC when the student picks a bonus.
   const isComplete = currentCount + 1 >= 10;
-  const statements: { sql: string; params: (string | number | null)[] }[] = [
-    {
-      sql: `INSERT INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      params: [id, card.id, studentId, userId, categoryId, slotNumber, now],
-    },
-  ];
-  if (isComplete) {
-    statements.push({
-      sql: `UPDATE stamp_cards SET status = 'completed', completed_at = ?, synced_at = NULL WHERE id = ?`,
-      params: [now, card.id],
-    });
-  }
-  await executeTransaction(statements);
+  await executeSql(
+    `INSERT INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, card.id, studentId, userId, categoryId, slotNumber, now]
+  );
 
   const stamp: Stamp = {
     id, card_id: card.id, student_id: studentId, user_id: userId,
@@ -431,11 +453,11 @@ export async function awardStamp(
         // Mark as synced locally
         await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
       }
-      // Also push card if newly created or completed
+      // Also push card if newly created (never push 'completed' — RPC handles that)
       const { error: cardErr } = await supabase.from('stamp_cards').upsert({
         id: card.id, student_id: studentId, user_id: userId,
-        card_number: card.card_number, status: isComplete ? 'completed' : 'active',
-        completed_at: isComplete ? now : card.completed_at, created_at: card.created_at,
+        card_number: card.card_number, status: 'active',
+        completed_at: null, created_at: card.created_at,
       });
       if (cardErr) {
         console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);

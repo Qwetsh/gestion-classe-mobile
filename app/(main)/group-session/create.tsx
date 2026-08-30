@@ -469,8 +469,8 @@ export default function CreateGroupSessionScreen() {
       // 0. Clear any previous session state
       clearActiveSession();
 
-      // 1. Create the session
-      await createSession(user.id, selectedClassId, sessionName.trim());
+      // 1. Create the session (with template_id for usage tracking)
+      await createSession(user.id, selectedClassId, sessionName.trim(), undefined, selectedTemplateId);
 
       // 2. Add all criteria
       for (let i = 0; i < tempCriteria.length; i++) {

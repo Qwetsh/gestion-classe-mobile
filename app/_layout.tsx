@@ -3,6 +3,18 @@ import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useFonts } from 'expo-font';
+import {
+  PlayfairDisplay_400Regular,
+  PlayfairDisplay_500Medium,
+  PlayfairDisplay_600SemiBold,
+} from '@expo-google-fonts/playfair-display';
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from '@expo-google-fonts/inter';
 import { useDatabase, useAutoSync } from '../hooks';
 import { useNetworkStore } from '../stores';
 import { ErrorBoundary, OfflineIndicator } from '../components';
@@ -10,6 +22,15 @@ import { theme } from '../constants/theme';
 
 export default function RootLayout() {
   const { isReady: isDatabaseReady, error: databaseError } = useDatabase();
+  const [fontsLoaded] = useFonts({
+    PlayfairDisplay_400Regular,
+    PlayfairDisplay_500Medium,
+    PlayfairDisplay_600SemiBold,
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
   const initializeNetwork = useNetworkStore((state) => state.initialize);
 
   // Initialize network monitoring
@@ -21,8 +42,8 @@ export default function RootLayout() {
   // Enable auto-sync (when network restored or session ends)
   useAutoSync();
 
-  // Show loading screen while database initializes
-  if (!isDatabaseReady) {
+  // Show loading screen while database initializes OR fonts load
+  if (!isDatabaseReady || !fontsLoaded) {
     return (
       <SafeAreaProvider>
         <StatusBar style="dark" />

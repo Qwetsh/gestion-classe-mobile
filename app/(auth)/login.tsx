@@ -13,26 +13,10 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, Link } from 'expo-router';
-import Svg, { Path } from 'react-native-svg';
 import { useAuthStore } from '../../stores';
 import { theme } from '../../constants/theme';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const HEADER_HEIGHT = 280;
-const CURVE_HEIGHT = 40;
-
-function CurvedSeparator() {
-  return (
-    <View style={styles.curveContainer}>
-      <Svg width={SCREEN_WIDTH} height={CURVE_HEIGHT} viewBox={`0 0 ${SCREEN_WIDTH} ${CURVE_HEIGHT}`}>
-        <Path
-          d={`M0,0 L0,0 Q${SCREEN_WIDTH / 2},${CURVE_HEIGHT * 2} ${SCREEN_WIDTH},0 L${SCREEN_WIDTH},${CURVE_HEIGHT} L0,${CURVE_HEIGHT} Z`}
-          fill={theme.colors.background}
-        />
-      </Svg>
-    </View>
-  );
-}
+const HEADER_HEIGHT = 220;
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -79,8 +63,6 @@ export default function LoginScreen() {
         end={{ x: 1, y: 1 }}
         style={styles.headerGradient}
       />
-      <CurvedSeparator />
-
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
@@ -92,11 +74,6 @@ export default function LoginScreen() {
         >
           {/* Header on gradient */}
           <View style={styles.header}>
-            <View style={styles.logoContainer}>
-              <View style={styles.logoCircle}>
-                <Text style={styles.logoText}>GC</Text>
-              </View>
-            </View>
             <Text style={styles.title}>Bienvenue</Text>
             <Text style={styles.subtitle}>
               Connectez-vous pour accéder à vos classes
@@ -202,13 +179,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: HEADER_HEIGHT,
-  },
-  curveContainer: {
-    position: 'absolute',
-    top: HEADER_HEIGHT - CURVE_HEIGHT,
-    left: 0,
-    right: 0,
-    zIndex: 1,
+    borderBottomLeftRadius: 80,
+    borderBottomRightRadius: 80,
   },
   keyboardView: {
     flex: 1,
@@ -256,7 +228,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     alignSelf: 'center',
-    marginTop: theme.spacing.lg,
+    marginTop: HEADER_HEIGHT - 140,
   },
   inputGroup: {
     marginBottom: theme.spacing.lg,

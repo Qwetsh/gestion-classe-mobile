@@ -72,7 +72,7 @@ interface GroupSessionState {
   loadSessionsByClass: (classId: string) => Promise<void>;
 
   // Actions - Session CRUD
-  createSession: (userId: string, classId: string, name: string, linkedSessionId?: string) => Promise<GroupSession | null>;
+  createSession: (userId: string, classId: string, name: string, linkedSessionId?: string, templateId?: string | null) => Promise<GroupSession | null>;
   loadSession: (sessionId: string) => Promise<void>;
   updateSessionName: (name: string) => Promise<void>;
   startSession: () => Promise<void>;
@@ -201,10 +201,10 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
   // Session CRUD Actions
   // ============================================
 
-  createSession: async (userId: string, classId: string, name: string, linkedSessionId?: string) => {
+  createSession: async (userId: string, classId: string, name: string, linkedSessionId?: string, templateId?: string | null) => {
     set({ isLoading: true, error: null });
     try {
-      const session = await createGroupSession(userId, classId, name, linkedSessionId);
+      const session = await createGroupSession(userId, classId, name, linkedSessionId, templateId);
 
       // Set as active session
       set({
