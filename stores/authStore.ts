@@ -34,13 +34,13 @@ async function trackDevice(user: AuthUser) {
       p_user_id: user.id,
       p_user_email: user.email,
       p_device_info: deviceInfo,
-    }).catch(() => {});
+    }).then(undefined, () => {});
     supabase.rpc('log_device_connection', {
       p_user_id: user.id,
       p_user_email: user.email,
       p_device_info: deviceInfo,
       p_platform: 'mobile',
-    }).catch(() => {});
+    }).then(undefined, () => {});
   } catch {
     // Never block auth flow
   }

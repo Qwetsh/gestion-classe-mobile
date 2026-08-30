@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 13;
 
 /**
  * SQL statements to create all tables
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS students (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
   pseudo TEXT NOT NULL,
-  class_id TEXT NOT NULL,
+  class_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT,
   synced_at TEXT,
@@ -122,8 +122,10 @@ CREATE TABLE IF NOT EXISTS group_sessions (
   completed_at TEXT,
   synced_at TEXT,
   linked_session_id TEXT,
+  template_id TEXT,
   FOREIGN KEY (class_id) REFERENCES classes(id),
-  FOREIGN KEY (linked_session_id) REFERENCES sessions(id)
+  FOREIGN KEY (linked_session_id) REFERENCES sessions(id),
+  FOREIGN KEY (template_id) REFERENCES tp_templates(id)
 );
 
 -- Grading criteria for a group session

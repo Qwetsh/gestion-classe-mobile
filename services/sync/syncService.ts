@@ -681,7 +681,8 @@ async function syncGroupSessions(): Promise<number> {
     created_at: string;
     completed_at: string | null;
     linked_session_id: string | null;
-  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id FROM group_sessions WHERE synced_at IS NULL AND status = 'completed'`);
+    template_id: string | null;
+  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id FROM group_sessions WHERE synced_at IS NULL AND status = 'completed'`);
 
   if (unsynced.length === 0) return 0;
 
@@ -694,6 +695,7 @@ async function syncGroupSessions(): Promise<number> {
     created_at: gs.created_at,
     completed_at: gs.completed_at,
     linked_session_id: gs.linked_session_id,
+    template_id: gs.template_id,
   }));
 
   const { error } = await supabase
@@ -1191,7 +1193,7 @@ async function syncStamps(userId: string): Promise<number> {
 
   const occupiedSlots = new Set<string>();
   for (const ss of (serverStamps || [])) {
-    occupiedSlots.set(`${ss.card_id}|${ss.slot_number}`);
+    occupiedSlots.add(`${ss.card_id}|${ss.slot_number}`);
   }
 
   const toSync = [];
@@ -1400,13 +1402,14 @@ export async function pullFromServer(userId: string): Promise<{
               console.log('[syncService] Pulled student:', student.pseudo);
             }
           } else {
-            // Student exists but might have is_deleted = 1, reset it
+            // Student exists: restore it and sync server-side changes
+            // (class change on web, year-transition detach, pseudo edit)
             await executeSql(
-              `UPDATE students SET is_deleted = 0, synced_at = ? WHERE id = ?`,
-              [now, student.id]
+              `UPDATE students SET is_deleted = 0, synced_at = ?, class_id = ?, pseudo = ? WHERE id = ?`,
+              [now, student.class_id, student.pseudo, student.id]
             );
             if (__DEV__) {
-              console.log('[syncService] Restored student:', student.pseudo);
+              console.log('[syncService] Updated student from server:', student.pseudo);
             }
           }
         } catch (err) {
@@ -1696,7 +1699,7 @@ export async function pullFromServer(userId: string): Promise<{
     // 9. Pull group sessions from Supabase
     const { data: serverGroupSessions, error: groupSessionsError } = await supabase
       .from('group_sessions')
-      .select('id, user_id, class_id, name, status, created_at, completed_at, linked_session_id')
+      .select('id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id')
       .eq('user_id', userId);
 
     if (groupSessionsError) {
@@ -1711,8 +1714,8 @@ export async function pullFromServer(userId: string): Promise<{
 
         if (existing.length === 0) {
           await executeSql(
-            `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [gs.id, gs.user_id, gs.class_id, gs.name, gs.status, gs.created_at, gs.completed_at, gs.linked_session_id, now]
+            `INSERT INTO group_sessions (id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [gs.id, gs.user_id, gs.class_id, gs.name, gs.status, gs.created_at, gs.completed_at, gs.linked_session_id, gs.template_id, now]
           );
           if (__DEV__) {
             console.log('[syncService] Pulled group session:', gs.name);

@@ -558,6 +558,69 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+  // Migration 11 -> 12: Add template_id to group_sessions
+  if (fromVersion < 12) {
+    console.log('[Database] Applying migration: Add template_id to group_sessions (v12)');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      const hasColumn = await columnExists('group_sessions', 'template_id');
+      if (!hasColumn) {
+        await db.runAsync('ALTER TABLE group_sessions ADD COLUMN template_id TEXT REFERENCES tp_templates(id)');
+      }
+
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_group_sessions_template_id ON group_sessions(template_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [12]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v12 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v12 failed, rolled back:', error);
+      throw error;
+    }
+  }
+
+  // Migration 12 -> 13: Make students.class_id nullable
+  // Server-side year transition detaches kept students (class_id = NULL),
+  // the NOT NULL constraint prevented them from syncing back to mobile
+  if (fromVersion < 13) {
+    console.log('[Database] Applying migration: Nullable students.class_id (v13)');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      // SQLite doesn't support altering constraints, recreate the table
+      await db.runAsync(`
+        CREATE TABLE students_new (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          pseudo TEXT NOT NULL,
+          class_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT,
+          synced_at TEXT,
+          is_deleted INTEGER DEFAULT 0,
+          FOREIGN KEY (class_id) REFERENCES classes(id)
+        )
+      `);
+      await db.runAsync(`
+        INSERT INTO students_new (id, user_id, pseudo, class_id, created_at, updated_at, synced_at, is_deleted)
+        SELECT id, user_id, pseudo, class_id, created_at, updated_at, synced_at, is_deleted FROM students
+      `);
+      await db.runAsync('DROP TABLE students');
+      await db.runAsync('ALTER TABLE students_new RENAME TO students');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id)');
+
+      await db.runAsync('UPDATE schema_version SET version = ?', [13]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v13 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v13 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
