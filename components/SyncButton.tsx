@@ -8,11 +8,17 @@ import {
   Animated,
   Modal,
 } from 'react-native';
+import { RefreshCw } from 'lucide-react-native';
 import { theme } from '../constants/theme';
 import { useAuthStore, useSyncStore, useClassStore, useRoomStore, useIsOffline } from '../stores';
 import { SyncResult } from '../services/sync';
 
-export function SyncButton() {
+interface SyncButtonProps {
+  /** 'icon' = cercle 40 borde (header accueil), 'button' = bouton pleine largeur */
+  variant?: 'icon' | 'button';
+}
+
+export function SyncButton({ variant = 'button' }: SyncButtonProps) {
   const { user } = useAuthStore();
   const {
     isSyncing,
@@ -132,6 +138,58 @@ export function SyncButton() {
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
+
+  if (variant === 'icon') {
+    return (
+      <>
+        <Pressable
+          style={({ pressed }) => [
+            styles.iconButton,
+            isOffline && styles.buttonDisabled,
+            pressed && !isOffline && styles.iconButtonPressed,
+          ]}
+          onPress={handleSync}
+          disabled={isOffline || isSyncing}
+          hitSlop={4}
+          accessibilityLabel="Synchroniser"
+        >
+          <Animated.View style={isSyncing ? { transform: [{ rotate: spin }] } : undefined}>
+            <RefreshCw
+              size={19}
+              color={isSyncing ? theme.colors.primary : theme.colors.textSecondary}
+              strokeWidth={1.8}
+            />
+          </Animated.View>
+          {unsyncedCount > 0 && !isSyncing && <View style={styles.iconBadge} />}
+        </Pressable>
+
+        <Modal
+          visible={showResultModal}
+          transparent
+          animationType="fade"
+          onRequestClose={handleCloseModal}
+        >
+          <Pressable style={styles.modalOverlay} onPress={handleCloseModal}>
+            <View style={styles.modalContent}>
+              <View style={[styles.modalIconContainer, styles.modalIconContainerError]}>
+                <Text style={styles.modalIconTextError}>✗</Text>
+              </View>
+              <Text style={styles.modalTitle}>Erreur de synchronisation</Text>
+              <Text style={styles.modalTextError}>
+                {displayedResult?.error || displayedResult?.result?.errors.join('\n') || 'Une erreur est survenue'}
+              </Text>
+              <Pressable
+                style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}
+                onPress={handleCloseModal}
+              >
+                <Text style={styles.closeButtonText}>Fermer</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Modal>
+      </>
+    );
+  }
 
   return (
     <>
@@ -278,6 +336,33 @@ export function SyncButton() {
 }
 
 const styles = StyleSheet.create({
+  // Variante icone (header accueil) : aligne sur FeedbackButton
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  iconButtonPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+    transform: [{ scale: 0.98 }],
+  },
+  iconBadge: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.error,
+    borderWidth: 1.5,
+    borderColor: theme.colors.surface,
+  },
+
   button: {
     borderRadius: theme.radius.xl,
     overflow: 'hidden',

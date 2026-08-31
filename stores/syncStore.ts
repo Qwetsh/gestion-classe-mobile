@@ -27,13 +27,15 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: strin
 
 interface SyncState {
   isSyncing: boolean;
+  /** true quand la synchro tourne en tache de fond (auto au lancement) : l'UI ne doit pas se bloquer */
+  isBackgroundSync: boolean;
   lastSyncResult: SyncResult | null;
   lastSyncTime: Date | null;
   unsyncedCount: number;
   error: string | null;
 
   // Actions
-  sync: (userId: string) => Promise<SyncResult>;
+  sync: (userId: string, options?: { background?: boolean }) => Promise<SyncResult>;
   refreshUnsyncedCount: () => Promise<void>;
   clearError: () => void;
   clearLastResult: () => void;
@@ -41,12 +43,13 @@ interface SyncState {
 
 export const useSyncStore = create<SyncState>((set, get) => ({
   isSyncing: false,
+  isBackgroundSync: false,
   lastSyncResult: null,
   lastSyncTime: null,
   unsyncedCount: 0,
   error: null,
 
-  sync: async (userId: string) => {
+  sync: async (userId: string, options?: { background?: boolean }) => {
     if (get().isSyncing) {
       return {
         success: false,
@@ -72,7 +75,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       };
     }
 
-    set({ isSyncing: true, error: null });
+    set({ isSyncing: true, isBackgroundSync: options?.background === true, error: null });
 
     try {
       // First, pull data from server (server -> mobile) with timeout
@@ -97,6 +100,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
 
       set({
         isSyncing: false,
+        isBackgroundSync: false,
         lastSyncResult: result,
         lastSyncTime: new Date(),
         unsyncedCount: 0,
@@ -109,6 +113,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       console.error('[syncStore] Sync error:', errorMessage);
       set({
         isSyncing: false,
+        isBackgroundSync: false,
         error: errorMessage,
       });
 

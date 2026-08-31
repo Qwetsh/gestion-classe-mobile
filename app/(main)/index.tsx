@@ -20,7 +20,7 @@ import {
   useSyncStore,
 } from '../../stores';
 import { theme } from '../../constants/theme';
-import { FeedbackButton } from '../../components';
+import { FeedbackButton, SyncButton } from '../../components';
 
 function formatRelative(dateStr: string): string {
   const date = new Date(dateStr);
@@ -58,7 +58,10 @@ export default function HomeScreen() {
     loadActiveSession,
     cancelCurrentSession,
   } = useSessionStore();
-  const { sync, isSyncing } = useSyncStore();
+  const { sync, isSyncing, isBackgroundSync } = useSyncStore();
+
+  // La synchro de fond ne doit jamais bloquer le demarrage d'une seance
+  const isBlockingSync = isSyncing && !isBackgroundSync;
 
   const hasAutoSynced = useRef(false);
   const [nowTick, setNowTick] = useState(Date.now());
@@ -86,23 +89,21 @@ export default function HomeScreen() {
     return () => clearInterval(interval);
   }, [isSessionActive]);
 
+  // Synchro auto une fois par lancement, en tache de fond.
+  // Se declenche meme si des classes existent deja en local : sans cela, toute
+  // creation cote web (classes, eleves, plans) reste invisible sur le telephone.
   useEffect(() => {
     const autoSync = async () => {
-      if (
-        user?.id &&
-        !classesLoading &&
-        classes.length === 0 &&
-        !isSyncing &&
-        !hasAutoSynced.current
-      ) {
+      if (user?.id && !classesLoading && !isSyncing && !hasAutoSynced.current) {
         hasAutoSynced.current = true;
-        if (__DEV__) console.log('[HomeScreen] No classes found locally, auto-syncing...');
-        await sync(user.id);
+        if (__DEV__) console.log('[HomeScreen] Auto-syncing in background...');
+        await sync(user.id, { background: true });
         await loadClasses(user.id);
+        await loadRooms(user.id);
       }
     };
     autoSync();
-  }, [user?.id, classesLoading, classes.length, isSyncing, sync, loadClasses]);
+  }, [user?.id, classesLoading, isSyncing, sync, loadClasses, loadRooms]);
 
   const handleLogout = async () => {
     Alert.alert('Déconnexion', 'Voulez-vous vous déconnecter ?', [
@@ -172,6 +173,7 @@ export default function HomeScreen() {
             <Text style={styles.userName}>{displayName}</Text>
           </View>
           <View style={styles.headerActions}>
+            <SyncButton variant="icon" />
             <FeedbackButton variant="icon" />
             <Pressable
               style={({ pressed }) => [styles.avatar, pressed && styles.avatarPressed]}
@@ -205,10 +207,10 @@ export default function HomeScreen() {
                 ? router.push(`/(main)/session/${activeSession!.id}`)
                 : router.push('/(main)/session/start')
             }
-            disabled={isSyncing}
+            disabled={isBlockingSync}
           >
             <View style={styles.heroCircle}>
-              {isSyncing ? (
+              {isBlockingSync ? (
                 <ActivityIndicator color="#fff" size="large" />
               ) : (
                 <Play
@@ -226,7 +228,7 @@ export default function HomeScreen() {
             {hasActive ? 'Reprendre la séance' : 'Démarrer une séance'}
           </Text>
           <Text style={styles.heroSubtitle}>
-            {isSyncing
+            {isBlockingSync
               ? 'Synchronisation en cours…'
               : hasActive
                 ? `${classNameById(activeSession!.class_id)} — ${roomNameById(activeSession!.room_id)} · démarrée à ${startedAtLabel}${activeSession!.topic ? ` / ${activeSession!.topic}` : ''}`

@@ -548,6 +548,9 @@ async function syncSessions(): Promise<number> {
   }
 
   // Check for unsynced classes that are referenced by sessions
+  // Classes supprimees sur le serveur : leurs seances locales sont abandonnees
+  const deletedClassIds = new Set<string>();
+
   for (const classId of classIds) {
     if (__DEV__) {
       console.log('[syncService] Checking class dependency:', classId);
@@ -563,9 +566,35 @@ async function syncSessions(): Promise<number> {
       throw new Error(`Class ${classId} not found locally but referenced by session`);
     }
 
-    // Always force sync the class to Supabase
+    // Une classe deja synchronisee mais absente du serveur a ete supprimee volontairement
+    // (cote web ou lors d'un passage d'annee). La recreer ici la ferait "ressusciter",
+    // et ses eleves, eux, resteraient absents -> violation de FK sur events au push suivant.
+    if (cls.synced_at !== null) {
+      const { data: remoteClass, error: lookupError } = await supabase
+        .from('classes')
+        .select('id')
+        .eq('id', classId)
+        .maybeSingle();
+
+      if (lookupError) {
+        console.error('[syncService] Failed to check class on server:', lookupError);
+        throw new Error(`Class lookup failed: ${lookupError.message}`);
+      }
+
+      if (!remoteClass) {
+        console.warn('[syncService] Class deleted on server, dropping local sessions:', cls.name);
+        deletedClassIds.add(classId);
+        await purgeLocalClassData(classId);
+        continue;
+      }
+
+      // Deja presente sur le serveur : rien a faire
+      continue;
+    }
+
+    // Classe creee localement et jamais poussee : on la pousse
     if (__DEV__) {
-      console.log('[syncService] Force syncing class to ensure it exists on server:', cls.name);
+      console.log('[syncService] Syncing locally-created class:', cls.name);
     }
     const { error: classError } = await supabase
       .from('classes')
@@ -588,8 +617,12 @@ async function syncSessions(): Promise<number> {
     }
   }
 
+  // Les seances des classes supprimees viennent d'etre purgees en local : ne pas les pousser
+  const sessionsToPush = unsynced.filter((s) => !deletedClassIds.has(s.class_id));
+  if (sessionsToPush.length === 0) return 0;
+
   // Now sync sessions (including topic and notes fields)
-  const toSync = unsynced.map((s) => ({
+  const toSync = sessionsToPush.map((s) => ({
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
@@ -611,14 +644,14 @@ async function syncSessions(): Promise<number> {
 
   // Mark as synced (batch update)
   const now = new Date().toISOString();
-  const ids = unsynced.map(s => s.id);
+  const ids = sessionsToPush.map(s => s.id);
   const placeholders = ids.map(() => '?').join(',');
   await executeSql(
     `UPDATE sessions SET synced_at = ? WHERE id IN (${placeholders})`,
     [now, ...ids]
   );
 
-  return unsynced.length;
+  return sessionsToPush.length;
 }
 
 /**
@@ -627,9 +660,25 @@ async function syncSessions(): Promise<number> {
 async function syncEvents(): Promise<number> {
   if (!supabase) return 0;
 
+  // Un evenement dont l'eleve ou la seance n'existe plus en local ne peut pas etre
+  // pousse (violation de FK cote serveur) et ferait echouer TOUTE la synchro.
+  // On l'ignore explicitement plutot que de bloquer le reste.
   const unsynced = await queryAll<Event>(
-    `SELECT * FROM events WHERE synced_at IS NULL`
+    `SELECT e.* FROM events e
+       JOIN students st ON st.id = e.student_id
+       JOIN sessions se ON se.id = e.session_id
+     WHERE e.synced_at IS NULL`
   );
+
+  const orphans = await queryFirst<{ count: number }>(
+    `SELECT COUNT(*) as count FROM events e
+     WHERE e.synced_at IS NULL
+       AND (e.student_id NOT IN (SELECT id FROM students)
+         OR e.session_id NOT IN (SELECT id FROM sessions))`
+  );
+  if (orphans && orphans.count > 0) {
+    console.warn(`[syncService] ${orphans.count} evenement(s) orphelin(s) ignore(s) : eleve ou seance supprime`);
+  }
 
   if (unsynced.length === 0) return 0;
 
@@ -1266,6 +1315,72 @@ async function syncBonusSelections(userId: string): Promise<number> {
 }
 
 /**
+ * Supprime EN LOCAL UNIQUEMENT toutes les donnees rattachees a une classe.
+ *
+ * Utilise par le pull quand une classe a disparu du serveur. Les cles etrangeres
+ * SQLite sont actives : sans supprimer d'abord les events / sessions / group_sessions,
+ * le `DELETE FROM classes` leve "FOREIGN KEY constraint failed" et fait echouer
+ * tout le pull, donc aucune nouvelle classe ne descend.
+ *
+ * Volontairement distinct de deleteClassCompletely() qui, lui, supprime aussi
+ * cote Supabase : ici la classe est deja absente du serveur, on ne doit rien y toucher.
+ */
+async function purgeLocalClassData(classId: string): Promise<void> {
+  // events : par session de la classe, et par eleve de la classe (events dans d'autres seances)
+  await executeSql(
+    `DELETE FROM events WHERE session_id IN (SELECT id FROM sessions WHERE class_id = ?)
+       OR student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId, classId]
+  );
+  // groupes : les enfants (criteria, groups, grades) partent en CASCADE via group_sessions,
+  // sauf session_group_members qui reference students sans cascade
+  await executeSql(
+    `DELETE FROM session_group_members WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId]
+  );
+  await executeSql(
+    `DELETE FROM group_sessions WHERE class_id = ?
+       OR linked_session_id IN (SELECT id FROM sessions WHERE class_id = ?)`,
+    [classId, classId]
+  );
+  await executeSql(`DELETE FROM sessions WHERE class_id = ?`, [classId]);
+  // tampons (RGPD)
+  await executeSql(
+    `DELETE FROM bonus_selections WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId]
+  );
+  await executeSql(
+    `DELETE FROM stamps WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId]
+  );
+  await executeSql(
+    `DELETE FROM stamp_cards WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId]
+  );
+  await executeSql(
+    `DELETE FROM local_student_mapping WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+    [classId]
+  );
+  await executeSql(`DELETE FROM class_room_plans WHERE class_id = ?`, [classId]);
+  await executeSql(`DELETE FROM students WHERE class_id = ?`, [classId]);
+  await executeSql(`DELETE FROM classes WHERE id = ?`, [classId]);
+}
+
+/**
+ * Supprime EN LOCAL UNIQUEMENT toutes les donnees rattachees a un eleve.
+ * Meme raison que ci-dessus : sans cela, le DELETE sur students viole les cles etrangeres.
+ */
+async function purgeLocalStudentData(studentId: string): Promise<void> {
+  await executeSql(`DELETE FROM events WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM session_group_members WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM bonus_selections WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM stamps WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM stamp_cards WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM local_student_mapping WHERE student_id = ?`, [studentId]);
+  await executeSql(`DELETE FROM students WHERE id = ?`, [studentId]);
+}
+
+/**
  * Pull data from Supabase to local SQLite
  * This is the reverse sync: server -> mobile
  * Returns counts of synced items and any errors encountered
@@ -1324,10 +1439,8 @@ export async function pullFromServer(userId: string): Promise<{
         // 2. AND was previously synced (synced_at is set)
         // This protects locally-created data that hasn't been pushed yet
         if (!serverClassIds.has(local.id) && local.synced_at !== null) {
-          // Class was deleted on server, remove locally
-          await executeSql(`DELETE FROM students WHERE class_id = ?`, [local.id]);
-          await executeSql(`DELETE FROM class_room_plans WHERE class_id = ?`, [local.id]);
-          await executeSql(`DELETE FROM classes WHERE id = ?`, [local.id]);
+          // Class was deleted on server, remove locally (avec toutes ses dependances)
+          await purgeLocalClassData(local.id);
           if (__DEV__) {
             console.log('[syncService] Deleted local class not on server:', local.id);
           }
@@ -1377,7 +1490,7 @@ export async function pullFromServer(userId: string): Promise<{
       for (const local of localStudents) {
         // Only delete if was previously synced (protects unsynced local data)
         if (!serverStudentIds.has(local.id) && local.synced_at !== null) {
-          await executeSql(`DELETE FROM students WHERE id = ?`, [local.id]);
+          await purgeLocalStudentData(local.id);
           if (__DEV__) {
             console.log('[syncService] Deleted local student not on server:', local.id);
           }
