@@ -10,9 +10,9 @@ import {
   Modal,
   Alert,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import QRCode from 'react-native-qrcode-svg';
-import { useHistoryStore, useStudentStore, useAuthStore, useClassStore, useStampStore } from '../../../../stores';
+import { useHistoryStore, useStudentStore, useAuthStore, useClassStore, useStampStore, useSyncStore } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
 import {
   type Event,
@@ -23,6 +23,7 @@ import {
   type CompletedCardSummary,
 } from '../../../../services/database';
 import { supabase, isSupabaseConfigured } from '../../../../services/supabase';
+import { pullStudentStamps } from '../../../../services/sync';
 import { PhotoPicker } from '../../../../components';
 import { exportStudentHistoryPdf } from '../../../../services/pdfExport';
 
@@ -179,15 +180,31 @@ export default function StudentHistoryScreen() {
     }
   }, [id]);
 
-  // Load stamp data
+  // Load stamp data (recharge aussi apres une synchro : le cache est invalide)
   const activeCard = id ? activeCards[id] : undefined;
+  const lastSyncTime = useSyncStore(state => state.lastSyncTime);
+  const refreshStampData = useCallback(() => {
+    if (!id || !user) return;
+    loadActiveCard(user.id, id);
+    getCompletedCardsForStudent(id).then(setCompletedCards);
+    loadCategories(user.id);
+  }, [id, user, loadActiveCard, getCompletedCardsForStudent, loadCategories]);
+
   useEffect(() => {
-    if (id && user) {
-      loadActiveCard(user.id, id);
-      getCompletedCardsForStudent(id).then(setCompletedCards);
-      loadCategories(user.id);
-    }
-  }, [id, user]);
+    refreshStampData();
+  }, [refreshStampData, lastSyncTime]);
+
+  // A l'ouverture de la fiche : rapatrier les tampons de cet eleve donnes depuis le web
+  useFocusEffect(
+    useCallback(() => {
+      if (!id || !user) return;
+      let cancelled = false;
+      pullStudentStamps(user.id, id).then((ok) => {
+        if (!cancelled && ok) refreshStampData();
+      });
+      return () => { cancelled = true; };
+    }, [id, user, refreshStampData])
+  );
 
   // Fetch student_code from Supabase
   useEffect(() => {

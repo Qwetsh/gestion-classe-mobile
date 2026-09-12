@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { syncAll, getUnsyncedCount, pullFromServer, type SyncResult } from '../services/sync';
+import { useStampStore } from './stampStore';
 
 // Sync operation timeout (2 minutes - generous for large datasets)
 const SYNC_TIMEOUT_MS = 2 * 60 * 1000;
@@ -87,6 +88,8 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         SYNC_TIMEOUT_MS,
         'Pull serveur'
       );
+      // Les cartes en cache peuvent avoir change (tampons donnes depuis le web)
+      useStampStore.getState().invalidateCards();
 
       // Then, push local data to server (mobile -> server) with timeout
       if (__DEV__) {

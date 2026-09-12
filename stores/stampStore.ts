@@ -13,6 +13,7 @@ import {
   type StampCardWithStamps,
   type CompletedCardSummary,
 } from '../services/database';
+import { pullStampConfigOnly } from '../services/sync';
 
 interface StampState {
   // Data
@@ -33,6 +34,8 @@ interface StampState {
   doAwardStamp: (userId: string, studentId: string, categoryId: string) => Promise<{ stampCount: number; cardComplete: boolean; cardNumber: number }>;
   doRemoveLastStamp: (studentId: string) => Promise<void>;
   doMarkBonusUsed: (selectionId: string) => Promise<void>;
+  /** Vide le cache des cartes (apres une synchro : les ecrans rechargent) */
+  invalidateCards: () => void;
   reset: () => void;
 }
 
@@ -46,9 +49,14 @@ export const useStampStore = create<StampState>((set, get) => ({
   loadCategories: async (userId: string) => {
     if (get().categoriesLoaded) return;
     try {
-      // Seed defaults if needed
+      // Avant de semer les valeurs par defaut, regarder si le serveur a deja une
+      // configuration (creee par le web ou un autre telephone) : sinon on la doublait.
+      const existing = await getStampCategories(userId, false);
+      if (existing.length === 0) {
+        await pullStampConfigOnly(userId);
+      }
+      // Toujours rien (hors ligne, premier lancement) : valeurs par defaut locales
       await seedDefaultStampData(userId);
-      // Clean up duplicates created by sync
       await cleanupDuplicateCategories(userId);
       const categories = await getStampCategories(userId, true);
       set({ categories, categoriesLoaded: true });
@@ -108,6 +116,8 @@ export const useStampStore = create<StampState>((set, get) => ({
   doMarkBonusUsed: async (selectionId: string) => {
     await markBonusUsed(selectionId);
   },
+
+  invalidateCards: () => set({ activeCards: {} }),
 
   reset: () => set({
     categories: [],

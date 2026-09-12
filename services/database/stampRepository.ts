@@ -146,29 +146,34 @@ export async function getStampCategories(userId: string, activeOnly = true): Pro
 }
 
 /**
- * Remove duplicate stamp_categories in SQLite (keeps oldest per label).
- * Call on app startup to clean up sync-created duplicates.
+ * Fusionne les categories locales en double (meme libelle) vers la premiere.
+ * Ne supprime que les doublons jamais pousses au serveur : un doublon deja sur le
+ * serveur reviendrait au pull suivant (il est dedoublonne a l'affichage). Les tampons
+ * qui referencaient un doublon sont reaffectes avant, sinon la FK fait echouer le DELETE
+ * et la liste des categories reste vide.
  */
 export async function cleanupDuplicateCategories(userId: string): Promise<number> {
   const all = await queryAll<StampCategory>(
     'SELECT * FROM stamp_categories WHERE user_id = ? ORDER BY display_order ASC, created_at ASC',
     [userId]
   );
-  const seen = new Set<string>();
-  const toDelete: string[] = [];
+  const keeperByLabel = new Map<string, string>();
+  let merged = 0;
   for (const cat of all) {
-    if (seen.has(cat.label)) {
-      toDelete.push(cat.id);
-    } else {
-      seen.add(cat.label);
+    const keeper = keeperByLabel.get(cat.label);
+    if (!keeper) {
+      keeperByLabel.set(cat.label, cat.id);
+      continue;
     }
+    if (cat.synced_at !== null) continue;
+    await executeSql('UPDATE stamps SET category_id = ? WHERE category_id = ?', [keeper, cat.id]);
+    await executeSql('DELETE FROM stamp_categories WHERE id = ?', [cat.id]);
+    merged++;
   }
-  if (toDelete.length > 0) {
-    const placeholders = toDelete.map(() => '?').join(',');
-    await executeSql(`DELETE FROM stamp_categories WHERE id IN (${placeholders})`, toDelete);
-    console.log('[stampRepository] Cleaned up', toDelete.length, 'duplicate categories');
+  if (merged > 0) {
+    console.log('[stampRepository] Merged', merged, 'duplicate local categories');
   }
-  return toDelete.length;
+  return merged;
 }
 
 export async function createStampCategory(
