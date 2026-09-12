@@ -294,6 +294,8 @@ function NativeSessionScreen() {
 
   // Stamp modal state
   const [showStampModal, setShowStampModal] = useState(false);
+  // Deux appuis rapides sur une categorie ne doivent pas donner deux tampons
+  const [isAwardingStamp, setIsAwardingStamp] = useState(false);
   const [stampStudent, setStampStudent] = useState<StudentWithMapping | null>(null);
   const lastTapTimeRef = useRef<Record<string, number>>({});
   const DOUBLE_TAP_DELAY = 300; // ms between taps for double-tap
@@ -2065,8 +2067,10 @@ function NativeSessionScreen() {
                     borderWidth: 1,
                     borderColor: theme.colors.border,
                   }}
+                  disabled={isAwardingStamp}
                   onPress={async () => {
-                    if (!user?.id || !stampStudent) return;
+                    if (!user?.id || !stampStudent || isAwardingStamp) return;
+                    setIsAwardingStamp(true);
                     try {
                       const result = await doAwardStamp(user.id, stampStudent.id, cat.id);
                       setShowStampModal(false);
@@ -2081,6 +2085,8 @@ function NativeSessionScreen() {
                       }
                     } catch (err) {
                       Alert.alert('Erreur', err instanceof Error ? err.message : 'Erreur');
+                    } finally {
+                      setIsAwardingStamp(false);
                     }
                   }}
                 >
