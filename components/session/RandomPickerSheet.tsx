@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Shuffle } from 'lucide-react-native';
+import { Shuffle, Monitor } from 'lucide-react-native';
 import { BottomSheet } from './BottomSheet';
 import { theme } from '../../constants/theme';
 import type { StudentWithMapping } from '../../stores';
@@ -10,10 +10,12 @@ interface RandomPickerSheetProps {
   visible: boolean;
   students: StudentWithMapping[];
   onClose: () => void;
+  /** Mode « en classe » : afficher l'élève tiré sur l'écran projeté. */
+  onShowOnScreen?: (student: StudentWithMapping) => void;
 }
 
 /** Sheet "Tirage au sort" (maquette 9a). */
-export function RandomPickerSheet({ visible, students, onClose }: RandomPickerSheetProps) {
+export function RandomPickerSheet({ visible, students, onClose, onShowOnScreen }: RandomPickerSheetProps) {
   const [picked, setPicked] = useState<StudentWithMapping | null>(null);
 
   const draw = useCallback(() => {
@@ -46,6 +48,17 @@ export function RandomPickerSheet({ visible, students, onClose }: RandomPickerSh
           Parmi les élèves présents de la classe
         </Text>
       </View>
+
+      {onShowOnScreen && (
+        <Pressable
+          style={({ pressed }) => [styles.screenButton, pressed && styles.buttonPressed]}
+          onPress={() => picked && onShowOnScreen(picked)}
+          disabled={!picked}
+        >
+          <Monitor size={16} color={theme.colors.primary} strokeWidth={1.8} />
+          <Text style={styles.screenButtonText}>Afficher à l'écran</Text>
+        </Pressable>
+      )}
 
       <View style={styles.actions}>
         <Pressable
@@ -108,6 +121,23 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.body,
     fontSize: 13.5,
     color: theme.colors.textSecondary,
+  },
+  screenButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.primarySoft,
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginBottom: theme.spacing.sm + 2,
+  },
+  screenButtonText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 14.5,
+    color: theme.colors.primary,
   },
   actions: {
     flexDirection: 'row',

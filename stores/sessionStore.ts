@@ -12,11 +12,11 @@ import {
   EventType,
   SortieSubtype,
   createEvent,
-  deleteEvent,
   getEventsBySessionId,
   getAllStudentEventCounts,
   StudentEventCounts,
 } from '../services/database';
+import { pushEventNow, deleteEventNow } from '../services/sync/liveSync';
 
 // Orphan session cleanup threshold (in hours)
 // Sessions older than this and still "active" are auto-ended
@@ -372,6 +372,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         };
       });
 
+      // Envoi immediat (mode direct) sans bloquer l'interface : en cas d'echec,
+      // la synchro de fin de seance prendra le relais.
+      void pushEventNow(event).then((sent) => {
+        if (!sent) return;
+        const syncedAt = new Date().toISOString();
+        set((state) => ({
+          events: state.events.map((e) => (e.id === event.id ? { ...e, synced_at: syncedAt } : e)),
+        }));
+      });
+
       if (__DEV__) {
         console.log('[sessionStore] Event added:', type, 'for student:', studentId);
       }
@@ -406,8 +416,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return false;
       }
 
-      // Delete the event from database
-      await deleteEvent(absenceEvent.id);
+      // Delete the event from database (et propage au serveur si deja pousse)
+      await deleteEventNow(absenceEvent.id);
 
       // Update local state
       set((state) => {

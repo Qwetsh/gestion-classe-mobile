@@ -4,7 +4,8 @@ import { useAuthStore, useNetworkStore, useSyncStore, useSessionStore, useGroupS
 /**
  * Hook that handles automatic synchronization:
  * 1. When network status changes from offline to online
- * 2. When a session ends (regular or group)
+ * 2. When a session starts (so the server / whiteboard sees it live)
+ * 3. When a session ends (regular or group)
  *
  * Uses refs to track state and prevent race conditions with isSyncing
  */
@@ -80,10 +81,15 @@ export function useAutoSync() {
     wasOffline.current = currentlyOffline;
   }, [isConnected, isInternetReachable, user?.id, triggerSync]);
 
-  // Auto-sync when session ends
+  // Auto-sync when a session starts or ends.
+  // Au demarrage : la seance (et ses dependances classe/salle) est poussee tout de suite
+  // pour que le mode « en classe » puisse s'y accrocher. La fin de seance remet
+  // synced_at a NULL, donc la seance sera renvoyee avec son heure de fin.
   useEffect(() => {
-    // Check if session just ended (was active, now not active)
-    if (wasSessionActive.current && !isSessionActive && user?.id) {
+    const justStarted = !wasSessionActive.current && isSessionActive;
+    const justEnded = wasSessionActive.current && !isSessionActive;
+
+    if ((justStarted || justEnded) && user?.id) {
       const isOnline = isConnected === true && isInternetReachable !== false;
       if (isOnline) {
         // Clear any existing timer
@@ -93,7 +99,7 @@ export function useAutoSync() {
 
         // Small delay to ensure session data is persisted
         timerRef.current = setTimeout(() => {
-          triggerSync(user.id, 'Session ended');
+          triggerSync(user.id, justStarted ? 'Session started' : 'Session ended');
         }, 500);
       }
     }

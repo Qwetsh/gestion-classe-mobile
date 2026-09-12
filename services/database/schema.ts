@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /**
  * SQL statements to create all tables
@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS events (
   synced_at TEXT,
   FOREIGN KEY (session_id) REFERENCES sessions(id),
   FOREIGN KEY (student_id) REFERENCES students(id)
+);
+
+-- LOCAL ONLY: Suppressions en attente de propagation au serveur.
+-- Un enregistrement deja pousse (synced_at non nul) puis supprime en local
+-- doit aussi etre supprime cote Supabase lors de la prochaine synchro.
+CREATE TABLE IF NOT EXISTS pending_deletions (
+  id TEXT PRIMARY KEY,
+  table_name TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (table_name, record_id)
 );
 
 -- LOCAL ONLY: Student name mapping (never synced to server)

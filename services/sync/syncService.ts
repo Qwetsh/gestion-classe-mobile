@@ -5,6 +5,7 @@ import {
   type Event,
 } from '../database';
 
+import { flushPendingDeletions, toRemoteEvent } from './liveSync';
 export interface SyncResult {
   success: boolean;
   sessionsSync: number;
@@ -26,6 +27,7 @@ export interface SyncResult {
   stampsSync: number;
   bonusSelectionsSync: number;
   errors: string[];
+  deletionsSync?: number;
 }
 
 /**
@@ -53,7 +55,8 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM bonuses WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM stamp_cards WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM stamps WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM bonus_selections WHERE synced_at IS NULL)
+      (SELECT COUNT(*) FROM bonus_selections WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM pending_deletions)
     ) as total
   `);
 
@@ -95,6 +98,9 @@ export async function syncAll(userId: string): Promise<SyncResult> {
 
   try {
     // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events
+    // 0. Propager les suppressions faites en local sur des enregistrements deja pousses
+    result.deletionsSync = await flushPendingDeletions();
+
 
     // 1. Sync classes
     result.classesSync = await syncClasses(userId);
@@ -682,16 +688,7 @@ async function syncEvents(): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map((e) => ({
-    id: e.id,
-    session_id: e.session_id,
-    student_id: e.student_id,
-    type: e.type,
-    subtype: e.subtype,
-    note: e.note,
-    photo_path: e.photo_path,
-    timestamp: e.timestamp,
-  }));
+  const toSync = unsynced.map(toRemoteEvent);
 
   const { error } = await supabase
     .from('events')

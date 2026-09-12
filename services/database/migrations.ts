@@ -621,6 +621,30 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  if (fromVersion < 14) {
+    console.log('[Database] Applying migration: pending_deletions table (v14)');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS pending_deletions (
+          id TEXT PRIMARY KEY,
+          table_name TEXT NOT NULL,
+          record_id TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (table_name, record_id)
+        )
+      `);
+      await db.runAsync('UPDATE schema_version SET version = ?', [14]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v14 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v14 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -634,6 +658,7 @@ export async function resetDatabase(): Promise<void> {
 
   // Drop all tables (in dependency order)
   const tables = [
+    'pending_deletions',
     'bonus_selections',
     'stamps',
     'stamp_cards',
@@ -690,6 +715,7 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'stamp_cards',
     'stamps',
     'bonus_selections',
+    'pending_deletions',
   ];
 
   const stats: Record<string, number> = {};

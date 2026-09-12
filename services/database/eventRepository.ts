@@ -244,6 +244,19 @@ export async function getClassStudentEventCounts(
  * Delete an event
  */
 export async function deleteEvent(id: string): Promise<void> {
+  // Deja pousse au serveur (envoi immediat ou synchro) : il faut aussi l'y supprimer.
+  // On laisse une trace que la synchro (ou l'envoi immediat) propagera.
+  const existing = await queryFirst<{ synced_at: string | null }>(
+    `SELECT synced_at FROM events WHERE id = ?`,
+    [id]
+  );
+  if (existing?.synced_at) {
+    await executeSql(
+      `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+      [Crypto.randomUUID(), 'events', id, new Date().toISOString()]
+    );
+  }
+
   await executeSql(
     `DELETE FROM events WHERE id = ?`,
     [id]

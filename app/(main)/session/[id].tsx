@@ -24,6 +24,7 @@ import {
   Settings,
   Shuffle,
   Trash2,
+  Monitor,
 } from 'lucide-react-native';
 import {
   useAuthStore,
@@ -51,6 +52,7 @@ import {
   SessionSettingsSheet,
   StudentPickerSheet,
   UndoBanner,
+  ScreenControlSheet,
 } from '../../../components/session';
 import { triggerActionSignature, triggerErrorFeedback } from '../../../utils/haptics';
 import { getGroupSessionByLinkedSessionId } from '../../../services/database';
@@ -59,7 +61,9 @@ import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOver
 import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
 import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
 import { theme } from '../../../constants/theme';
-import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, deleteEvent, getStudentEventsInSession } from '../../../services/database';
+import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, getStudentEventsInSession } from '../../../services/database';
+import { deleteEventNow } from '../../../services/sync/liveSync';
+import { connectClassroomChannel, disconnectClassroomChannel, sendClassroomCommand } from '../../../services/sync/classroomChannel';
 import {
   pickFromCamera,
   pickFromGallery,
@@ -249,6 +253,8 @@ function NativeSessionScreen() {
 
   // Reglages de seance (sheet 7b)
   const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  // Sheet « Écran » : télécommande de l'écran projeté (mode « en classe »)
+  const [showScreenSheet, setShowScreenSheet] = useState(false);
   const { flickMode, distinctHaptics, compactGrid, loadSettings } = useSettingsStore();
 
   useEffect(() => {
@@ -453,7 +459,7 @@ function NativeSessionScreen() {
     setUndoBanner({ visible: false, message: '', eventId: null, variant: 'success' });
     if (!eventId) return;
     try {
-      await deleteEvent(eventId);
+      await deleteEventNow(eventId);
       await loadSessionEvents();
     } catch (error) {
       if (__DEV__) console.error('[Session] Undo failed:', error);
@@ -777,6 +783,50 @@ function NativeSessionScreen() {
   const getDisplayName = (student: StudentWithMapping): string => {
     return student.fullName || student.pseudo;
   };
+
+  // Canal de commandes vers l'écran projeté, rattaché à la séance en cours
+  useEffect(() => {
+    if (!activeSession?.id) return;
+    connectClassroomChannel(activeSession.id);
+    return () => disconnectClassroomChannel();
+  }, [activeSession?.id]);
+
+  // Libellé court affiché sur le plan : le prénom seul, sauf homonymes dans la classe
+  // -> on ajoute l'initiale du nom (puis 2, 3 lettres si l'initiale ne suffit pas).
+  const cellLabelById = useMemo(() => {
+    const firstNameOf = (st: StudentWithMapping) =>
+      (st.firstName || getDisplayName(st).split(' ')[0] || '').trim();
+    const lastNameOf = (st: StudentWithMapping) => {
+      if (st.lastName) return st.lastName.trim();
+      const parts = getDisplayName(st).trim().split(' ');
+      return parts.length > 1 ? parts.slice(1).join(' ') : '';
+    };
+    const labels: Record<string, string> = {};
+    const byFirstName = new Map<string, StudentWithMapping[]>();
+    for (const st of students) {
+      const key = firstNameOf(st).toLocaleLowerCase('fr');
+      byFirstName.set(key, [...(byFirstName.get(key) || []), st]);
+    }
+    for (const group of byFirstName.values()) {
+      if (group.length === 1) {
+        labels[group[0].id] = firstNameOf(group[0]);
+        continue;
+      }
+      let len = 1;
+      // Allonge l'abréviation du nom jusqu'à ce que tous les homonymes soient distincts (max 3)
+      while (len < 3) {
+        const abbrevs = group.map((st) => lastNameOf(st).slice(0, len).toLocaleLowerCase('fr'));
+        if (new Set(abbrevs).size === group.length) break;
+        len++;
+      }
+      for (const st of group) {
+        const abbrev = lastNameOf(st).slice(0, len);
+        const abbrevFmt = abbrev.charAt(0).toLocaleUpperCase('fr') + abbrev.slice(1).toLocaleLowerCase('fr');
+        labels[st.id] = abbrev ? `${firstNameOf(st)} ${abbrevFmt}.` : firstNameOf(st);
+      }
+    }
+    return labels;
+  }, [students]);
 
   const handleEndSession = () => {
     Alert.alert(
@@ -1111,7 +1161,7 @@ function NativeSessionScreen() {
           onPress: async () => {
             setIsDeletingEvent(true);
             try {
-              await deleteEvent(eventId);
+              await deleteEventNow(eventId);
               // Refresh events list (sessionId, studentId)
               if (deleteStudent && activeSession) {
                 const evts = await getStudentEventsInSession(activeSession.id, deleteStudent.id);
@@ -1264,7 +1314,7 @@ function NativeSessionScreen() {
               {student ? (
                 <View style={styles.cellContent}>
                   <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
-                    {getDisplayName(student).split(' ')[0]}
+                    {cellLabelById[student.id] ?? getDisplayName(student).split(' ')[0]}
                   </Text>
                   {isAbsent ? (
                     <View style={styles.absentBadge}>
@@ -1380,6 +1430,13 @@ function NativeSessionScreen() {
               </Text>
             </Pressable>
           </View>
+          <Pressable
+            style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsButtonPressed]}
+            onPress={() => setShowScreenSheet(true)}
+            hitSlop={4}
+          >
+            <Monitor size={18} color={theme.colors.textSecondary} strokeWidth={1.8} />
+          </Pressable>
           <Pressable
             style={({ pressed }) => [styles.settingsButton, pressed && styles.settingsButtonPressed]}
             onPress={() => setShowSettingsSheet(true)}
@@ -1735,7 +1792,19 @@ function NativeSessionScreen() {
       <RandomPickerSheet
         visible={showRandomSheet}
         students={presentStudents}
-        onClose={() => setShowRandomSheet(false)}
+        onClose={() => {
+          setShowRandomSheet(false);
+          void sendClassroomCommand({ kind: 'pick', studentId: null });
+        }}
+        onShowOnScreen={(student) => {
+          void sendClassroomCommand({ kind: 'pick', studentId: student.id, label: student.pseudo });
+        }}
+      />
+
+      {/* Télécommande de l'écran projeté */}
+      <ScreenControlSheet
+        visible={showScreenSheet}
+        onClose={() => setShowScreenSheet(false)}
       />
 
       {/* Evaluation orale (sheet 9b) */}
