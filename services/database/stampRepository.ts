@@ -218,6 +218,11 @@ export async function updateStampCategory(
 }
 
 export async function deleteStampCategory(id: string): Promise<void> {
+  await executeSql(
+    `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+    [Crypto.randomUUID(), 'stamp_categories', id, new Date().toISOString()]
+  );
+  await executeSql('UPDATE stamps SET category_id = NULL WHERE category_id = ?', [id]);
   await executeSql('DELETE FROM stamp_categories WHERE id = ?', [id]);
 }
 
@@ -267,6 +272,11 @@ export async function updateBonus(
 }
 
 export async function deleteBonus(id: string): Promise<void> {
+  await executeSql(
+    `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+    [Crypto.randomUUID(), 'bonuses', id, new Date().toISOString()]
+  );
+  await executeSql('UPDATE bonus_selections SET bonus_id = NULL WHERE bonus_id = ?', [id]);
   await executeSql('DELETE FROM bonuses WHERE id = ?', [id]);
 }
 
@@ -347,7 +357,7 @@ export async function getCompletedCards(studentId: string): Promise<CompletedCar
             CASE WHEN bs.used_at IS NOT NULL THEN 1 ELSE 0 END as bonus_used,
             bs.selected_at, bs.used_at
      FROM stamp_cards sc
-     LEFT JOIN bonus_selections bs ON bs.card_id = sc.id
+     INNER JOIN bonus_selections bs ON bs.card_id = sc.id
      LEFT JOIN bonuses b ON b.id = bs.bonus_id
      WHERE sc.student_id = ? AND sc.status = 'completed'
      ORDER BY sc.card_number DESC`,
@@ -435,7 +445,7 @@ export async function awardStamp(
         // Network error — fall through to original error
       }
     }
-    throw new Error('Carte déjà complète — l\'élève doit d\'abord choisir son bonus');
+    throw new Error('Carte déjà complète — choisissez le bonus depuis la fiche de l\'élève (ou l\'élève depuis son espace)');
   }
 
   const id = Crypto.randomUUID();
@@ -560,37 +570,6 @@ export async function removeLastStamp(studentId: string): Promise<void> {
 // ============================================
 // Bonus Selections
 // ============================================
-
-/**
- * Select a bonus for a completed card (called by student via web)
- * This is synced from Supabase — the student interacts via RPC
- */
-export async function selectBonus(
-  cardId: string,
-  bonusId: string,
-  studentId: string,
-  userId: string
-): Promise<BonusSelection> {
-  const id = Crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  // Atomic: mark card completed + insert bonus selection
-  await executeTransaction([
-    {
-      sql: `UPDATE stamp_cards SET status = 'completed', completed_at = ?, synced_at = NULL WHERE id = ?`,
-      params: [now, cardId],
-    },
-    {
-      sql: `INSERT INTO bonus_selections (id, card_id, bonus_id, student_id, user_id, selected_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      params: [id, cardId, bonusId, studentId, userId, now],
-    },
-  ]);
-
-  console.log('[stampRepository] Bonus selected for card:', cardId);
-
-  return { id, card_id: cardId, bonus_id: bonusId, student_id: studentId, user_id: userId, selected_at: now, used_at: null, synced_at: null };
-}
 
 /**
  * Mark a bonus as used (teacher validates)

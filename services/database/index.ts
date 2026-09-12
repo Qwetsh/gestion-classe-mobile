@@ -229,7 +229,6 @@ export {
   deleteStamp,
   removeLastStamp,
   // Bonus selections
-  selectBonus,
   markBonusUsed,
   getPendingBonusSelections,
   // Sync helpers

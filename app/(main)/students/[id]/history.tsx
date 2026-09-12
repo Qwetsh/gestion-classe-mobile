@@ -20,6 +20,8 @@ import {
   getStudentDeleteStats,
   deleteStudentCompletely,
   deleteStamp,
+  getBonuses,
+  type Bonus,
   type CompletedCardSummary,
 } from '../../../../services/database';
 import { supabase, isSupabaseConfigured } from '../../../../services/supabase';
@@ -133,6 +135,8 @@ export default function StudentHistoryScreen() {
   const [studentCode, setStudentCode] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showBonusModal, setShowBonusModal] = useState(false);
+  const [bonuses, setBonuses] = useState<Bonus[]>([]);
   const [isProcessingStamp, setIsProcessingStamp] = useState(false);
 
   const { activeCards, loadActiveCard, getCompletedCardsForStudent, doAwardStamp, categories, loadCategories } = useStampStore();
@@ -274,6 +278,36 @@ export default function StudentHistoryScreen() {
       setShowCategoryModal(true);
     }
   }, [activeCard, id, user, isProcessingStamp, loadActiveCard]);
+
+  // Carte complete : l'enseignant choisit le bonus avec l'eleve (RPC, migration 036).
+  // Indispensable quand la classe n'a pas l'onglet Tampons dans l'espace eleve.
+  const openBonusModal = useCallback(async () => {
+    if (!user) return;
+    if (!isSupabaseConfigured || !supabase) {
+      Alert.alert('Connexion requise', 'Le choix du bonus se fait en ligne.');
+      return;
+    }
+    setBonuses(await getBonuses(user.id, true));
+    setShowBonusModal(true);
+  }, [user]);
+
+  const handleChooseBonus = useCallback(async (bonusId: string) => {
+    if (!id || !user || isProcessingStamp || !supabase) return;
+    setIsProcessingStamp(true);
+    setShowBonusModal(false);
+    try {
+      const { data, error } = await supabase.rpc('select_bonus_for_student', { p_student_id: id, p_bonus_id: bonusId });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      await pullStudentStamps(user.id, id);
+      refreshStampData();
+      Alert.alert('Bonus enregistre', `Carte n°${data.completed_card_number} terminee, carte n°${data.new_card_number} ouverte.`);
+    } catch (err) {
+      Alert.alert('Erreur', err instanceof Error ? err.message : 'Impossible d\'enregistrer le bonus');
+    } finally {
+      setIsProcessingStamp(false);
+    }
+  }, [id, user, isProcessingStamp, refreshStampData]);
 
   // Handle category selection for new stamp
   const handleCategorySelect = useCallback(async (categoryId: string) => {
@@ -517,6 +551,15 @@ export default function StudentHistoryScreen() {
                     );
                   })}
                 </View>
+                {activeCard.stamp_count >= 10 && (
+                  <Pressable
+                    style={({ pressed }) => [styles.chooseBonusButton, pressed && { opacity: 0.7 }]}
+                    onPress={openBonusModal}
+                    disabled={isProcessingStamp}
+                  >
+                    <Text style={styles.chooseBonusText}>🎁 Choisir le bonus avec l'eleve</Text>
+                  </Pressable>
+                )}
               </View>
             ) : (
               <View style={styles.stampEmpty}>
@@ -706,11 +749,63 @@ export default function StudentHistoryScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Bonus Selection Modal (carte complete) */}
+      <Modal
+        visible={showBonusModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowBonusModal(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setShowBonusModal(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Choisir le bonus</Text>
+            <Text style={styles.modalText}>Le bonus termine la carte et en ouvre une nouvelle :</Text>
+            <View style={styles.categoryList}>
+              {bonuses.map(b => (
+                <Pressable
+                  key={b.id}
+                  style={({ pressed }) => [
+                    styles.categoryItem,
+                    { borderColor: theme.colors.border },
+                    pressed && { backgroundColor: theme.colors.surface },
+                  ]}
+                  onPress={() => handleChooseBonus(b.id)}
+                >
+                  <Text style={styles.categoryIcon}>🎁</Text>
+                  <Text style={styles.categoryLabel}>{b.label}</Text>
+                </Pressable>
+              ))}
+              {bonuses.length === 0 && (
+                <Text style={styles.modalText}>Aucun bonus actif. Configurez-les sur le site.</Text>
+              )}
+            </View>
+            <Pressable
+              style={[styles.modalCancelButton, { marginTop: theme.spacing.md }]}
+              onPress={() => setShowBonusModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Annuler</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  chooseBonusButton: {
+    marginTop: theme.spacing.md,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary,
+  },
+  chooseBonusText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   container: {
     flex: 1,
     backgroundColor: theme.colors.background,

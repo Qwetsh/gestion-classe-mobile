@@ -98,64 +98,42 @@ export async function syncAll(userId: string): Promise<SyncResult> {
   }
 
   try {
-    // 0. Propager les suppressions faites en local sur des enregistrements deja pousses
-    result.deletionsSync = await flushPendingDeletions();
+    // Chaque etape est isolee : une table en echec (ex. cle etrangere sur un enregistrement
+    // orphelin) n'empeche plus les suivantes de partir. Avant, la premiere erreur arretait
+    // toute la chaine a chaque tentative et plus rien ne se synchronisait.
+    // L'ordre respecte les dependances : classes -> eleves -> ... -> tampons.
+    const steps: { name: string; run: () => Promise<void> }[] = [
+      { name: 'Suppressions', run: async () => { result.deletionsSync = await flushPendingDeletions(); } },
+      { name: 'Classes', run: async () => { result.classesSync = await syncClasses(userId); } },
+      { name: 'Eleves', run: async () => { result.studentsSync = await syncStudents(); } },
+      { name: 'Salles', run: async () => { result.roomsSync = await syncRooms(userId); } },
+      { name: 'Plans de classe', run: async () => { result.plansSync = await syncPlans(userId); } },
+      { name: 'Seances', run: async () => { result.sessionsSync = await syncSessions(); } },
+      { name: 'Evenements', run: async () => { result.eventsSync = await syncEvents(); } },
+      { name: 'Seances de groupe', run: async () => { result.groupSessionsSync = await syncGroupSessions(); } },
+      { name: 'Criteres', run: async () => { result.gradingCriteriaSync = await syncGradingCriteria(); } },
+      { name: 'Groupes', run: async () => { result.sessionGroupsSync = await syncSessionGroups(); } },
+      { name: 'Membres de groupe', run: async () => { result.groupMembersSync = await syncGroupMembers(); } },
+      { name: 'Notes de groupe', run: async () => { result.groupGradesSync = await syncGroupGrades(); } },
+      { name: 'Modeles de TP', run: async () => { result.tpTemplatesSync = await syncTpTemplates(userId); } },
+      { name: 'Criteres de TP', run: async () => { result.tpTemplateCriteriaSync = await syncTpTemplateCriteria(); } },
+      { name: 'Categories de tampons', run: async () => { result.stampCategoriesSync = await syncStampCategories(userId); } },
+      { name: 'Bonus', run: async () => { result.bonusesSync = await syncBonuses(userId); } },
+      { name: 'Cartes', run: async () => { result.stampCardsSync = await syncStampCards(userId); } },
+      { name: 'Tampons', run: async () => { result.stampsSync = await syncStamps(userId); } },
+      { name: 'Choix de bonus', run: async () => { result.bonusSelectionsSync = await syncBonusSelections(userId); } },
+    ];
 
-    // Sync in dependency order: classes -> students -> rooms -> plans -> sessions -> events
-
-    // 1. Sync classes
-    result.classesSync = await syncClasses(userId);
-
-    // 2. Sync students (depends on classes)
-    result.studentsSync = await syncStudents();
-
-    // 4. Sync rooms
-    result.roomsSync = await syncRooms(userId);
-
-    // 5. Sync class_room_plans
-    result.plansSync = await syncPlans(userId);
-
-    // 6. Sync sessions
-    result.sessionsSync = await syncSessions();
-
-    // 7. Sync events
-    result.eventsSync = await syncEvents();
-
-    // 8. Sync group sessions (depends on classes)
-    result.groupSessionsSync = await syncGroupSessions();
-
-    // 9. Sync grading criteria (depends on group_sessions)
-    result.gradingCriteriaSync = await syncGradingCriteria();
-
-    // 10. Sync session groups (depends on group_sessions)
-    result.sessionGroupsSync = await syncSessionGroups();
-
-    // 11. Sync group members (depends on session_groups and students)
-    result.groupMembersSync = await syncGroupMembers();
-
-    // 12. Sync group grades (depends on session_groups and grading_criteria)
-    result.groupGradesSync = await syncGroupGrades();
-
-    // 13. Sync TP templates
-    result.tpTemplatesSync = await syncTpTemplates(userId);
-
-    // 14. Sync TP template criteria (depends on tp_templates)
-    result.tpTemplateCriteriaSync = await syncTpTemplateCriteria();
-
-    // 15. Sync stamp categories
-    result.stampCategoriesSync = await syncStampCategories(userId);
-
-    // 16. Sync bonuses
-    result.bonusesSync = await syncBonuses(userId);
-
-    // 17. Sync stamp cards (depends on students)
-    result.stampCardsSync = await syncStampCards(userId);
-
-    // 18. Sync stamps (depends on stamp_cards and stamp_categories)
-    result.stampsSync = await syncStamps(userId);
-
-    // 19. Sync bonus selections (depends on stamp_cards and bonuses)
-    result.bonusSelectionsSync = await syncBonusSelections(userId);
+    for (const step of steps) {
+      try {
+        await step.run();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[syncService] Sync step failed (${step.name}):`, message);
+        result.success = false;
+        result.errors.push(message);
+      }
+    }
 
     if (__DEV__) {
       console.log('[syncService] Sync complete:', result);
@@ -1831,6 +1809,14 @@ export async function pullFromServer(userId: string): Promise<{
           `SELECT id FROM classes WHERE id = ?`,
           [cls.id]
         );
+
+        if (existing.length > 0) {
+          // Renommage cote web : sans cela l'ancien nom restait sur le telephone
+          await executeSql(
+            `UPDATE classes SET name = ? WHERE id = ? AND name <> ? AND synced_at IS NOT NULL`,
+            [cls.name, cls.id, cls.name]
+          );
+        }
 
         if (existing.length === 0) {
           await executeSql(
