@@ -2,6 +2,7 @@ import * as Crypto from 'expo-crypto';
 import { executeSql, queryAll, queryFirst, executeTransaction } from './client';
 import { DEFAULT_STAMP_CATEGORIES, DEFAULT_BONUSES } from './schema';
 import { supabase, isSupabaseConfigured } from '../supabase';
+import { firstFreeSlot, CARD_SLOTS } from '../../utils/stampSlots';
 
 // ============================================
 // Types
@@ -273,7 +274,7 @@ export async function deleteBonus(id: string): Promise<void> {
  */
 export async function getOrCreateActiveCard(userId: string, studentId: string): Promise<StampCard> {
   let card = await queryFirst<StampCard>(
-    `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' LIMIT 1`,
+    `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' ORDER BY card_number DESC LIMIT 1`,
     [studentId]
   );
 
@@ -297,7 +298,7 @@ export async function getOrCreateActiveCard(userId: string, studentId: string): 
 
     // Re-fetch to handle case where another call won the race
     card = await queryFirst<StampCard>(
-      `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' LIMIT 1`,
+      `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' ORDER BY card_number DESC LIMIT 1`,
       [studentId]
     );
 
@@ -384,7 +385,9 @@ export async function awardStamp(
   );
   const currentCount = usedSlots.length;
 
-  if (currentCount >= 10) {
+  const slotNumber = firstFreeSlot(usedSlots.map(s => s.slot_number));
+
+  if (slotNumber === null) {
     // Card is full locally — check if bonus was already selected on web (RPC completed it)
     // If so, pull the new card from Supabase and retry
     if (isSupabaseConfigured && supabase) {
@@ -395,19 +398,31 @@ export async function awardStamp(
           .eq('student_id', studentId)
           .eq('user_id', userId)
           .eq('status', 'active')
-          .single();
+          .order('card_number', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
         if (serverActive && serverActive.id !== card.id) {
-          // A newer active card exists on server — pull it locally
+          // A newer active card exists on server — pull it locally.
+          // Jamais d'INSERT OR REPLACE ici : sur stamp_cards, REPLACE = DELETE + INSERT
+          // et le DELETE cascade sur les tampons de la carte.
           const now2 = new Date().toISOString();
           await executeSql(
             `UPDATE stamp_cards SET status = 'completed', completed_at = COALESCE(completed_at, ?), synced_at = ? WHERE id = ?`,
             [now2, now2, card.id]
           );
-          await executeSql(
-            `INSERT OR REPLACE INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at) VALUES (?, ?, ?, ?, 'active', NULL, ?, ?)`,
-            [serverActive.id, studentId, userId, serverActive.card_number, serverActive.created_at, now2]
-          );
+          const localNext = await queryFirst<{ id: string }>('SELECT id FROM stamp_cards WHERE id = ?', [serverActive.id]);
+          if (localNext) {
+            await executeSql(
+              `UPDATE stamp_cards SET status = 'active', completed_at = NULL, synced_at = ? WHERE id = ?`,
+              [now2, serverActive.id]
+            );
+          } else {
+            await executeSql(
+              `INSERT INTO stamp_cards (id, student_id, user_id, card_number, status, completed_at, created_at, synced_at) VALUES (?, ?, ?, ?, 'active', NULL, ?, ?)`,
+              [serverActive.id, studentId, userId, serverActive.card_number, serverActive.created_at, now2]
+            );
+          }
           // Retry with the new card
           return awardStamp(userId, studentId, categoryId);
         }
@@ -418,15 +433,12 @@ export async function awardStamp(
     throw new Error('Carte déjà complète — l\'élève doit d\'abord choisir son bonus');
   }
 
-  const used = new Set(usedSlots.map(s => s.slot_number));
-  let slotNumber = 1;
-  while (used.has(slotNumber) && slotNumber <= 10) slotNumber++;
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
   // Insert stamp — card stays 'active' even at 10/10.
   // Completion is handled by the select_student_bonus RPC when the student picks a bonus.
-  const isComplete = currentCount + 1 >= 10;
+  const isComplete = currentCount + 1 >= CARD_SLOTS;
   await executeSql(
     `INSERT INTO stamps (id, card_id, student_id, user_id, category_id, slot_number, awarded_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -440,29 +452,39 @@ export async function awardStamp(
 
   console.log('[stampRepository] Awarded stamp', slotNumber + '/10 to student:', studentId);
 
-  // Push stamp to Supabase immediately for real-time sync
+  // Push to Supabase immediately for real-time sync.
+  // La carte d'abord (le tampon la reference par FK), en creation seule :
+  // status / completed_at sont pilotes par le serveur (RPC de choix du bonus),
+  // un upsert complet remettrait 'active' une carte deja terminee.
   if (isSupabaseConfigured && supabase) {
     try {
-      const { error: stampErr } = await supabase.from('stamps').upsert({
-        id, card_id: card.id, student_id: studentId, user_id: userId,
-        category_id: categoryId, slot_number: slotNumber, awarded_at: now,
-      });
-      if (stampErr) {
-        console.warn('[stampRepository] Failed to push stamp to Supabase:', stampErr.message);
-      } else {
-        // Mark as synced locally
-        await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
+      let cardOnServer = card.synced_at !== null;
+      if (!cardOnServer) {
+        const { error: cardErr } = await supabase.from('stamp_cards').upsert({
+          id: card.id, student_id: studentId, user_id: userId,
+          card_number: card.card_number, status: 'active',
+          completed_at: null, created_at: card.created_at,
+        }, { onConflict: 'id', ignoreDuplicates: true });
+        if (cardErr) {
+          // Ex. : la meme carte (eleve, numero) existe deja cote web avec un autre UUID ;
+          // la synchro complete fera le remapping.
+          console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);
+        } else {
+          await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, card.id]);
+          cardOnServer = true;
+        }
       }
-      // Also push card if newly created (never push 'completed' — RPC handles that)
-      const { error: cardErr } = await supabase.from('stamp_cards').upsert({
-        id: card.id, student_id: studentId, user_id: userId,
-        card_number: card.card_number, status: 'active',
-        completed_at: null, created_at: card.created_at,
-      });
-      if (cardErr) {
-        console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);
-      } else {
-        await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, card.id]);
+
+      if (cardOnServer) {
+        const { error: stampErr } = await supabase.from('stamps').upsert({
+          id, card_id: card.id, student_id: studentId, user_id: userId,
+          category_id: categoryId, slot_number: slotNumber, awarded_at: now,
+        }, { onConflict: 'id' });
+        if (stampErr) {
+          console.warn('[stampRepository] Failed to push stamp to Supabase:', stampErr.message);
+        } else {
+          await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
+        }
       }
     } catch (err) {
       console.warn('[stampRepository] Supabase award stamp sync error:', err);
@@ -476,20 +498,35 @@ export async function awardStamp(
  * Delete a specific stamp by ID
  */
 export async function deleteStamp(stampId: string): Promise<void> {
+  await deleteStampEverywhere(stampId);
+}
+
+/**
+ * Supprime un tampon en local, puis sur le serveur.
+ * La suppression distante est d'abord mise en attente (pending_deletions) :
+ * hors ligne, la synchro la propagera et le pull ne fera pas revenir le tampon.
+ * On la met toujours en attente, meme pour un tampon marque non synchronise,
+ * car il peut deja etre arrive sur le serveur (timeout apres ecriture).
+ */
+async function deleteStampEverywhere(stampId: string): Promise<void> {
+  await executeSql(
+    `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+    [Crypto.randomUUID(), 'stamps', stampId, new Date().toISOString()]
+  );
   await executeSql('DELETE FROM stamps WHERE id = ?', [stampId]);
   console.log('[stampRepository] Deleted stamp locally:', stampId);
 
-  // Also delete on Supabase immediately so it's reflected in real-time
+  // Tentative immediate pour que l'eleve le voie tout de suite
   if (isSupabaseConfigured && supabase) {
     try {
       const { error } = await supabase.from('stamps').delete().eq('id', stampId);
       if (error) {
-        console.warn('[stampRepository] Failed to delete stamp on Supabase:', error.message);
+        console.warn('[stampRepository] Failed to delete stamp on Supabase (will retry at sync):', error.message);
       } else {
-        console.log('[stampRepository] Deleted stamp on Supabase:', stampId);
+        await executeSql(`DELETE FROM pending_deletions WHERE table_name = 'stamps' AND record_id = ?`, [stampId]);
       }
     } catch (err) {
-      console.warn('[stampRepository] Supabase delete stamp error:', err);
+      console.warn('[stampRepository] Supabase delete stamp error (will retry at sync):', err);
     }
   }
 }
@@ -499,36 +536,20 @@ export async function deleteStamp(stampId: string): Promise<void> {
  */
 export async function removeLastStamp(studentId: string): Promise<void> {
   const card = await queryFirst<StampCard>(
-    `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' LIMIT 1`,
+    `SELECT * FROM stamp_cards WHERE student_id = ? AND status = 'active' ORDER BY card_number DESC LIMIT 1`,
     [studentId]
   );
   if (!card) return;
 
-  // Find the stamp to delete (for Supabase sync)
+  // Le dernier tampon attribue (pas le slot le plus haut : un trou comble a un slot bas)
   const lastStamp = await queryFirst<{ id: string }>(
-    `SELECT id FROM stamps WHERE card_id = ? ORDER BY slot_number DESC LIMIT 1`,
+    `SELECT id FROM stamps WHERE card_id = ? ORDER BY awarded_at DESC, slot_number DESC LIMIT 1`,
     [card.id]
   );
+  if (!lastStamp) return;
 
-  await executeSql(
-    `DELETE FROM stamps WHERE card_id = ? AND slot_number = (
-      SELECT MAX(slot_number) FROM stamps WHERE card_id = ?
-    )`,
-    [card.id, card.id]
-  );
+  await deleteStampEverywhere(lastStamp.id);
   console.log('[stampRepository] Removed last stamp for student:', studentId);
-
-  // Sync to Supabase immediately
-  if (lastStamp && isSupabaseConfigured && supabase) {
-    try {
-      const { error } = await supabase.from('stamps').delete().eq('id', lastStamp.id);
-      if (error) {
-        console.warn('[stampRepository] Failed to delete last stamp on Supabase:', error.message);
-      }
-    } catch (err) {
-      console.warn('[stampRepository] Supabase removeLastStamp error:', err);
-    }
-  }
 }
 
 // ============================================
