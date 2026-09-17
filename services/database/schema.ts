@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * SQL statements to create all tables
@@ -66,7 +66,49 @@ CREATE TABLE IF NOT EXISTS class_room_plans (
   UNIQUE(class_id, room_id)
 );
 
--- Sessions table
+-- ============================================
+-- Groupes de classe (demi-groupes durables, distincts des groupes de TP)
+-- ============================================
+
+CREATE TABLE IF NOT EXISTS class_groups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  class_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  color TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
+  synced_at TEXT,
+  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS class_group_members (
+  id TEXT PRIMARY KEY,
+  group_id TEXT NOT NULL,
+  student_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  synced_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES class_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+  UNIQUE(group_id, student_id)
+);
+
+-- Plans de classe PAR GROUPE (table dediee : class_room_plans reste intacte)
+CREATE TABLE IF NOT EXISTS class_group_plans (
+  id TEXT PRIMARY KEY,
+  class_id TEXT NOT NULL,
+  room_id TEXT NOT NULL,
+  group_id TEXT NOT NULL,
+  positions TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT,
+  synced_at TEXT,
+  FOREIGN KEY (group_id) REFERENCES class_groups(id) ON DELETE CASCADE,
+  UNIQUE(class_id, room_id, group_id)
+);
+
+-- Sessions table (group_id : groupe de classe, NULL = classe entiere)
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -76,6 +118,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL DEFAULT (datetime('now')),
   ended_at TEXT,
   synced_at TEXT,
+  group_id TEXT,
   FOREIGN KEY (class_id) REFERENCES classes(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
@@ -285,6 +328,11 @@ CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);
 CREATE INDEX IF NOT EXISTS idx_students_user_id ON students(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_class_id ON sessions(class_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id);
+CREATE INDEX IF NOT EXISTS idx_class_groups_class_id ON class_groups(class_id);
+CREATE INDEX IF NOT EXISTS idx_class_group_members_group_id ON class_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_class_group_members_student_id ON class_group_members(student_id);
+CREATE INDEX IF NOT EXISTS idx_class_group_plans_class_room ON class_group_plans(class_id, room_id);
 CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_student_id ON events(student_id);
 CREATE INDEX IF NOT EXISTS idx_local_mapping_student_id ON local_student_mapping(student_id);

@@ -11,29 +11,34 @@ export interface Session {
   started_at: string;
   ended_at: string | null;
   synced_at: string | null;
+  /** Groupe de classe de la seance ; null = classe entiere */
+  group_id: string | null;
 }
 
 /**
  * Create a new session
+ * @param groupId groupe de classe (null/undefined = classe entiere)
  */
 export async function createSession(
   userId: string,
   classId: string,
   roomId: string,
-  topic?: string | null
+  topic?: string | null,
+  groupId?: string | null
 ): Promise<Session> {
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
   const sessionTopic = topic?.trim() || null;
+  const sessionGroupId = groupId || null;
 
   await executeSql(
-    `INSERT INTO sessions (id, user_id, class_id, room_id, topic, started_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, userId, classId, roomId, sessionTopic, now]
+    `INSERT INTO sessions (id, user_id, class_id, room_id, topic, started_at, group_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, userId, classId, roomId, sessionTopic, now, sessionGroupId]
   );
 
   if (__DEV__) {
-    console.log('[sessionRepository] Created session:', id, 'topic:', sessionTopic);
+    console.log('[sessionRepository] Created session:', id, 'topic:', sessionTopic, 'group:', sessionGroupId);
   }
 
   return {
@@ -46,7 +51,21 @@ export async function createSession(
     started_at: now,
     ended_at: null,
     synced_at: null,
+    group_id: sessionGroupId,
   };
+}
+
+/**
+ * Derniere seance de la classe faite EN GROUPE (group_id non null), toutes salles confondues.
+ * Sert a la preselection par alternance au demarrage d'une seance.
+ * Une seance en classe entiere entre deux demi-groupes ne casse pas le cycle.
+ */
+export async function getLastGroupSessionForClass(classId: string): Promise<Session | null> {
+  return queryFirst<Session>(
+    `SELECT * FROM sessions WHERE class_id = ? AND group_id IS NOT NULL
+     ORDER BY started_at DESC LIMIT 1`,
+    [classId]
+  );
 }
 
 /**

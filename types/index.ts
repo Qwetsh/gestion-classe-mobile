@@ -24,6 +24,44 @@ export interface Session {
   startedAt: string;
   endedAt: string | null;
   syncedAt: string | null;
+  /** Groupe de classe ; null = classe entière */
+  groupId: string | null;
+}
+
+/**
+ * Groupe de classe : sous-ensemble DURABLE d'élèves d'une classe (demi-groupe
+ * une semaine sur deux, latinistes...). Distinct des groupes de TP (session_groups).
+ */
+export interface ClassGroup {
+  id: string;
+  user_id: string;
+  class_id: string;
+  name: string;
+  color: string | null; // clé de palette, pas un hex
+  sort_order: number;
+  created_at: string;
+  updated_at: string | null;
+  synced_at: string | null;
+}
+
+export interface ClassGroupMember {
+  id: string;
+  group_id: string;
+  student_id: string;
+  created_at: string;
+  synced_at: string | null;
+}
+
+/** Plan de classe propre à (classe, salle, groupe). Repli sur class_room_plans si absent. */
+export interface ClassGroupPlan {
+  id: string;
+  class_id: string;
+  room_id: string;
+  group_id: string;
+  positions: Record<string, string>; // "row,col" -> student_id
+  created_at: string;
+  updated_at: string | null;
+  synced_at: string | null;
 }
 
 export interface Event {

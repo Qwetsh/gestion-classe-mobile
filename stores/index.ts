@@ -3,6 +3,7 @@ export { useClassStore } from './classStore';
 export { useStudentStore, type StudentWithMapping } from './studentStore';
 export { useRoomStore } from './roomStore';
 export { usePlanStore } from './planStore';
+export { useClassGroupStore } from './classGroupStore';
 export { useSessionStore } from './sessionStore';
 export { useHistoryStore } from './historyStore';
 export { useNetworkStore, useIsOffline } from './networkStore';

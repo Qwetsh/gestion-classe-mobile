@@ -95,8 +95,34 @@ export {
   updateSessionNotes,
   deleteSession,
   cleanupOrphanSessions,
+  getLastGroupSessionForClass,
   type Session,
 } from './sessionRepository';
+
+// Groupes de classe (demi-groupes durables ; distincts des groupes de TP ci-dessous)
+export {
+  createClassGroup,
+  getClassGroupsByClassId,
+  getClassGroupsByUserId,
+  getClassGroupById,
+  updateClassGroup,
+  deleteClassGroup,
+  getMembersByClassId,
+  getMemberIds,
+  getGroupIdsForStudent,
+  addMember,
+  removeMember,
+  moveStudent,
+  swapStudents,
+  replaceMembers,
+  getGroupPlan,
+  getGroupPlansByClassId,
+  saveGroupPlanPositions,
+  deleteGroupPlan,
+  type ClassGroup,
+  type ClassGroupMember,
+  type ClassGroupPlan,
+} from './classGroupRepository';
 
 export {
   createEvent,

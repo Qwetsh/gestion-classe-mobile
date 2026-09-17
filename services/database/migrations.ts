@@ -645,6 +645,73 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 14 -> 15: Groupes de classe (demi-groupes durables, distincts des groupes de TP)
+  // 3 CREATE TABLE + 1 ADD COLUMN, aucune recreation de table : class_room_plans reste intacte.
+  if (fromVersion < 15) {
+    console.log('[Database] Applying migration: class_groups (v15)');
+
+    const hasGroupId = await columnExists('sessions', 'group_id');
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS class_groups (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          class_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          color TEXT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT,
+          synced_at TEXT,
+          FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
+        )
+      `);
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS class_group_members (
+          id TEXT PRIMARY KEY,
+          group_id TEXT NOT NULL,
+          student_id TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          synced_at TEXT,
+          FOREIGN KEY (group_id) REFERENCES class_groups(id) ON DELETE CASCADE,
+          FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+          UNIQUE(group_id, student_id)
+        )
+      `);
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS class_group_plans (
+          id TEXT PRIMARY KEY,
+          class_id TEXT NOT NULL,
+          room_id TEXT NOT NULL,
+          group_id TEXT NOT NULL,
+          positions TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT,
+          synced_at TEXT,
+          FOREIGN KEY (group_id) REFERENCES class_groups(id) ON DELETE CASCADE,
+          UNIQUE(class_id, room_id, group_id)
+        )
+      `);
+      if (!hasGroupId) {
+        await db.runAsync('ALTER TABLE sessions ADD COLUMN group_id TEXT');
+      }
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_sessions_group_id ON sessions(group_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_class_groups_class_id ON class_groups(class_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_class_group_members_group_id ON class_group_members(group_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_class_group_members_student_id ON class_group_members(student_id)');
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_class_group_plans_class_room ON class_group_plans(class_id, room_id)');
+      await db.runAsync('UPDATE schema_version SET version = ?', [15]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v15 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v15 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -674,6 +741,9 @@ export async function resetDatabase(): Promise<void> {
     'local_student_mapping',
     'events',
     'sessions',
+    'class_group_plans',
+    'class_group_members',
+    'class_groups',
     'class_room_plans',
     'rooms',
     'students',
@@ -700,6 +770,9 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'students',
     'rooms',
     'class_room_plans',
+    'class_groups',
+    'class_group_members',
+    'class_group_plans',
     'sessions',
     'events',
     'local_student_mapping',

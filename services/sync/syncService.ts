@@ -28,6 +28,10 @@ export interface SyncResult {
   stampsSync: number;
   bonusSelectionsSync: number;
   deletionsSync?: number;
+  // Groupes de classe (demi-groupes) — pas les groupes de TP ci-dessus
+  classGroupsSync?: number;
+  classGroupMembersSync?: number;
+  classGroupPlansSync?: number;
   errors: string[];
 }
 
@@ -45,6 +49,9 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM class_groups WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM class_group_members WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM class_group_plans WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM group_sessions WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM grading_criteria WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
@@ -106,8 +113,11 @@ export async function syncAll(userId: string): Promise<SyncResult> {
       { name: 'Suppressions', run: async () => { result.deletionsSync = await flushPendingDeletions(); } },
       { name: 'Classes', run: async () => { result.classesSync = await syncClasses(userId); } },
       { name: 'Eleves', run: async () => { result.studentsSync = await syncStudents(); } },
+      { name: 'Groupes de classe', run: async () => { result.classGroupsSync = await syncClassGroups(); } },
+      { name: 'Membres de groupe de classe', run: async () => { result.classGroupMembersSync = await syncClassGroupMembers(); } },
       { name: 'Salles', run: async () => { result.roomsSync = await syncRooms(userId); } },
       { name: 'Plans de classe', run: async () => { result.plansSync = await syncPlans(userId); } },
+      { name: 'Plans de groupe', run: async () => { result.classGroupPlansSync = await syncClassGroupPlans(userId); } },
       { name: 'Seances', run: async () => { result.sessionsSync = await syncSessions(); } },
       { name: 'Evenements', run: async () => { result.eventsSync = await syncEvents(); } },
       { name: 'Seances de groupe', run: async () => { result.groupSessionsSync = await syncGroupSessions(); } },
@@ -616,6 +626,7 @@ async function syncSessions(): Promise<number> {
     notes: s.notes,
     started_at: s.started_at,
     ended_at: s.ended_at,
+    group_id: s.group_id ?? null,
   }));
 
   const { error } = await supabase
@@ -637,6 +648,161 @@ async function syncSessions(): Promise<number> {
   );
 
   return sessionsToPush.length;
+}
+
+// ============================================
+// Groupes de classe (demi-groupes durables) — distincts des groupes de TP plus bas
+// ============================================
+
+/**
+ * Push des groupes de classe. Les classes sont deja poussees (etape precedente) ;
+ * un groupe dont la classe n'existe pas sur le serveur (classe supprimee) est purge en local.
+ */
+async function syncClassGroups(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; user_id: string; class_id: string; name: string; color: string | null;
+    sort_order: number; created_at: string; updated_at: string | null;
+  }>(`SELECT id, user_id, class_id, name, color, sort_order, created_at, updated_at FROM class_groups WHERE synced_at IS NULL`);
+  if (unsynced.length === 0) return 0;
+
+  const classIds = [...new Set(unsynced.map(g => g.class_id))];
+  const { data: existingClasses } = await supabase.from('classes').select('id').in('id', classIds);
+  const serverClassIds = new Set((existingClasses || []).map(c => c.id));
+
+  const toPush = unsynced.filter(g => serverClassIds.has(g.class_id));
+  for (const g of unsynced) {
+    if (!serverClassIds.has(g.class_id)) {
+      await executeSql(`DELETE FROM class_groups WHERE id = ?`, [g.id]);
+      if (__DEV__) console.log('[syncService] Dropped class_group of missing class:', g.id);
+    }
+  }
+  if (toPush.length === 0) return 0;
+
+  const { error } = await supabase
+    .from('class_groups')
+    .upsert(toPush.map(g => ({
+      id: g.id, user_id: g.user_id, class_id: g.class_id, name: g.name, color: g.color,
+      sort_order: g.sort_order, created_at: g.created_at, updated_at: g.updated_at,
+    })), { onConflict: 'id' });
+  if (error) {
+    console.error('[syncService] Class groups sync error:', error);
+    throw new Error(`Groupes de classe: ${error.message}`);
+  }
+
+  const now = new Date().toISOString();
+  const ids = toPush.map(g => g.id);
+  await executeSql(
+    `UPDATE class_groups SET synced_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+    [now, ...ids]
+  );
+  return toPush.length;
+}
+
+/**
+ * Push de l'appartenance. Upsert sur (group_id, student_id) : si le meme couple a ete cree
+ * des deux cotes avec des ids differents, on recupere l'id serveur et on remappe en local.
+ */
+async function syncClassGroupMembers(): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{ id: string; group_id: string; student_id: string; created_at: string }>(
+    `SELECT id, group_id, student_id, created_at FROM class_group_members WHERE synced_at IS NULL`
+  );
+  if (unsynced.length === 0) return 0;
+
+  // Ne pousser que les membres dont groupe ET eleve existent sur le serveur
+  const groupIds = [...new Set(unsynced.map(m => m.group_id))];
+  const studentIds = [...new Set(unsynced.map(m => m.student_id))];
+  const [{ data: serverGroups }, { data: serverStudents }] = await Promise.all([
+    supabase.from('class_groups').select('id').in('id', groupIds),
+    supabase.from('students').select('id').in('id', studentIds),
+  ]);
+  const okGroups = new Set((serverGroups || []).map(g => g.id));
+  const okStudents = new Set((serverStudents || []).map(s => s.id));
+  const toPush = unsynced.filter(m => okGroups.has(m.group_id) && okStudents.has(m.student_id));
+  if (toPush.length === 0) return 0;
+
+  const { data: upserted, error } = await supabase
+    .from('class_group_members')
+    .upsert(
+      toPush.map(m => ({ id: m.id, group_id: m.group_id, student_id: m.student_id, created_at: m.created_at })),
+      { onConflict: 'group_id,student_id', ignoreDuplicates: false }
+    )
+    .select('id, group_id, student_id');
+  if (error) {
+    console.error('[syncService] Class group members sync error:', error);
+    throw new Error(`Membres de groupe de classe: ${error.message}`);
+  }
+
+  const now = new Date().toISOString();
+  const serverByKey = new Map((upserted || []).map(r => [`${r.group_id}:${r.student_id}`, r.id]));
+  for (const m of toPush) {
+    const serverId = serverByKey.get(`${m.group_id}:${m.student_id}`);
+    if (serverId && serverId !== m.id) {
+      // Meme couple cree des deux cotes : on prend l'id serveur (UPDATE en place, pas de DELETE)
+      await executeTransaction([
+        { sql: 'PRAGMA defer_foreign_keys = ON' },
+        { sql: 'UPDATE class_group_members SET id = ?, synced_at = ? WHERE id = ?', params: [serverId, now, m.id] },
+      ]);
+    } else {
+      await executeSql(`UPDATE class_group_members SET synced_at = ? WHERE id = ?`, [now, m.id]);
+    }
+  }
+  return toPush.length;
+}
+
+/**
+ * Push des plans par groupe. UNIQUE(class_id, room_id, group_id) cote serveur : upsert direct
+ * (bien plus simple que syncPlans, qui doit retrouver les plans par cle composite).
+ */
+async function syncClassGroupPlans(userId: string): Promise<number> {
+  if (!supabase) return 0;
+
+  const unsynced = await queryAll<{
+    id: string; class_id: string; room_id: string; group_id: string; positions: string;
+    created_at: string; updated_at: string | null;
+  }>(`SELECT id, class_id, room_id, group_id, positions, created_at, updated_at FROM class_group_plans WHERE synced_at IS NULL`);
+  if (unsynced.length === 0) return 0;
+
+  const groupIds = [...new Set(unsynced.map(p => p.group_id))];
+  const roomIds = [...new Set(unsynced.map(p => p.room_id))];
+  const [{ data: serverGroups }, { data: serverRooms }] = await Promise.all([
+    supabase.from('class_groups').select('id').in('id', groupIds),
+    supabase.from('rooms').select('id').in('id', roomIds),
+  ]);
+  const okGroups = new Set((serverGroups || []).map(g => g.id));
+  const okRooms = new Set((serverRooms || []).map(r => r.id));
+  const toPush = unsynced.filter(p => okGroups.has(p.group_id) && okRooms.has(p.room_id));
+  if (toPush.length === 0) return 0;
+
+  const { data: upserted, error } = await supabase
+    .from('class_group_plans')
+    .upsert(
+      toPush.map(p => ({
+        id: p.id, user_id: userId, class_id: p.class_id, room_id: p.room_id, group_id: p.group_id,
+        positions: JSON.parse(p.positions || '{}'), created_at: p.created_at, updated_at: p.updated_at,
+      })),
+      { onConflict: 'class_id,room_id,group_id' }
+    )
+    .select('id, class_id, room_id, group_id');
+  if (error) {
+    console.error('[syncService] Class group plans sync error:', error);
+    throw new Error(`Plans de groupe: ${error.message}`);
+  }
+
+  const now = new Date().toISOString();
+  const serverByKey = new Map((upserted || []).map(r => [`${r.class_id}:${r.room_id}:${r.group_id}`, r.id]));
+  for (const p of toPush) {
+    const serverId = serverByKey.get(`${p.class_id}:${p.room_id}:${p.group_id}`);
+    if (serverId && serverId !== p.id) {
+      await executeSql(`UPDATE class_group_plans SET id = ?, synced_at = ? WHERE id = ?`, [serverId, now, p.id]);
+    } else {
+      await executeSql(`UPDATE class_group_plans SET synced_at = ? WHERE id = ?`, [now, p.id]);
+    }
+  }
+  return toPush.length;
 }
 
 /**
@@ -1399,6 +1565,8 @@ async function purgeLocalClassData(classId: string): Promise<void> {
     [classId]
   );
   await executeSql(`DELETE FROM class_room_plans WHERE class_id = ?`, [classId]);
+  // groupes de classe : membres et plans de groupe partent en CASCADE
+  await executeSql(`DELETE FROM class_groups WHERE class_id = ?`, [classId]);
   await executeSql(`DELETE FROM students WHERE class_id = ?`, [classId]);
   await executeSql(`DELETE FROM classes WHERE id = ?`, [classId]);
 }
@@ -1754,9 +1922,12 @@ export async function pullFromServer(userId: string): Promise<{
   stampCards: number;
   stamps: number;
   bonusSelections: number;
+  classGroups: number;
+  classGroupMembers: number;
+  classGroupPlans: number;
   errors: string[];
 }> {
-  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, tpTemplates: 0, stampCategories: 0, bonuses: 0, stampCards: 0, stamps: 0, bonusSelections: 0, errors: [] as string[] };
+  const result = { classes: 0, students: 0, rooms: 0, plans: 0, sessions: 0, events: 0, tpTemplates: 0, stampCategories: 0, bonuses: 0, stampCards: 0, stamps: 0, bonusSelections: 0, classGroups: 0, classGroupMembers: 0, classGroupPlans: 0, errors: [] as string[] };
 
   if (!isSupabaseConfigured || !supabase) {
     if (__DEV__) {
@@ -1957,6 +2128,93 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
+    // 3b. Pull groupes de classe + appartenance (demi-groupes ; pas les groupes de TP)
+    //     Apres classes, eleves et salles : les FK locales sont satisfaites.
+    {
+      const pendingDeleted = await getPendingDeletedIds(['class_groups', 'class_group_members', 'class_group_plans']);
+
+      const { data: serverGroups, error: groupsError } = await supabase
+        .from('class_groups')
+        .select('id, user_id, class_id, name, color, sort_order, created_at, updated_at')
+        .eq('user_id', userId);
+
+      if (groupsError) {
+        console.error('[syncService] Pull class_groups error:', groupsError);
+        result.errors.push(`Groupes de classe: ${groupsError.message}`);
+      } else if (serverGroups !== null) {
+        const serverIds = new Set(serverGroups.map(g => g.id));
+        // Supprimes sur le serveur (web) -> supprimes ici, cascade sur membres et plans de groupe
+        const localGroups = await queryAll<{ id: string; synced_at: string | null }>(
+          `SELECT id, synced_at FROM class_groups WHERE user_id = ?`, [userId]
+        );
+        for (const local of localGroups) {
+          if (!serverIds.has(local.id) && local.synced_at !== null) {
+            await executeSql(`UPDATE sessions SET group_id = NULL WHERE group_id = ?`, [local.id]);
+            await executeSql(`DELETE FROM class_groups WHERE id = ?`, [local.id]);
+          }
+        }
+        // Classes connues en local (un groupe d'une classe pas encore tiree serait orphelin)
+        const knownClasses = new Set(
+          (await queryAll<{ id: string }>(`SELECT id FROM classes WHERE user_id = ?`, [userId])).map(c => c.id)
+        );
+        for (const g of serverGroups) {
+          if (pendingDeleted.has(g.id) || !knownClasses.has(g.class_id)) continue;
+          await upsertLocalRow('class_groups', {
+            id: g.id, user_id: g.user_id, class_id: g.class_id, name: g.name, color: g.color ?? null,
+            sort_order: g.sort_order ?? 0, created_at: g.created_at, updated_at: g.updated_at ?? null, synced_at: now,
+          });
+          result.classGroups++;
+        }
+
+        // Membres : par groupe serveur
+        const groupIds = serverGroups.map(g => g.id).filter(id => !pendingDeleted.has(id));
+        if (groupIds.length > 0) {
+          const { data: serverMembers, error: membersError } = await supabase
+            .from('class_group_members')
+            .select('id, group_id, student_id, created_at')
+            .in('group_id', groupIds);
+
+          if (membersError) {
+            console.error('[syncService] Pull class_group_members error:', membersError);
+            result.errors.push(`Membres de groupe de classe: ${membersError.message}`);
+          } else if (serverMembers !== null) {
+            const serverMemberIds = new Set(serverMembers.map(m => m.id));
+            const localMembers = await queryAll<{ id: string; synced_at: string | null }>(
+              `SELECT m.id, m.synced_at FROM class_group_members m
+               JOIN class_groups g ON g.id = m.group_id WHERE g.user_id = ?`, [userId]
+            );
+            for (const local of localMembers) {
+              if (!serverMemberIds.has(local.id) && local.synced_at !== null) {
+                await executeSql(`DELETE FROM class_group_members WHERE id = ?`, [local.id]);
+              }
+            }
+            const knownStudents = new Set(
+              (await queryAll<{ id: string }>(`SELECT id FROM students WHERE user_id = ?`, [userId])).map(s => s.id)
+            );
+            const knownGroups = new Set(
+              (await queryAll<{ id: string }>(`SELECT id FROM class_groups WHERE user_id = ?`, [userId])).map(g => g.id)
+            );
+            for (const m of serverMembers) {
+              if (pendingDeleted.has(m.id) || !knownStudents.has(m.student_id) || !knownGroups.has(m.group_id)) continue;
+              // Meme couple (groupe, eleve) cree en local avec un autre id : on aligne l'id (pas de DELETE)
+              const sameKey = await queryFirst<{ id: string }>(
+                `SELECT id FROM class_group_members WHERE group_id = ? AND student_id = ? AND id <> ?`,
+                [m.group_id, m.student_id, m.id]
+              );
+              if (sameKey) {
+                await executeSql(`UPDATE class_group_members SET id = ?, synced_at = ? WHERE id = ?`, [m.id, now, sameKey.id]);
+              } else {
+                await upsertLocalRow('class_group_members', {
+                  id: m.id, group_id: m.group_id, student_id: m.student_id, created_at: m.created_at, synced_at: now,
+                });
+              }
+              result.classGroupMembers++;
+            }
+          }
+        }
+      }
+    }
+
     // 4. Pull class_room_plans from Supabase
     // Get all class IDs for this user
     const localClasses = await queryAll<{ id: string }>(
@@ -2011,10 +2269,63 @@ export async function pullFromServer(userId: string): Promise<{
       }
     }
 
+    // 4b. Pull plans par groupe (class_group_plans) — table dediee, class_room_plans intacte
+    {
+      const pendingDeleted = await getPendingDeletedIds(['class_group_plans']);
+      const { data: serverGroupPlans, error: groupPlansError } = await supabase
+        .from('class_group_plans')
+        .select('id, class_id, room_id, group_id, positions, created_at, updated_at')
+        .eq('user_id', userId);
+
+      if (groupPlansError) {
+        console.error('[syncService] Pull class_group_plans error:', groupPlansError);
+        result.errors.push(`Plans de groupe: ${groupPlansError.message}`);
+      } else if (serverGroupPlans !== null) {
+        const serverIds = new Set(serverGroupPlans.map(p => p.id));
+        const localPlans = await queryAll<{ id: string; synced_at: string | null }>(
+          `SELECT id, synced_at FROM class_group_plans`
+        );
+        for (const local of localPlans) {
+          if (!serverIds.has(local.id) && local.synced_at !== null) {
+            await executeSql(`DELETE FROM class_group_plans WHERE id = ?`, [local.id]);
+          }
+        }
+        const knownGroups = new Set(
+          (await queryAll<{ id: string }>(`SELECT id FROM class_groups WHERE user_id = ?`, [userId])).map(g => g.id)
+        );
+        const knownRooms = new Set(
+          (await queryAll<{ id: string }>(`SELECT id FROM rooms WHERE user_id = ?`, [userId])).map(r => r.id)
+        );
+        for (const p of serverGroupPlans) {
+          if (pendingDeleted.has(p.id) || !knownGroups.has(p.group_id) || !knownRooms.has(p.room_id)) continue;
+          const positionsJson = typeof p.positions === 'string' ? p.positions : JSON.stringify(p.positions || {});
+          // Meme cle (classe, salle, groupe) creee en local avec un autre id : le serveur gagne
+          const sameKey = await queryFirst<{ id: string; synced_at: string | null }>(
+            `SELECT id, synced_at FROM class_group_plans WHERE class_id = ? AND room_id = ? AND group_id = ? AND id <> ?`,
+            [p.class_id, p.room_id, p.group_id, p.id]
+          );
+          if (sameKey) {
+            if (sameKey.synced_at === null) continue; // modif locale pas encore poussee : elle partira au push
+            await executeSql(`DELETE FROM class_group_plans WHERE id = ?`, [sameKey.id]);
+          }
+          // Meme id mais positions modifiees en local et pas encore poussees : ne pas ecraser
+          const sameId = await queryFirst<{ synced_at: string | null }>(
+            `SELECT synced_at FROM class_group_plans WHERE id = ?`, [p.id]
+          );
+          if (sameId && sameId.synced_at === null) continue;
+          await upsertLocalRow('class_group_plans', {
+            id: p.id, class_id: p.class_id, room_id: p.room_id, group_id: p.group_id,
+            positions: positionsJson, created_at: p.created_at, updated_at: p.updated_at ?? null, synced_at: now,
+          });
+          result.classGroupPlans++;
+        }
+      }
+    }
+
     // 5. Pull sessions from Supabase
     const { data: serverSessions, error: sessionsError } = await supabase
       .from('sessions')
-      .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at')
+      .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at, group_id')
       .eq('user_id', userId);
 
     if (sessionsError) {
@@ -2042,13 +2353,20 @@ export async function pullFromServer(userId: string): Promise<{
 
           // Insert new session (with auto-ended_at if it was active)
           await executeSql(
-            `INSERT INTO sessions (id, user_id, class_id, room_id, topic, notes, started_at, ended_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [session.id, session.user_id, session.class_id, session.room_id, session.topic || null, session.notes || null, session.started_at, effectiveEndedAt, now]
+            `INSERT INTO sessions (id, user_id, class_id, room_id, topic, notes, started_at, ended_at, synced_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [session.id, session.user_id, session.class_id, session.room_id, session.topic || null, session.notes || null, session.started_at, effectiveEndedAt, now, session.group_id || null]
           );
           result.sessions++;
           if (__DEV__) {
             console.log('[syncService] Pulled session:', session.id);
           }
+        } else {
+          // Groupe de la seance change cote serveur (groupe supprime -> SET NULL) : refleter,
+          // seulement si la seance locale n'a pas de modif en attente
+          await executeSql(
+            `UPDATE sessions SET group_id = ? WHERE id = ? AND synced_at IS NOT NULL AND group_id IS NOT ?`,
+            [session.group_id || null, session.id, session.group_id || null]
+          );
         }
       }
     }

@@ -13,11 +13,12 @@ import {
   ScrollView,
   FlatList,
 } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
-import { useAuthStore, useClassStore, useStudentStore, useRoomStore, useHistoryStore, StudentWithMapping } from '../../../stores';
+import { useAuthStore, useClassStore, useStudentStore, useRoomStore, useHistoryStore, useClassGroupStore, StudentWithMapping } from '../../../stores';
 import { theme } from '../../../constants/theme';
+import { classGroupColor } from '../../../constants/classGroupColors';
 import { Class, EventType } from '../../../types';
 import { Room, getClassDeleteStats, deleteClassCompletely, getClassStudentEventCounts, getSessionsByClassId } from '../../../services/database';
 import { exportClassPdf } from '../../../services/pdfExport';
@@ -75,6 +76,16 @@ export default function ClassDetailScreen() {
   const [isExporting, setIsExporting] = useState(false);
 
   const students = id ? studentsByClass[id] || [] : [];
+
+  // Groupes de classe (demi-groupes) : rechargés à chaque retour sur l'écran
+  const { groupsByClass, membersByClass, loadForClass: loadClassGroups } = useClassGroupStore();
+  const classGroups = id ? groupsByClass[id] || [] : [];
+  const classGroupMembers = id ? membersByClass[id] || [] : [];
+  useFocusEffect(
+    useCallback(() => {
+      if (id) loadClassGroups(id);
+    }, [id, loadClassGroups])
+  );
 
   // Find the class in the store
   useEffect(() => {
@@ -452,6 +463,67 @@ export default function ClassDetailScreen() {
                   {renderStudentItem({ item: student })}
                 </View>
               ))}
+            </View>
+          )}
+        </View>
+
+        {/* Groupes de classe (demi-groupes durables, distincts des groupes de TP) */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Groupes</Text>
+            {classGroups.length > 0 && (
+              <Pressable
+                style={styles.addStudentButton}
+                onPress={() => router.push(`/(main)/classes/${id}/groups`)}
+              >
+                <Text style={styles.addStudentButtonText}>Gérer</Text>
+              </Pressable>
+            )}
+          </View>
+
+          {classGroups.length === 0 ? (
+            <Pressable
+              style={styles.emptySection}
+              onPress={() => router.push(`/(main)/classes/${id}/groups`)}
+            >
+              <Text style={styles.emptySectionEmoji}>👥</Text>
+              <Text style={styles.emptySectionText}>Aucun groupe</Text>
+              <Text style={styles.emptySectionHint}>
+                Demi-classe une semaine sur deux, latinistes… Touchez pour créer des groupes.
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={styles.roomsList}>
+              {classGroups.map((group, index) => {
+                const color = classGroupColor(group.color, index);
+                const count = classGroupMembers.filter(m => m.group_id === group.id).length;
+                return (
+                  <Pressable
+                    key={group.id}
+                    style={({ pressed }) => [styles.roomItem, pressed && styles.roomItemPressed]}
+                    onPress={() => router.push(`/(main)/classes/${id}/groups`)}
+                  >
+                    <View style={[styles.groupDot, { backgroundColor: color.main }]} />
+                    <View style={styles.roomInfo}>
+                      <Text style={styles.roomName}>{group.name}</Text>
+                      <Text style={styles.roomGrid}>{count} élève{count > 1 ? 's' : ''}</Text>
+                    </View>
+                    <Text style={styles.roomChevron}>›</Text>
+                  </Pressable>
+                );
+              })}
+              {(() => {
+                const assigned = new Set(classGroupMembers.map(m => m.student_id));
+                const unassigned = students.filter(s => !assigned.has(s.id)).length;
+                return unassigned > 0 ? (
+                  <View style={[styles.roomItem, { borderBottomWidth: 0 }]}>
+                    <View style={[styles.groupDot, { backgroundColor: theme.colors.textTertiary }]} />
+                    <View style={styles.roomInfo}>
+                      <Text style={styles.roomGrid}>{unassigned} non affecté{unassigned > 1 ? 's' : ''}</Text>
+                    </View>
+                  </View>
+                ) : null;
+              })()}
             </View>
           )}
         </View>
@@ -961,6 +1033,12 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: theme.colors.textTertiary,
     marginLeft: theme.spacing.sm,
+  },
+  groupDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: theme.spacing.sm + 2,
   },
   dangerZone: {
     marginTop: theme.spacing.xl,
