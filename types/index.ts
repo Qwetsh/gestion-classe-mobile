@@ -7,6 +7,10 @@ export interface Student {
   classId: string;
   createdAt: string;
   photoPath?: string | null;
+  /** Dispositifs d'accompagnement : indicateur seul, jamais le contenu (RGPD). */
+  hasPap?: boolean;
+  hasPpre?: boolean;
+  hasPai?: boolean;
 }
 
 export interface Class {

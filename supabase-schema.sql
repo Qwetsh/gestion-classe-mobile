@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS public.students (
   group_id UUID REFERENCES public.student_groups(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ,
-  is_deleted BOOLEAN DEFAULT FALSE
+  is_deleted BOOLEAN DEFAULT FALSE,
+  -- Dispositifs d'accompagnement : indicateur seul, jamais le contenu (migration 038)
+  has_pap BOOLEAN NOT NULL DEFAULT FALSE,
+  has_ppre BOOLEAN NOT NULL DEFAULT FALSE,
+  has_pai BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Rooms table

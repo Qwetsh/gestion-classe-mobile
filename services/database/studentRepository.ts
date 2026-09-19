@@ -14,6 +14,9 @@ interface StudentRow {
   updated_at: string | null;
   synced_at: string | null;
   is_deleted: number;
+  has_pap?: number | null;
+  has_ppre?: number | null;
+  has_pai?: number | null;
 }
 
 /**
@@ -25,6 +28,9 @@ function rowToStudent(row: StudentRow): Student {
     pseudo: row.pseudo,
     classId: row.class_id,
     createdAt: row.created_at,
+    hasPap: !!row.has_pap,
+    hasPpre: !!row.has_ppre,
+    hasPai: !!row.has_pai,
   };
 }
 

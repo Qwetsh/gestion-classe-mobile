@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * SQL statements to create all tables
@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS students (
   updated_at TEXT,
   synced_at TEXT,
   is_deleted INTEGER DEFAULT 0,
+  has_pap INTEGER NOT NULL DEFAULT 0,
+  has_ppre INTEGER NOT NULL DEFAULT 0,
+  has_pai INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (class_id) REFERENCES classes(id)
 );
 

@@ -2005,7 +2005,7 @@ export async function pullFromServer(userId: string): Promise<{
     // 2. Pull students from Supabase
     const { data: serverStudents, error: studentsError } = await supabase
       .from('students')
-      .select('id, user_id, class_id, pseudo, created_at')
+      .select('id, user_id, class_id, pseudo, created_at, has_pap, has_ppre, has_pai')
       .eq('user_id', userId);
 
     if (studentsError) {
@@ -2042,8 +2042,9 @@ export async function pullFromServer(userId: string): Promise<{
 
           if (existing.length === 0) {
             await executeSql(
-              `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at, is_deleted) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-              [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now]
+              `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at, is_deleted, has_pap, has_ppre, has_pai) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+              [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now,
+                student.has_pap ? 1 : 0, student.has_ppre ? 1 : 0, student.has_pai ? 1 : 0]
             );
             result.students++;
             if (__DEV__) {
@@ -2051,10 +2052,11 @@ export async function pullFromServer(userId: string): Promise<{
             }
           } else {
             // Student exists: restore it and sync server-side changes
-            // (class change on web, year-transition detach, pseudo edit)
+            // (class change on web, year-transition detach, pseudo edit, PAP/PPRE/PAI)
             await executeSql(
-              `UPDATE students SET is_deleted = 0, synced_at = ?, class_id = ?, pseudo = ? WHERE id = ?`,
-              [now, student.class_id, student.pseudo, student.id]
+              `UPDATE students SET is_deleted = 0, synced_at = ?, class_id = ?, pseudo = ?, has_pap = ?, has_ppre = ?, has_pai = ? WHERE id = ?`,
+              [now, student.class_id, student.pseudo,
+                student.has_pap ? 1 : 0, student.has_ppre ? 1 : 0, student.has_pai ? 1 : 0, student.id]
             );
             if (__DEV__) {
               console.log('[syncService] Updated student from server:', student.pseudo);

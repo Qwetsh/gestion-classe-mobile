@@ -61,6 +61,7 @@ import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOver
 import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
 import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
 import { theme } from '../../../constants/theme';
+import { AccommodationBadges } from '../../../components/AccommodationBadges';
 import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, getStudentEventsInSession } from '../../../services/database';
 import { deleteEventNow } from '../../../services/sync/liveSync';
 import { connectClassroomChannel, disconnectClassroomChannel, sendClassroomCommand } from '../../../services/sync/classroomChannel';
@@ -1315,6 +1316,8 @@ function NativeSessionScreen() {
             >
               {student ? (
                 <View style={styles.cellContent}>
+                  {/* Dispositifs PAP / PPRE / PAI : indicateur seul, hors de la chaine ABS / sortie / compteurs */}
+                  <AccommodationBadges student={student} size="xs" style={styles.cellAccommodations} />
                   <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
                     {cellLabelById[student.id] ?? getDisplayName(student).split(' ')[0]}
                   </Text>
@@ -2448,6 +2451,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: theme.colors.text,
     textAlign: 'center',
+  },
+  cellAccommodations: {
+    position: 'absolute',
+    top: 1,
+    right: 1,
   },
   cellNameAbsent: {
     color: theme.colors.absentText,

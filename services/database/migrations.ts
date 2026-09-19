@@ -712,6 +712,31 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 15 -> 16: Dispositifs d'accompagnement PAP / PPRE / PAI (indicateurs seuls)
+  // 3 ADD COLUMN idempotents sur students, aucune recreation de table.
+  if (fromVersion < 16) {
+    console.log('[Database] Applying migration: student accommodations (v16)');
+
+    const missing: string[] = [];
+    for (const col of ['has_pap', 'has_ppre', 'has_pai']) {
+      if (!(await columnExists('students', col))) missing.push(col);
+    }
+
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      for (const col of missing) {
+        await db.runAsync(`ALTER TABLE students ADD COLUMN ${col} INTEGER NOT NULL DEFAULT 0`);
+      }
+      await db.runAsync('UPDATE schema_version SET version = ?', [16]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v16 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v16 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**

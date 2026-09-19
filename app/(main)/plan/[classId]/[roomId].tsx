@@ -21,6 +21,7 @@ import {
   StudentWithMapping,
 } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
+import { AccommodationBadges } from '../../../../components/AccommodationBadges';
 import { getStudentAtPosition } from '../../../../services/database';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -185,9 +186,12 @@ export default function PlanEditorScreen() {
             disabled={disabled}
           >
             {student ? (
-              <Text style={styles.cellText} numberOfLines={2}>
-                {getDisplayName(student)}
-              </Text>
+              <>
+                <AccommodationBadges student={student} size="xs" style={styles.cellAccommodations} />
+                <Text style={styles.cellText} numberOfLines={2}>
+                  {getDisplayName(student)}
+                </Text>
+              </>
             ) : null}
           </Pressable>
         );
@@ -517,6 +521,11 @@ const styles = StyleSheet.create({
   gridCellOccupied: {
     backgroundColor: theme.colors.participationSoft,
     borderColor: theme.colors.participation,
+  },
+  cellAccommodations: {
+    position: 'absolute',
+    top: 1,
+    right: 1,
   },
   gridCellAvailable: {
     backgroundColor: theme.colors.primarySoft,

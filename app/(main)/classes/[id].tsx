@@ -22,6 +22,7 @@ import { classGroupColor } from '../../../constants/classGroupColors';
 import { Class, EventType } from '../../../types';
 import { Room, getClassDeleteStats, deleteClassCompletely, getClassStudentEventCounts, getSessionsByClassId } from '../../../services/database';
 import { exportClassPdf } from '../../../services/pdfExport';
+import { AccommodationBadges } from '../../../components/AccommodationBadges';
 
 export default function ClassDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -338,6 +339,7 @@ export default function ClassDetailScreen() {
           </Text>
           <Text style={styles.studentPseudo}>{item.pseudo}</Text>
         </View>
+        <AccommodationBadges student={item} style={styles.studentAccommodations} />
         <Text style={styles.studentChevron}>›</Text>
       </Pressable>
     );
@@ -992,6 +994,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: theme.colors.textTertiary,
     marginTop: 2,
+  },
+  studentAccommodations: {
+    marginRight: 8,
   },
   createRoomLink: {
     marginTop: theme.spacing.md,
