@@ -62,6 +62,7 @@ import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
 import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
 import { theme } from '../../../constants/theme';
 import { AccommodationBadges } from '../../../components/AccommodationBadges';
+import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
 import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, getStudentEventsInSession } from '../../../services/database';
 import { deleteEventNow } from '../../../services/sync/liveSync';
 import { connectClassroomChannel, disconnectClassroomChannel, sendClassroomCommand } from '../../../services/sync/classroomChannel';
@@ -1409,6 +1410,9 @@ function NativeSessionScreen() {
           <Text style={styles.endButtonText}>Terminer</Text>
         </Pressable>
       </View>
+
+      {/* Note écrite depuis l'accueil web pour ce cours (rien si aucune / hors ligne) */}
+      <LessonNoteBanner classId={activeSession.class_id} at={activeSession.started_at} groupId={activeSession.group_id} />
 
       <View
         ref={containerRef}

@@ -18,6 +18,7 @@ import {
   useSessionStore,
 } from '../../../stores';
 import { theme } from '../../../constants/theme';
+import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
 import { Class, Room } from '../../../types';
 
 export default function StartSessionScreen() {
@@ -29,6 +30,8 @@ export default function StartSessionScreen() {
   const [selectedClass, setSelectedClass] = useState<Class | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [topic, setTopic] = useState('');
+  // Instant de référence pour la note de cours (figé à l'ouverture de l'écran)
+  const [startedAt, setStartedAt] = useState(() => new Date());
 
   // Reset selections and reload data each time screen gets focus
   useFocusEffect(
@@ -36,6 +39,7 @@ export default function StartSessionScreen() {
       setSelectedClass(null);
       setSelectedRoom(null);
       setTopic('');
+      setStartedAt(new Date());
       if (user?.id) {
         loadClasses(user.id);
         loadRooms(user.id);
@@ -114,6 +118,8 @@ export default function StartSessionScreen() {
               })}
             </View>
           )}
+          {/* Note écrite depuis l'accueil web pour le cours qui commence */}
+          {selectedClass && <LessonNoteBanner classId={selectedClass.id} at={startedAt} compact />}
         </View>
 
         {/* 2 · Choisir une salle */}

@@ -208,10 +208,12 @@ export default function PlanEditorScreen() {
 
     return (
       <View style={styles.gridWrapper}>
+        <View style={styles.gridContainer}>{rows}</View>
+        {/* Tableau EN BAS, comme dans l'ecran de seance, l'editeur web et l'ecran projete :
+            la derniere rangee est celle du devant (convention du generateur automatique) */}
         <View style={styles.teacherArea}>
           <Text style={styles.teacherText}>Tableau</Text>
         </View>
-        <View style={styles.gridContainer}>{rows}</View>
         <View style={styles.gridStats}>
           <Text style={styles.gridStatsText}>
             {placedCount} / {students.length} eleves places
@@ -488,6 +490,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceSecondary,
     borderRadius: theme.radius.md,
     padding: theme.spacing.sm,
+    marginTop: theme.spacing.md,
     marginBottom: theme.spacing.md,
     alignItems: 'center',
   },
