@@ -90,6 +90,8 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       );
       // Les cartes en cache peuvent avoir change (tampons donnes depuis le web)
       useStampStore.getState().invalidateCards();
+      // Categories ajoutees / desactivees / reordonnees depuis le web
+      await useStampStore.getState().refreshCategories(userId);
 
       // Then, push local data to server (mobile -> server) with timeout
       if (__DEV__) {

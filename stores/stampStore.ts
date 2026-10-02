@@ -36,6 +36,8 @@ interface StampState {
   doMarkBonusUsed: (selectionId: string) => Promise<void>;
   /** Vide le cache des cartes (apres une synchro : les ecrans rechargent) */
   invalidateCards: () => void;
+  /** Relit les categories locales (apres une synchro : modifications faites sur le web) */
+  refreshCategories: (userId: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -118,6 +120,17 @@ export const useStampStore = create<StampState>((set, get) => ({
   },
 
   invalidateCards: () => set({ activeCards: {} }),
+
+  refreshCategories: async (userId: string) => {
+    // Pas encore chargees : loadCategories s'en chargera (avec le seed eventuel)
+    if (!get().categoriesLoaded) return;
+    try {
+      const categories = await getStampCategories(userId, true);
+      set({ categories });
+    } catch (error) {
+      console.error('[stampStore] Failed to refresh categories:', error);
+    }
+  },
 
   reset: () => set({
     categories: [],
