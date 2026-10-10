@@ -37,6 +37,11 @@ interface SyncState {
 
   // Actions
   sync: (userId: string, options?: { background?: boolean }) => Promise<SyncResult>;
+  /**
+   * Push seul, en tache de fond : renvoie ce qui attend sur le telephone (tampons poses hors ligne
+   * ou dont l'envoi immediat a echoue) sans refaire tout le pull. Silencieux si une synchro tourne.
+   */
+  pushPending: (userId: string) => Promise<void>;
   refreshUnsyncedCount: () => Promise<void>;
   clearError: () => void;
   clearLastResult: () => void;
@@ -79,36 +84,44 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ isSyncing: true, isBackgroundSync: options?.background === true, error: null });
 
     try {
-      // First, pull data from server (server -> mobile) with timeout
+      // 1. Pull (serveur -> mobile). Un echec ou un depassement de delai du pull ne doit JAMAIS
+      // empecher le push : avant, un pull trop long (Wi-Fi du college) sautait le push, et les tampons
+      // poses en classe attendaient le prochain lancement reussi de l'app (audit n°2, A3).
+      let pullError: string | null = null;
       if (__DEV__) {
         console.log('[syncStore] Pulling from server...');
       }
-      await withTimeout(
-        pullFromServer(userId),
-        SYNC_TIMEOUT_MS,
-        'Pull serveur'
-      );
+      try {
+        await withTimeout(pullFromServer(userId), SYNC_TIMEOUT_MS, 'Pull serveur');
+      } catch (error) {
+        pullError = error instanceof Error ? error.message : 'Pull serveur impossible';
+        console.error('[syncStore] Pull failed, pushing anyway:', pullError);
+      }
       // Les cartes en cache peuvent avoir change (tampons donnes depuis le web)
       useStampStore.getState().invalidateCards();
       // Categories ajoutees / desactivees / reordonnees depuis le web
       await useStampStore.getState().refreshCategories(userId);
 
-      // Then, push local data to server (mobile -> server) with timeout
+      // 2. Push (mobile -> serveur)
       if (__DEV__) {
         console.log('[syncStore] Pushing to server...');
       }
-      const result = await withTimeout(
-        syncAll(userId),
-        SYNC_TIMEOUT_MS,
-        'Push serveur'
-      );
+      const result = await withTimeout(syncAll(userId), SYNC_TIMEOUT_MS, 'Push serveur');
+      if (pullError) {
+        result.errors.unshift(`Pull serveur : ${pullError}`);
+        result.success = false;
+      }
+
+      // Le compteur reflete ce qui reste vraiment en attente (plus jamais remis a 0 d'office).
+      let remaining = 0;
+      try { remaining = await getUnsyncedCount(); } catch { /* compteur indicatif */ }
 
       set({
         isSyncing: false,
         isBackgroundSync: false,
         lastSyncResult: result,
         lastSyncTime: new Date(),
-        unsyncedCount: 0,
+        unsyncedCount: remaining,
         error: result.success ? null : result.errors.join(', '),
       });
 
@@ -144,6 +157,29 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         bonusSelectionsSync: 0,
         errors: [errorMessage],
       };
+    }
+  },
+
+  pushPending: async (userId: string) => {
+    if (get().isSyncing) return;
+    let pending = 0;
+    try { pending = await getUnsyncedCount(); } catch { return; }
+    if (pending === 0) { set({ unsyncedCount: 0 }); return; }
+    set({ isSyncing: true, isBackgroundSync: true });
+    try {
+      const result = await withTimeout(syncAll(userId), SYNC_TIMEOUT_MS, 'Push serveur');
+      let remaining = 0;
+      try { remaining = await getUnsyncedCount(); } catch { /* indicatif */ }
+      set({
+        lastSyncResult: result,
+        lastSyncTime: new Date(),
+        unsyncedCount: remaining,
+        error: result.success ? get().error : result.errors.join(', '),
+      });
+    } catch (error) {
+      console.warn('[syncStore] pushPending failed:', error instanceof Error ? error.message : error);
+    } finally {
+      set({ isSyncing: false, isBackgroundSync: false });
     }
   },
 

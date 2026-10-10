@@ -3,6 +3,7 @@ import { executeSql, queryAll, queryFirst, executeTransaction } from './client';
 import { DEFAULT_STAMP_CATEGORIES, DEFAULT_BONUSES } from './schema';
 import { supabase, isSupabaseConfigured } from '../supabase';
 import { firstFreeSlot, CARD_SLOTS } from '../../utils/stampSlots';
+import { remapLocalCard, upsertLocalRow } from './localUpsert';
 
 // ============================================
 // Types
@@ -149,34 +150,73 @@ export async function getStampCategories(userId: string, activeOnly = true): Pro
 }
 
 /**
- * Fusionne les categories locales en double (meme libelle) vers la premiere.
- * Ne supprime que les doublons jamais pousses au serveur : un doublon deja sur le
- * serveur reviendrait au pull suivant (il est dedoublonne a l'affichage). Les tampons
- * qui referencaient un doublon sont reaffectes avant, sinon la FK fait echouer le DELETE
- * et la liste des categories reste vide.
+ * Fusionne les categories locales en double (meme libelle).
+ * Le « keeper » est la categorie deja synchronisee quand il y en a une (c'est elle que le serveur
+ * connait : le serveur a un index unique (user_id, label), une locale au meme libelle ne pourra
+ * jamais etre poussee et bloquerait tous les tampons qui la referencent). A defaut, la premiere
+ * par ordre d'affichage. Ne supprime que les doublons jamais pousses au serveur : un doublon deja
+ * sur le serveur reviendrait au pull suivant (il est dedoublonne a l'affichage). Les tampons qui
+ * referencaient un doublon sont reaffectes avant, sinon la FK fait echouer le DELETE.
  */
 export async function cleanupDuplicateCategories(userId: string): Promise<number> {
   const all = await queryAll<StampCategory>(
     'SELECT * FROM stamp_categories WHERE user_id = ? ORDER BY display_order ASC, created_at ASC',
     [userId]
   );
-  const keeperByLabel = new Map<string, string>();
+  const byLabel = new Map<string, StampCategory[]>();
+  for (const cat of all) byLabel.set(cat.label, [...(byLabel.get(cat.label) ?? []), cat]);
   let merged = 0;
-  for (const cat of all) {
-    const keeper = keeperByLabel.get(cat.label);
-    if (!keeper) {
-      keeperByLabel.set(cat.label, cat.id);
-      continue;
+  for (const group of byLabel.values()) {
+    if (group.length < 2) continue;
+    const keeper = group.find(c => c.synced_at !== null) ?? group[0];
+    for (const cat of group) {
+      if (cat.id === keeper.id || cat.synced_at !== null) continue;
+      await executeSql('UPDATE stamps SET category_id = ? WHERE category_id = ?', [keeper.id, cat.id]);
+      await executeSql('DELETE FROM stamp_categories WHERE id = ?', [cat.id]);
+      merged++;
     }
-    if (cat.synced_at !== null) continue;
-    await executeSql('UPDATE stamps SET category_id = ? WHERE category_id = ?', [keeper, cat.id]);
-    await executeSql('DELETE FROM stamp_categories WHERE id = ?', [cat.id]);
-    merged++;
   }
   if (merged > 0) {
     console.log('[stampRepository] Merged', merged, 'duplicate local categories');
   }
   return merged;
+}
+
+/**
+ * Le serveur a deja une categorie au meme libelle (index unique user_id+label) : on adopte la
+ * sienne. La ligne serveur est ecrite en local, les tampons locaux sont reaffectes, la locale
+ * en double est supprimee. Rien n'est perdu : seul l'identifiant change.
+ */
+export async function adoptServerCategory(
+  localId: string,
+  server: { id: string; user_id: string; label: string; icon: string; icon_ref: string | null; color: string; display_order: number; is_active: boolean; created_at: string },
+  now: string
+): Promise<void> {
+  if (server.id === localId) return;
+  await upsertLocalRow('stamp_categories', {
+    id: server.id, user_id: server.user_id, label: server.label, icon: server.icon, icon_ref: server.icon_ref ?? null,
+    color: server.color, display_order: server.display_order, is_active: server.is_active ? 1 : 0,
+    created_at: server.created_at, synced_at: now,
+  });
+  await executeSql('UPDATE stamps SET category_id = ? WHERE category_id = ?', [server.id, localId]);
+  await executeSql('DELETE FROM stamp_categories WHERE id = ?', [localId]);
+  console.log(`[stampRepository] Adopted server category ${server.id} for local ${localId} (« ${server.label} »)`);
+}
+
+/** Meme chose pour un bonus (index unique user_id+label) : les choix de bonus sont reaffectes. */
+export async function adoptServerBonus(
+  localId: string,
+  server: { id: string; user_id: string; label: string; display_order: number; is_active: boolean; created_at: string },
+  now: string
+): Promise<void> {
+  if (server.id === localId) return;
+  await upsertLocalRow('bonuses', {
+    id: server.id, user_id: server.user_id, label: server.label, display_order: server.display_order,
+    is_active: server.is_active ? 1 : 0, created_at: server.created_at, synced_at: now,
+  });
+  await executeSql('UPDATE bonus_selections SET bonus_id = ? WHERE bonus_id = ?', [server.id, localId]);
+  await executeSql('DELETE FROM bonuses WHERE id = ?', [localId]);
+  console.log(`[stampRepository] Adopted server bonus ${server.id} for local ${localId}`);
 }
 
 export async function createStampCategory(
@@ -393,7 +433,7 @@ export async function awardStamp(
   userId: string,
   studentId: string,
   categoryId: string
-): Promise<{ stamp: Stamp; stampCount: number; cardComplete: boolean; cardNumber: number }> {
+): Promise<{ stamp: Stamp; stampCount: number; cardComplete: boolean; cardNumber: number; pushed: boolean }> {
   const card = await getOrCreateActiveCard(userId, studentId);
 
   // Find used slots and pick the first free one
@@ -470,12 +510,16 @@ export async function awardStamp(
 
   console.log('[stampRepository] Awarded stamp', slotNumber + '/10 to student:', studentId);
 
-  // Push to Supabase immediately for real-time sync.
-  // La carte d'abord (le tampon la reference par FK), en creation seule :
-  // status / completed_at sont pilotes par le serveur (RPC de choix du bonus),
-  // un upsert complet remettrait 'active' une carte deja terminee.
+  // Envoi immediat vers Supabase, pour que le web et l'espace eleve le voient tout de suite.
+  // SQLite reste la source de verite : en cas d'echec, rien n'est marque et la synchro rattrapera
+  // (relancee au retour du reseau, au retour au premier plan et quelques secondes apres cet echec).
+  // La carte d'abord (le tampon la reference par FK), en creation seule : status / completed_at
+  // sont pilotes par le serveur (RPC de choix du bonus), un upsert complet remettrait 'active'
+  // une carte deja terminee.
+  let pushed = false;
   if (isSupabaseConfigured && supabase) {
     try {
+      let cardId = card.id;
       let cardOnServer = card.synced_at !== null;
       if (!cardOnServer) {
         const { error: cardErr } = await supabase.from('stamp_cards').upsert({
@@ -483,33 +527,72 @@ export async function awardStamp(
           card_number: card.card_number, status: 'active',
           completed_at: null, created_at: card.created_at,
         }, { onConflict: 'id', ignoreDuplicates: true });
-        if (cardErr) {
-          // Ex. : la meme carte (eleve, numero) existe deja cote web avec un autre UUID ;
-          // la synchro complete fera le remapping.
-          console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);
-        } else {
+        if (!cardErr) {
           await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, card.id]);
           cardOnServer = true;
+        } else if (cardErr.code === '23505') {
+          // La meme carte (eleve, numero) existe deja sur le serveur avec un autre UUID (creee par le
+          // web ou par l'espace eleve depuis le dernier pull) : on adopte l'UUID serveur tout de suite,
+          // au lieu d'attendre la prochaine synchro complete (le tampon partait alors des heures plus tard).
+          const { data: serverCard } = await supabase
+            .from('stamp_cards')
+            .select('id')
+            .eq('student_id', studentId)
+            .eq('user_id', userId)
+            .eq('card_number', card.card_number)
+            .maybeSingle();
+          if (serverCard?.id) {
+            await remapLocalCard(card.id, serverCard.id);
+            await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, serverCard.id]);
+            cardId = serverCard.id;
+            stamp.card_id = serverCard.id;
+            cardOnServer = true;
+          } else {
+            console.warn('[stampRepository] Card conflict but server card not found:', cardErr.message);
+          }
+        } else {
+          console.warn('[stampRepository] Failed to push card to Supabase:', cardErr.message);
         }
       }
 
       if (cardOnServer) {
-        const { error: stampErr } = await supabase.from('stamps').upsert({
-          id, card_id: card.id, student_id: studentId, user_id: userId,
-          category_id: categoryId, slot_number: slotNumber, awarded_at: now,
-        }, { onConflict: 'id' });
-        if (stampErr) {
-          console.warn('[stampRepository] Failed to push stamp to Supabase:', stampErr.message);
-        } else {
-          await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
+        let slot = slotNumber;
+        for (let attempt = 0; attempt < 2 && !pushed; attempt++) {
+          const { error: stampErr } = await supabase.from('stamps').upsert({
+            id, card_id: cardId, student_id: studentId, user_id: userId,
+            category_id: categoryId, slot_number: slot, awarded_at: now,
+          }, { onConflict: 'id' });
+          if (!stampErr) {
+            await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, id]);
+            pushed = true;
+          } else if (stampErr.code === '23505' && attempt === 0) {
+            // Emplacement deja pris sur le serveur (tampon donne depuis le web entre-temps) :
+            // on prend le premier emplacement libre cote serveur et on reessaie une fois.
+            const { data: serverStamps } = await supabase.from('stamps').select('slot_number').eq('card_id', cardId);
+            const used = (serverStamps ?? []).map(r => r.slot_number as number);
+            const free = firstFreeSlot(used);
+            if (free === null) {
+              console.warn('[stampRepository] Server card is full, stamp stays pending for full sync');
+              break;
+            }
+            slot = free;
+            await executeSql('UPDATE stamps SET slot_number = ? WHERE id = ?', [slot, id]);
+            stamp.slot_number = slot;
+          } else {
+            console.warn('[stampRepository] Failed to push stamp to Supabase:', stampErr.message);
+            break;
+          }
         }
       }
     } catch (err) {
       console.warn('[stampRepository] Supabase award stamp sync error:', err);
     }
   }
+  if (!pushed) {
+    console.warn('[stampRepository] Stamp', id, 'saved locally, pending push');
+  }
 
-  return { stamp, stampCount: currentCount + 1, cardComplete: isComplete, cardNumber: card.card_number };
+  return { stamp, stampCount: currentCount + 1, cardComplete: isComplete, cardNumber: card.card_number, pushed };
 }
 
 /**

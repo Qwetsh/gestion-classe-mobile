@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import { useAuthStore, useNetworkStore, useSyncStore, useSessionStore, useGroupSessionStore } from '../stores';
 
 /**
@@ -6,6 +7,8 @@ import { useAuthStore, useNetworkStore, useSyncStore, useSessionStore, useGroupS
  * 1. When network status changes from offline to online
  * 2. When a session starts (so the server / whiteboard sees it live)
  * 3. When a session ends (regular or group)
+ * 4. When the app comes back to the foreground: pending rows (stamps awarded while the immediate push
+ *    failed) are pushed, and a full sync runs if the last one is older than 30 minutes (audit n°2, A3)
  *
  * Uses refs to track state and prevent race conditions with isSyncing
  */
@@ -126,6 +129,26 @@ export function useAutoSync() {
 
     wasGroupSessionActive.current = isGroupActive;
   }, [groupActiveSession?.session.status, user?.id, isConnected, isInternetReachable, triggerSync]);
+
+  // Retour au premier plan : pousser ce qui attend, et resynchroniser si la derniere synchro date.
+  const appState = useRef<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      const wasBackground = appState.current === 'background' || appState.current === 'inactive';
+      appState.current = next;
+      if (next !== 'active' || !wasBackground || !user?.id) return;
+      const isOnline = isConnected === true && isInternetReachable !== false;
+      if (!isOnline) return;
+      const { lastSyncTime, pushPending } = useSyncStore.getState();
+      const stale = !lastSyncTime || Date.now() - lastSyncTime.getTime() > 30 * 60 * 1000;
+      if (stale) {
+        void triggerSync(user.id, 'App foregrounded (stale)');
+      } else {
+        void pushPending(user.id);
+      }
+    });
+    return () => sub.remove();
+  }, [user?.id, isConnected, isInternetReachable, triggerSync]);
 
   // Refresh unsynced count when user changes or on mount
   useEffect(() => {

@@ -160,7 +160,11 @@ export function SyncButton({ variant = 'button' }: SyncButtonProps) {
               strokeWidth={1.8}
             />
           </Animated.View>
-          {unsyncedCount > 0 && !isSyncing && <View style={styles.iconBadge} />}
+          {unsyncedCount > 0 && !isSyncing && (
+            <View style={styles.iconBadge}>
+              <Text style={styles.iconBadgeText}>{unsyncedCount > 99 ? '99+' : unsyncedCount}</Text>
+            </View>
+          )}
         </Pressable>
 
         <Modal
@@ -353,11 +357,14 @@ const styles = StyleSheet.create({
   },
   iconBadge: {
     position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    top: 2,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 3,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: theme.colors.error,
     borderWidth: 1.5,
     borderColor: theme.colors.surface,
@@ -419,6 +426,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: theme.colors.textInverse,
+  },
+  iconBadgeText: {
+    color: theme.colors.textInverse,
+    fontSize: 9,
+    fontWeight: '700',
+    lineHeight: 11,
   },
   badge: {
     backgroundColor: theme.colors.error,

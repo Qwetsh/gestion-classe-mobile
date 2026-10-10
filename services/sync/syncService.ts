@@ -2,10 +2,28 @@ import { supabase, isSupabaseConfigured } from '../supabase';
 import { queryAll, queryFirst, executeSql, executeTransaction } from '../database/client';
 import { firstFreeSlot, CARD_SLOTS } from '../../utils/stampSlots';
 import {
+  adoptServerBonus,
+  adoptServerCategory,
+  cleanupDuplicateCategories,
+  remapLocalCard,
+  upsertLocalRow,
   type Session,
   type Event,
 } from '../database';
 import { flushPendingDeletions, toRemoteEvent } from './liveSync';
+
+// Verrou : jamais deux synchros (pull ou push) en parallele. Sans lui, une ligne poussee et marquee
+// synchronisee entre la lecture serveur et la lecture locale d'un pull concurrent etait prise pour
+// « disparue du serveur » et supprimee en local (audit n°2 du 10/10/2026, B1).
+let syncChain: Promise<unknown> = Promise.resolve();
+async function withSyncLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = syncChain.then(fn, fn);
+  syncChain = run.catch(() => undefined);
+  return run;
+}
+
+/** Code Postgres d'une violation de contrainte unique. */
+const UNIQUE_VIOLATION = '23505';
 
 export interface SyncResult {
   success: boolean;
@@ -74,7 +92,11 @@ export async function getUnsyncedCount(): Promise<number> {
 /**
  * Sync all unsynced data to Supabase
  */
-export async function syncAll(userId: string): Promise<SyncResult> {
+export function syncAll(userId: string): Promise<SyncResult> {
+  return withSyncLock(() => syncAllUnlocked(userId));
+}
+
+async function syncAllUnlocked(userId: string): Promise<SyncResult> {
   const result: SyncResult = {
     success: true,
     sessionsSync: 0,
@@ -1241,47 +1263,6 @@ async function syncTpTemplateCriteria(): Promise<number> {
 // Stamp Cards sync functions
 // ============================================
 
-type LocalRow = Record<string, string | number | null>;
-
-/**
- * Ecrit une ligne venue du serveur en local : UPDATE si elle existe, INSERT sinon.
- * Jamais d'INSERT OR REPLACE : sur une table parente (stamp_cards), REPLACE = DELETE + INSERT
- * et le DELETE cascade sur les enfants (stamps, bonus_selections), ce qui detruisait
- * a chaque pull les tampons locaux pas encore pousses.
- * `table` est toujours une constante du code, jamais une valeur externe.
- */
-async function upsertLocalRow(table: string, row: LocalRow): Promise<void> {
-  const cols = Object.keys(row).filter(c => c !== 'id');
-  const exists = await queryFirst<{ id: string }>(`SELECT id FROM ${table} WHERE id = ?`, [row.id as string]);
-  if (exists) {
-    await executeSql(
-      `UPDATE ${table} SET ${cols.map(c => `${c} = ?`).join(', ')} WHERE id = ?`,
-      [...cols.map(c => row[c]), row.id]
-    );
-  } else {
-    const all = ['id', ...cols];
-    await executeSql(
-      `INSERT INTO ${table} (${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`,
-      all.map(c => row[c])
-    );
-  }
-}
-
-/**
- * Fait pointer une carte locale (et ses tampons / choix de bonus) vers l'UUID serveur.
- * Cas : la meme carte (eleve, numero) a ete creee des deux cotes avec des UUID differents.
- * On change l'id en place (cles etrangeres differees) : pas de DELETE, donc pas de cascade.
- */
-async function remapLocalCard(localId: string, serverId: string): Promise<void> {
-  await executeTransaction([
-    { sql: 'PRAGMA defer_foreign_keys = ON' },
-    { sql: 'UPDATE stamp_cards SET id = ? WHERE id = ?', params: [serverId, localId] },
-    { sql: 'UPDATE stamps SET card_id = ? WHERE card_id = ?', params: [serverId, localId] },
-    { sql: 'UPDATE bonus_selections SET card_id = ? WHERE card_id = ?', params: [serverId, localId] },
-  ]);
-  console.log(`[syncService] Remapped stamp_card ${localId} -> ${serverId}`);
-}
-
 /** Ids supprimes en local dont la suppression n'a pas encore atteint le serveur. */
 async function getPendingDeletedIds(tables: string[]): Promise<Set<string>> {
   const placeholders = tables.map(() => '?').join(',');
@@ -1290,6 +1271,16 @@ async function getPendingDeletedIds(tables: string[]): Promise<Set<string>> {
     tables
   );
   return new Set(rows.map(r => r.record_id));
+}
+
+/**
+ * Push unitaire : chaque ligne est envoyee seule et marquee synchronisee seule. Avant, un seul
+ * envoi groupe (« tout ou rien ») : une ligne refusee (cle etrangere, index unique) bloquait toutes
+ * les autres a chaque synchro, sans aucun message pendant la seance (audit n°2, A1).
+ * Les echecs sont collectes et remontes ensemble a la fin, apres avoir marque les succes.
+ */
+function throwIfErrors(errors: string[], what: string): void {
+  if (errors.length > 0) throw new Error(`${what} : ${errors.join(' ; ')}`);
 }
 
 async function syncStampCategories(userId: string): Promise<number> {
@@ -1301,20 +1292,39 @@ async function syncStampCategories(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map(c => ({
-    id: c.id, user_id: userId, label: c.label, icon: c.icon, icon_ref: c.icon_ref ?? null, color: c.color,
-    display_order: c.display_order, is_active: c.is_active === 1, created_at: c.created_at,
-  }));
-
-  const { error } = await supabase.from('stamp_categories').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamp categories sync error:', error); throw new Error(`Stamp categories: ${error.message}`); }
-
   const now = new Date().toISOString();
-  const ids = unsynced.map(c => c.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamp_categories SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
-
-  return unsynced.length;
+  const errors: string[] = [];
+  let done = 0;
+  for (const c of unsynced) {
+    const { error } = await supabase.from('stamp_categories').upsert({
+      id: c.id, user_id: userId, label: c.label, icon: c.icon, icon_ref: c.icon_ref ?? null, color: c.color,
+      display_order: c.display_order, is_active: c.is_active === 1, created_at: c.created_at,
+    }, { onConflict: 'id' });
+    if (!error) {
+      await executeSql('UPDATE stamp_categories SET synced_at = ? WHERE id = ?', [now, c.id]);
+      done++;
+      continue;
+    }
+    if (error.code === UNIQUE_VIOLATION) {
+      // Le serveur a deja ce libelle (index unique user_id+label, ex. valeurs par defaut semees hors
+      // ligne) : on adopte la categorie serveur, les tampons locaux la suivent, rien n'est perdu.
+      const { data: server } = await supabase
+        .from('stamp_categories')
+        .select('id, user_id, label, icon, icon_ref, color, display_order, is_active, created_at')
+        .eq('user_id', userId)
+        .eq('label', c.label)
+        .maybeSingle();
+      if (server) {
+        await adoptServerCategory(c.id, server, now);
+        done++;
+        continue;
+      }
+    }
+    console.error('[syncService] Stamp category sync error:', c.label, error.message);
+    errors.push(`« ${c.label} » : ${error.message}`);
+  }
+  throwIfErrors(errors, `Categories de tampons (${errors.length} non envoyee${errors.length > 1 ? 's' : ''})`);
+  return done;
 }
 
 async function syncBonuses(userId: string): Promise<number> {
@@ -1326,20 +1336,37 @@ async function syncBonuses(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  const toSync = unsynced.map(b => ({
-    id: b.id, user_id: userId, label: b.label,
-    display_order: b.display_order, is_active: b.is_active === 1, created_at: b.created_at,
-  }));
-
-  const { error } = await supabase.from('bonuses').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Bonuses sync error:', error); throw new Error(`Bonuses: ${error.message}`); }
-
   const now = new Date().toISOString();
-  const ids = unsynced.map(b => b.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE bonuses SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
-
-  return unsynced.length;
+  const errors: string[] = [];
+  let done = 0;
+  for (const b of unsynced) {
+    const { error } = await supabase.from('bonuses').upsert({
+      id: b.id, user_id: userId, label: b.label,
+      display_order: b.display_order, is_active: b.is_active === 1, created_at: b.created_at,
+    }, { onConflict: 'id' });
+    if (!error) {
+      await executeSql('UPDATE bonuses SET synced_at = ? WHERE id = ?', [now, b.id]);
+      done++;
+      continue;
+    }
+    if (error.code === UNIQUE_VIOLATION) {
+      const { data: server } = await supabase
+        .from('bonuses')
+        .select('id, user_id, label, display_order, is_active, created_at')
+        .eq('user_id', userId)
+        .eq('label', b.label)
+        .maybeSingle();
+      if (server) {
+        await adoptServerBonus(b.id, server, now);
+        done++;
+        continue;
+      }
+    }
+    console.error('[syncService] Bonus sync error:', b.label, error.message);
+    errors.push(`« ${b.label} » : ${error.message}`);
+  }
+  throwIfErrors(errors, `Bonus (${errors.length} non envoye${errors.length > 1 ? 's' : ''})`);
+  return done;
 }
 
 async function syncStampCards(userId: string): Promise<number> {
@@ -1351,55 +1378,58 @@ async function syncStampCards(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  // Check for UUID conflicts: server may already have cards for the same (student_id, card_number)
-  // created by the web app with different UUIDs
+  // Le serveur peut deja avoir une carte (eleve, numero) creee par le web ou l'espace eleve avec un
+  // autre UUID : on adopte la sienne (remapping local, pas de DELETE donc pas de cascade).
   const studentIds = [...new Set(unsynced.map(c => c.student_id))];
   const { data: serverCards } = await supabase
     .from('stamp_cards')
     .select('id, student_id, card_number')
     .in('student_id', studentIds)
     .eq('user_id', userId);
-
-  // Build lookup: "student_id|card_number" -> server UUID
   const serverCardMap = new Map<string, string>();
-  for (const sc of (serverCards || [])) {
-    serverCardMap.set(`${sc.student_id}|${sc.card_number}`, sc.id);
-  }
+  for (const sc of (serverCards || [])) serverCardMap.set(`${sc.student_id}|${sc.card_number}`, sc.id);
 
   const now = new Date().toISOString();
-  const toSync: typeof unsynced = [];
+  const errors: string[] = [];
+  let done = 0;
 
   for (const card of unsynced) {
     const key = `${card.student_id}|${card.card_number}`;
-    const serverId = serverCardMap.get(key);
-
-    if (serverId && serverId !== card.id) {
-      // Conflict: server has a different UUID for this card -> adopt the server one.
-      await remapLocalCard(card.id, serverId);
-      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, serverId]);
-    } else {
-      // No conflict, sync normally
-      toSync.push(card);
+    const knownServerId = serverCardMap.get(key);
+    if (knownServerId && knownServerId !== card.id) {
+      await remapLocalCard(card.id, knownServerId);
+      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, knownServerId]);
+      done++;
+      continue;
     }
+    // Creation seule : status / completed_at sont pilotes par le serveur (RPC de choix du bonus).
+    // Une carte deja presente sur le serveur (ex. re-poussee apres un reset web) n'est pas modifiee.
+    const { error } = await supabase.from('stamp_cards').upsert({
+      id: card.id, student_id: card.student_id, user_id: userId,
+      card_number: card.card_number, status: card.status, completed_at: card.completed_at, created_at: card.created_at,
+    }, { onConflict: 'id', ignoreDuplicates: true });
+    if (!error) {
+      await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, card.id]);
+      done++;
+      continue;
+    }
+    if (error.code === UNIQUE_VIOLATION) {
+      // Course : la carte serveur est apparue entre notre lecture et l'envoi.
+      const { data: fresh } = await supabase
+        .from('stamp_cards').select('id').eq('user_id', userId)
+        .eq('student_id', card.student_id).eq('card_number', card.card_number).maybeSingle();
+      if (fresh?.id) {
+        await remapLocalCard(card.id, fresh.id);
+        await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, fresh.id]);
+        done++;
+        continue;
+      }
+    }
+    console.error('[syncService] Stamp card sync error:', card.id, error.message);
+    errors.push(`carte n°${card.card_number} : ${error.message}`);
   }
-
-  // Creation seule : status / completed_at sont pilotes par le serveur (RPC de choix du bonus).
-  // Une carte deja presente sur le serveur (ex. re-poussee apres un reset web) n'est pas modifiee.
-  if (toSync.length > 0) {
-    const payload = toSync.map(c => ({
-      id: c.id, student_id: c.student_id, user_id: userId,
-      card_number: c.card_number, status: c.status, completed_at: c.completed_at, created_at: c.created_at,
-    }));
-
-    const { error } = await supabase.from('stamp_cards').upsert(payload, { onConflict: 'id', ignoreDuplicates: true });
-    if (error) { console.error('[syncService] Stamp cards sync error:', error); throw new Error(`Stamp cards: ${error.message}`); }
-
-    const ids = toSync.map(c => c.id);
-    const placeholders = ids.map(() => '?').join(',');
-    await executeSql(`UPDATE stamp_cards SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
-  }
-
-  return unsynced.length;
+  throwIfErrors(errors, `Cartes (${errors.length} non envoyee${errors.length > 1 ? 's' : ''})`);
+  return done;
 }
 
 async function syncStamps(userId: string): Promise<number> {
@@ -1411,85 +1441,95 @@ async function syncStamps(userId: string): Promise<number> {
 
   if (unsynced.length === 0) return 0;
 
-  // Filter: only sync stamps whose card is already synced on server
+  const errors: string[] = [];
+
+  // Seuls les tampons dont la carte est deja sur le serveur peuvent partir (FK). Les autres ne sont
+  // plus ecartes en silence : ils comptent comme des erreurs, visibles dans le resultat de synchro.
   const cardIds = [...new Set(unsynced.map(s => s.card_id))];
-  const { data: syncedCards } = await supabase.from('stamp_cards').select('id').in('id', cardIds);
+  const { data: syncedCards, error: cardsErr } = await supabase.from('stamp_cards').select('id').in('id', cardIds).eq('user_id', userId);
+  if (cardsErr) throw new Error(`Tampons : verification des cartes impossible (${cardsErr.message})`);
   const serverCardIds = new Set((syncedCards || []).map(c => c.id));
 
   const eligible = unsynced.filter(s => serverCardIds.has(s.card_id));
-  if (eligible.length === 0) return 0;
-
-  // Check for slot_number conflicts: server may already have stamps at the same (card_id, slot_number)
-  // This happens when web and mobile both award stamps to the same student.
-  // On garde l'id de chaque occupant : un tampon deja arrive sur le serveur (timeout apres
-  // ecriture) ne doit pas entrer en collision avec lui-meme et se retrouver decale d'une case.
-  const { data: serverStamps } = await supabase
-    .from('stamps')
-    .select('id, card_id, slot_number')
-    .in('card_id', [...serverCardIds]);
-
-  const occupiedBy = new Map<string, string>(); // "card_id|slot" -> stamp id
-  for (const ss of (serverStamps || [])) {
-    occupiedBy.set(`${ss.card_id}|${ss.slot_number}`, ss.id);
+  const orphans = unsynced.length - eligible.length;
+  if (orphans > 0) {
+    errors.push(`${orphans} tampon${orphans > 1 ? 's' : ''} en attente : carte pas encore sur le serveur`);
   }
-  const isFree = (cardId: string, slot: number, selfId: string) => {
-    const holder = occupiedBy.get(`${cardId}|${slot}`);
-    return holder === undefined || holder === selfId;
-  };
 
-  const toSync = [];
-  for (const s of eligible) {
-    let slot = s.slot_number;
+  if (eligible.length > 0) {
+    // Emplacements occupes sur le serveur (web et mobile peuvent tamponner le meme eleve).
+    // On garde l'id de chaque occupant : un tampon deja arrive sur le serveur (timeout apres
+    // ecriture) ne doit pas entrer en collision avec lui-meme et se retrouver decale d'une case.
+    const { data: serverStamps } = await supabase
+      .from('stamps')
+      .select('id, card_id, slot_number')
+      .in('card_id', [...serverCardIds])
+      .eq('user_id', userId);
 
-    if (slot > CARD_SLOTS || !isFree(s.card_id, slot, s.id)) {
-      // Conflit (ou slot hors carte decale par le pull) : premier emplacement libre sur le serveur
-      let newSlot: number | null = null;
-      for (let candidate = 1; candidate <= CARD_SLOTS; candidate++) {
-        if (isFree(s.card_id, candidate, s.id)) { newSlot = candidate; break; }
+    const occupiedBy = new Map<string, string>(); // "card_id|slot" -> stamp id
+    for (const ss of (serverStamps || [])) occupiedBy.set(`${ss.card_id}|${ss.slot_number}`, ss.id);
+    const isFree = (cardId: string, slot: number, selfId: string) => {
+      const holder = occupiedBy.get(`${cardId}|${slot}`);
+      return holder === undefined || holder === selfId;
+    };
+
+    const now = new Date().toISOString();
+    for (const st of eligible) {
+      let slot = st.slot_number;
+
+      if (slot > CARD_SLOTS || !isFree(st.card_id, slot, st.id)) {
+        // Conflit (ou slot hors carte decale par le pull) : premier emplacement libre sur le serveur
+        let newSlot: number | null = null;
+        for (let candidate = 1; candidate <= CARD_SLOTS; candidate++) {
+          if (isFree(st.card_id, candidate, st.id)) { newSlot = candidate; break; }
+        }
+
+        if (newSlot === null) {
+          // Carte pleine cote serveur : le tampon appartient a la carte suivante si elle existe.
+          // Sinon il reste en attente, et c'est dit (jamais marque synchronise : pas de perte silencieuse).
+          const nextCard = await queryFirst<{ id: string }>(
+            `SELECT id FROM stamp_cards WHERE student_id = ? AND status = 'active' AND id <> ? AND synced_at IS NOT NULL ORDER BY card_number DESC LIMIT 1`,
+            [st.student_id, st.card_id]
+          );
+          if (nextCard) {
+            const localUsed = await queryAll<{ slot_number: number }>('SELECT slot_number FROM stamps WHERE card_id = ?', [nextCard.id]);
+            const usedNext = localUsed.map(u => u.slot_number);
+            const moved = firstFreeSlot(usedNext) ?? firstFreeSlot(usedNext, CARD_SLOTS * 2) ?? CARD_SLOTS * 2 + 1;
+            await executeSql('UPDATE stamps SET card_id = ?, slot_number = ? WHERE id = ?', [nextCard.id, moved, st.id]);
+            console.log(`[syncService] Card ${st.card_id} full, moved stamp ${st.id} to card ${nextCard.id} slot ${moved} (pushed at next sync)`);
+            errors.push('1 tampon reporte sur la carte suivante (envoi a la prochaine synchro)');
+          } else {
+            console.warn(`[syncService] Card ${st.card_id} full and no next card: stamp ${st.id} stays pending`);
+            errors.push('1 tampon en attente : carte pleine sur le serveur, choisir le bonus de l\'eleve');
+          }
+          continue;
+        }
+
+        slot = newSlot;
+        await executeSql('UPDATE stamps SET slot_number = ? WHERE id = ?', [slot, st.id]);
+        console.log(`[syncService] Renumbered stamp ${st.id} slot ${st.slot_number} -> ${slot}`);
       }
 
-      if (newSlot === null) {
-        // Carte pleine cote serveur : le tampon appartient a la carte suivante si elle existe.
-        // Sinon il reste en attente (jamais marque synchronise : pas de perte silencieuse).
-        const nextCard = await queryFirst<{ id: string }>(
-          `SELECT id FROM stamp_cards WHERE student_id = ? AND status = 'active' AND id <> ? AND synced_at IS NOT NULL ORDER BY card_number DESC LIMIT 1`,
-          [s.student_id, s.card_id]
-        );
-        if (nextCard) {
-          const localUsed = await queryAll<{ slot_number: number }>('SELECT slot_number FROM stamps WHERE card_id = ?', [nextCard.id]);
-          const usedNext = localUsed.map(u => u.slot_number);
-          const moved = firstFreeSlot(usedNext) ?? firstFreeSlot(usedNext, CARD_SLOTS * 2) ?? CARD_SLOTS * 2 + 1;
-          await executeSql('UPDATE stamps SET card_id = ?, slot_number = ? WHERE id = ?', [nextCard.id, moved, s.id]);
-          console.log(`[syncService] Card ${s.card_id} full, moved stamp ${s.id} to card ${nextCard.id} slot ${moved} (pushed at next sync)`);
-        } else {
-          console.warn(`[syncService] Card ${s.card_id} full and no next card: stamp ${s.id} stays pending`);
-        }
+      const { error } = await supabase.from('stamps').upsert({
+        id: st.id, card_id: st.card_id, student_id: st.student_id, user_id: userId,
+        category_id: st.category_id, slot_number: slot, awarded_at: st.awarded_at,
+      }, { onConflict: 'id' });
+      if (error) {
+        console.error('[syncService] Stamp sync error:', st.id, error.message);
+        errors.push(`tampon ${st.id.slice(0, 8)} : ${error.message}`);
         continue;
       }
-
-      slot = newSlot;
-      await executeSql('UPDATE stamps SET slot_number = ? WHERE id = ?', [slot, s.id]);
-      console.log(`[syncService] Renumbered stamp ${s.id} slot ${s.slot_number} -> ${slot}`);
+      occupiedBy.set(`${st.card_id}|${slot}`, st.id);
+      await executeSql('UPDATE stamps SET synced_at = ? WHERE id = ?', [now, st.id]);
     }
-
-    occupiedBy.set(`${s.card_id}|${slot}`, s.id);
-    toSync.push({
-      id: s.id, card_id: s.card_id, student_id: s.student_id, user_id: userId,
-      category_id: s.category_id, slot_number: slot, awarded_at: s.awarded_at,
-    });
   }
 
-  if (toSync.length === 0) return 0;
-
-  const { error } = await supabase.from('stamps').upsert(toSync, { onConflict: 'id' });
-  if (error) { console.error('[syncService] Stamps sync error:', error); throw new Error(`Stamps: ${error.message}`); }
-
-  const now = new Date().toISOString();
-  const ids = toSync.map(s => s.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(`UPDATE stamps SET synced_at = ? WHERE id IN (${placeholders})`, [now, ...ids]);
-
-  return toSync.length;
+  const sent = await queryFirst<{ n: number }>(
+    `SELECT COUNT(*) as n FROM stamps WHERE user_id = ? AND synced_at IS NOT NULL AND id IN (${unsynced.map(() => '?').join(',')})`,
+    [userId, ...unsynced.map(s => s.id)]
+  );
+  throwIfErrors(errors, `Tampons (${errors.length} probleme${errors.length > 1 ? 's' : ''})`);
+  return sent?.n ?? 0;
 }
 
 async function syncBonusSelections(userId: string): Promise<number> {
@@ -1619,7 +1659,7 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
       [userId]
     );
     for (const local of localCats) {
-      if (!serverIds.has(local.id) && local.synced_at !== null) {
+      if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
         // Les tampons qui la referencent perdent leur categorie (comme ON DELETE SET NULL cote serveur)
         await executeSql(`UPDATE stamps SET category_id = NULL WHERE category_id = ?`, [local.id]);
         await executeSql(`DELETE FROM stamp_categories WHERE id = ?`, [local.id]);
@@ -1638,6 +1678,9 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
       });
       result.stampCategories++;
     }
+    // Une categorie locale jamais poussee qui porte le libelle d'une categorie serveur ne pourra
+    // jamais partir (index unique) : on la fusionne tout de suite vers la categorie serveur.
+    await cleanupDuplicateCategories(userId);
     if (__DEV__) {
       console.log('[syncService] Pulled stamp_categories:', result.stampCategories);
     }
@@ -1659,7 +1702,7 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
       [userId]
     );
     for (const local of localBonuses) {
-      if (!serverIds.has(local.id) && local.synced_at !== null) {
+      if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
         await executeSql(`UPDATE bonus_selections SET bonus_id = NULL WHERE bonus_id = ?`, [local.id]);
         await executeSql(`DELETE FROM bonuses WHERE id = ?`, [local.id]);
         if (__DEV__) {
@@ -1711,7 +1754,7 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
       [userId, ...scopeParams]
     );
     for (const local of localCards) {
-      if (!serverIds.has(local.id) && local.synced_at !== null) {
+      if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
         const unsyncedChildren = await queryFirst<{ n: number }>(
           `SELECT COUNT(*) as n FROM stamps WHERE card_id = ? AND synced_at IS NULL`,
           [local.id]
@@ -1773,7 +1816,7 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
       [userId, ...scopeParams]
     );
     for (const local of localStamps) {
-      if (!serverIds.has(local.id) && local.synced_at !== null) {
+      if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
         await executeSql(`DELETE FROM stamps WHERE id = ?`, [local.id]);
         if (__DEV__) {
           console.log('[syncService] Deleted local stamp not on server:', local.id);
@@ -1848,7 +1891,7 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
       [userId, ...scopeParams]
     );
     for (const local of localBonusSel) {
-      if (!serverIds.has(local.id) && local.synced_at !== null) {
+      if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
         await executeSql(`DELETE FROM bonus_selections WHERE id = ?`, [local.id]);
         if (__DEV__) {
           console.log('[syncService] Deleted local bonus_selection not on server:', local.id);
@@ -1880,7 +1923,11 @@ function emptyStampPullResult(): StampPullResult {
  * Rapatrie la configuration des tampons (categories, bonus) sans synchro complete.
  * Utilise avant de semer les valeurs par defaut : si le serveur en a deja, on les prend.
  */
-export async function pullStampConfigOnly(userId: string): Promise<StampPullResult> {
+export function pullStampConfigOnly(userId: string): Promise<StampPullResult> {
+  return withSyncLock(() => pullStampConfigOnlyUnlocked(userId));
+}
+
+async function pullStampConfigOnlyUnlocked(userId: string): Promise<StampPullResult> {
   const result = emptyStampPullResult();
   if (!isSupabaseConfigured || !supabase) return result;
   try {
@@ -1896,7 +1943,11 @@ export async function pullStampConfigOnly(userId: string): Promise<StampPullResu
  * Rapatrie les cartes / tampons / bonus d'un seul eleve (ouverture de sa fiche),
  * pour voir tout de suite un tampon donne depuis le web. Silencieux hors ligne.
  */
-export async function pullStudentStamps(userId: string, studentId: string): Promise<boolean> {
+export function pullStudentStamps(userId: string, studentId: string): Promise<boolean> {
+  return withSyncLock(() => pullStudentStampsUnlocked(userId, studentId));
+}
+
+async function pullStudentStampsUnlocked(userId: string, studentId: string): Promise<boolean> {
   if (!isSupabaseConfigured || !supabase) return false;
   const result = emptyStampPullResult();
   try {
@@ -1909,7 +1960,11 @@ export async function pullStudentStamps(userId: string, studentId: string): Prom
   return result.errors.length === 0;
 }
 
-export async function pullFromServer(userId: string): Promise<{
+export function pullFromServer(userId: string): ReturnType<typeof pullFromServerUnlocked> {
+  return withSyncLock(() => pullFromServerUnlocked(userId));
+}
+
+async function pullFromServerUnlocked(userId: string): Promise<{
   classes: number;
   students: number;
   rooms: number;
@@ -2150,7 +2205,7 @@ export async function pullFromServer(userId: string): Promise<{
           `SELECT id, synced_at FROM class_groups WHERE user_id = ?`, [userId]
         );
         for (const local of localGroups) {
-          if (!serverIds.has(local.id) && local.synced_at !== null) {
+          if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
             await executeSql(`UPDATE sessions SET group_id = NULL WHERE group_id = ?`, [local.id]);
             await executeSql(`DELETE FROM class_groups WHERE id = ?`, [local.id]);
           }
@@ -2288,7 +2343,7 @@ export async function pullFromServer(userId: string): Promise<{
           `SELECT id, synced_at FROM class_group_plans`
         );
         for (const local of localPlans) {
-          if (!serverIds.has(local.id) && local.synced_at !== null) {
+          if (!serverIds.has(local.id) && local.synced_at !== null && local.synced_at < now) {
             await executeSql(`DELETE FROM class_group_plans WHERE id = ?`, [local.id]);
           }
         }

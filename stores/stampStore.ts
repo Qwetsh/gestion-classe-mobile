@@ -31,7 +31,7 @@ interface StampState {
   loadCategories: (userId: string) => Promise<void>;
   loadActiveCard: (userId: string, studentId: string) => Promise<StampCardWithStamps | null>;
   getCompletedCardsForStudent: (studentId: string) => Promise<CompletedCardSummary[]>;
-  doAwardStamp: (userId: string, studentId: string, categoryId: string) => Promise<{ stampCount: number; cardComplete: boolean; cardNumber: number }>;
+  doAwardStamp: (userId: string, studentId: string, categoryId: string) => Promise<{ stampCount: number; cardComplete: boolean; cardNumber: number; pushed: boolean }>;
   doRemoveLastStamp: (studentId: string) => Promise<void>;
   doMarkBonusUsed: (selectionId: string) => Promise<void>;
   /** Vide le cache des cartes (apres une synchro : les ecrans rechargent) */
@@ -94,6 +94,17 @@ export const useStampStore = create<StampState>((set, get) => ({
 
   doAwardStamp: async (userId: string, studentId: string, categoryId: string) => {
     const result = await awardStamp(userId, studentId, categoryId);
+
+    // Envoi immediat rate (hors ligne, serveur lent, conflit) : le tampon est en SQLite, on relance
+    // un push seul dans quelques secondes. Import differe pour eviter la boucle syncStore <-> stampStore.
+    if (!result.pushed) {
+      setTimeout(() => {
+        import('./syncStore')
+          .then(m => m.useSyncStore.getState().pushPending(userId))
+          .catch(() => { /* la synchro au retour du reseau rattrapera */ });
+      }, 15_000);
+    }
+    import('./syncStore').then(m => m.useSyncStore.getState().refreshUnsyncedCount()).catch(() => undefined);
 
     // Refresh active card cache
     const card = await getActiveCardWithStamps(userId, studentId);

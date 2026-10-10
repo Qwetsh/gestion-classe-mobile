@@ -2089,7 +2089,12 @@ function NativeSessionScreen() {
                           `${stampStudent.fullName || stampStudent.pseudo} a rempli sa carte n°${result.cardNumber}. L'eleve peut choisir son bonus.`
                         );
                       } else {
-                        Alert.alert('Tampon attribue', `${cat.icon} ${result.stampCount}/10`);
+                        Alert.alert(
+                          result.pushed ? 'Tampon attribue' : 'Tampon enregistre sur le telephone',
+                          result.pushed
+                            ? `${cat.icon} ${result.stampCount}/10`
+                            : `${cat.icon} ${result.stampCount}/10 — envoi au serveur en attente, il partira a la prochaine synchro.`
+                        );
                       }
                     } catch (err) {
                       Alert.alert('Erreur', err instanceof Error ? err.message : 'Erreur');

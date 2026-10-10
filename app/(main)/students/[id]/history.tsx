@@ -318,6 +318,9 @@ export default function StudentHistoryScreen() {
     try {
       const result = await doAwardStamp(user.id, id, categoryId);
       await loadActiveCard(user.id, id);
+      if (!result.pushed) {
+        Alert.alert('Tampon enregistre sur le telephone', 'Envoi au serveur en attente : il partira a la prochaine synchronisation.');
+      }
       if (result.cardComplete) {
         Alert.alert('Carte complete !', 'L\'eleve peut choisir son bonus.');
         getCompletedCardsForStudent(id).then(setCompletedCards);

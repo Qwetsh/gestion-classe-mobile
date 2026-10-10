@@ -258,6 +258,8 @@ export {
   markBonusUsed,
   getPendingBonusSelections,
   // Sync helpers
+  adoptServerCategory,
+  adoptServerBonus,
   getUnsyncedStampCategories,
   getUnsyncedBonuses,
   getUnsyncedStampCards,
@@ -278,3 +280,5 @@ export {
   type StampCardWithStamps,
   type CompletedCardSummary,
 } from './stampRepository';
+
+export { upsertLocalRow, remapLocalCard, type LocalRow } from './localUpsert';
