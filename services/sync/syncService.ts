@@ -1,3 +1,4 @@
+import * as Crypto from 'expo-crypto';
 import { supabase, isSupabaseConfigured } from '../supabase';
 import { queryAll, queryFirst, executeSql, executeTransaction } from '../database/client';
 import { firstFreeSlot, CARD_SLOTS } from '../../utils/stampSlots';
@@ -1485,8 +1486,10 @@ async function syncStamps(userId: string): Promise<number> {
         }
 
         if (newSlot === null) {
-          // Carte pleine cote serveur : le tampon appartient a la carte suivante si elle existe.
-          // Sinon il reste en attente, et c'est dit (jamais marque synchronise : pas de perte silencieuse).
+          // Carte pleine cote serveur : le tampon appartient a la carte suivante. Si elle existe deja
+          // (synchronisee), il y part a la prochaine synchro. Sinon on la cree ici et on la pousse tout
+          // de suite, pour que le tampon parte dans cette meme synchro au lieu de rester invisible
+          // au-dela de la case 10 (audit n°2, B2). Jamais marque synchronise sans etre arrive : pas de perte.
           const nextCard = await queryFirst<{ id: string }>(
             `SELECT id FROM stamp_cards WHERE student_id = ? AND status = 'active' AND id <> ? AND synced_at IS NOT NULL ORDER BY card_number DESC LIMIT 1`,
             [st.student_id, st.card_id]
@@ -1498,11 +1501,37 @@ async function syncStamps(userId: string): Promise<number> {
             await executeSql('UPDATE stamps SET card_id = ?, slot_number = ? WHERE id = ?', [nextCard.id, moved, st.id]);
             console.log(`[syncService] Card ${st.card_id} full, moved stamp ${st.id} to card ${nextCard.id} slot ${moved} (pushed at next sync)`);
             errors.push('1 tampon reporte sur la carte suivante (envoi a la prochaine synchro)');
-          } else {
-            console.warn(`[syncService] Card ${st.card_id} full and no next card: stamp ${st.id} stays pending`);
-            errors.push('1 tampon en attente : carte pleine sur le serveur, choisir le bonus de l\'eleve');
+            continue;
           }
-          continue;
+
+          const maxRow = await queryFirst<{ m: number | null }>('SELECT MAX(card_number) as m FROM stamp_cards WHERE student_id = ?', [st.student_id]);
+          const nextNumber = (maxRow?.m ?? 0) + 1;
+          let newCardId = Crypto.randomUUID();
+          await executeSql(
+            `INSERT INTO stamp_cards (id, student_id, user_id, card_number, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)`,
+            [newCardId, st.student_id, userId, nextNumber, now]
+          );
+          const { error: cardErr } = await supabase.from('stamp_cards').upsert({
+            id: newCardId, student_id: st.student_id, user_id: userId, card_number: nextNumber, status: 'active', completed_at: null, created_at: now,
+          }, { onConflict: 'id', ignoreDuplicates: true });
+          if (cardErr && cardErr.code === UNIQUE_VIOLATION) {
+            // Le serveur a deja cette carte (creee par le web / l'espace eleve) : on adopte son UUID.
+            const { data: fresh } = await supabase.from('stamp_cards').select('id').eq('user_id', userId)
+              .eq('student_id', st.student_id).eq('card_number', nextNumber).maybeSingle();
+            if (fresh?.id) { await remapLocalCard(newCardId, fresh.id); newCardId = fresh.id; }
+          } else if (cardErr) {
+            // La carte reste locale (synced_at NULL) et portera le tampon : les deux partiront a la prochaine synchro.
+            await executeSql('UPDATE stamps SET card_id = ?, slot_number = 1 WHERE id = ?', [newCardId, st.id]);
+            console.warn('[syncService] Next card push failed, stamp moved to local card:', cardErr.message);
+            errors.push(`1 tampon reporte sur une nouvelle carte n°${nextNumber} (envoi a la prochaine synchro : ${cardErr.message})`);
+            continue;
+          }
+          await executeSql('UPDATE stamp_cards SET synced_at = ? WHERE id = ?', [now, newCardId]);
+          serverCardIds.add(newCardId);
+          await executeSql('UPDATE stamps SET card_id = ?, slot_number = 1 WHERE id = ?', [newCardId, st.id]);
+          st.card_id = newCardId;
+          newSlot = 1;
+          console.log(`[syncService] Card full: created card n°${nextNumber} (${newCardId}) and moved stamp ${st.id} to slot 1`);
         }
 
         slot = newSlot;

@@ -513,7 +513,7 @@ export default function StudentHistoryScreen() {
                       { color: tier.badgeText },
                       activeCard.stamp_count >= 10 && styles.stampCountTextComplete,
                     ]}>
-                      {activeCard.stamp_count}/10
+                      {Math.min(activeCard.stamp_count, 10)}/10
                     </Text>
                   </View>
                 </View>
@@ -555,6 +555,13 @@ export default function StudentHistoryScreen() {
                     );
                   })}
                 </View>
+                {activeCard.stamps.some(st => st.slot_number > 10) && (
+                  <View style={styles.overflowNote}>
+                    <Text style={styles.overflowNoteText}>
+                      {(() => { const n = activeCard.stamps.filter(st => st.slot_number > 10).length; return `${n} tampon${n > 1 ? 's' : ''} en attente de la prochaine carte : il${n > 1 ? 's' : ''} appara\u00eetr${n > 1 ? 'ont' : 'a'} apr\u00e8s la synchronisation.`; })()}
+                    </Text>
+                  </View>
+                )}
                 {activeCard.stamp_count >= 10 && (
                   <Pressable
                     style={({ pressed }) => [styles.chooseBonusButton, pressed && { opacity: 0.7 }]}
@@ -798,6 +805,18 @@ export default function StudentHistoryScreen() {
 }
 
 const styles = StyleSheet.create({
+  overflowNote: {
+    marginTop: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  overflowNoteText: {
+    fontSize: 12,
+    color: '#fff',
+    opacity: 0.9,
+  },
   chooseBonusButton: {
     marginTop: theme.spacing.md,
     paddingVertical: 12,
