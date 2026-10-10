@@ -12,7 +12,10 @@ export interface StampCategory {
   id: string;
   user_id: string;
   label: string;
+  /** Emoji de repli, toujours renseigné. */
   icon: string;
+  /** Icône riche optionnelle : « lucide:<Nom> » ou URL https d'une image (web, migration 048). */
+  icon_ref: string | null;
   color: string;
   display_order: number;
   is_active: number; // SQLite boolean
@@ -192,7 +195,7 @@ export async function createStampCategory(
     [id, userId, label, icon, color, displayOrder, now]
   );
 
-  return { id, user_id: userId, label, icon, color, display_order: displayOrder, is_active: 1, created_at: now, synced_at: null };
+  return { id, user_id: userId, label, icon, icon_ref: null, color, display_order: displayOrder, is_active: 1, created_at: now, synced_at: null };
 }
 
 export async function updateStampCategory(

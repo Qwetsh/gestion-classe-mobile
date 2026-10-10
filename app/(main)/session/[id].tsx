@@ -16,6 +16,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { CategoryIcon } from '../../../components/CategoryIcon';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import {
   MessageSquare,
@@ -2103,7 +2104,7 @@ function NativeSessionScreen() {
                     alignItems: 'center', justifyContent: 'center',
                     marginRight: 12,
                   }}>
-                    <Text style={{ fontSize: 20 }}>{cat.icon}</Text>
+                    <CategoryIcon icon={cat.icon} iconRef={cat.icon_ref} size={20} color={cat.color} />
                   </View>
                   <Text style={{
                     flex: 1, fontSize: 14, fontWeight: '500',

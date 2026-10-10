@@ -27,6 +27,7 @@ import {
 import { supabase, isSupabaseConfigured } from '../../../../services/supabase';
 import { pullStudentStamps } from '../../../../services/sync';
 import { PhotoPicker } from '../../../../components';
+import { CategoryIcon } from '../../../../components/CategoryIcon';
 import { exportStudentHistoryPdf } from '../../../../services/pdfExport';
 
 // Event type display config
@@ -735,7 +736,7 @@ export default function StudentHistoryScreen() {
                   ]}
                   onPress={() => handleCategorySelect(cat.id)}
                 >
-                  <Text style={styles.categoryIcon}>{cat.icon}</Text>
+                  <CategoryIcon icon={cat.icon} iconRef={cat.icon_ref} size={22} color={cat.color} />
                   <Text style={styles.categoryLabel}>{cat.label}</Text>
                 </Pressable>
               ))}

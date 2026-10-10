@@ -737,6 +737,25 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 16 -> 17: icône riche des catégories de tampons (icon_ref : « lucide:<Nom> » ou URL ; miroir de la migration web 048)
+  if (fromVersion < 17) {
+    console.log('[Database] Applying migration: stamp_categories.icon_ref (v17)');
+    const hasIconRef = await columnExists('stamp_categories', 'icon_ref');
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      if (!hasIconRef) {
+        await db.runAsync('ALTER TABLE stamp_categories ADD COLUMN icon_ref TEXT');
+      }
+      await db.runAsync('UPDATE schema_version SET version = ?', [17]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v17 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v17 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**

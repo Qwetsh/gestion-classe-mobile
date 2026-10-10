@@ -1296,13 +1296,13 @@ async function syncStampCategories(userId: string): Promise<number> {
   if (!supabase) return 0;
 
   const unsynced = await queryAll<{
-    id: string; label: string; icon: string; color: string; display_order: number; is_active: number; created_at: string;
-  }>('SELECT id, label, icon, color, display_order, is_active, created_at FROM stamp_categories WHERE user_id = ? AND synced_at IS NULL', [userId]);
+    id: string; label: string; icon: string; icon_ref: string | null; color: string; display_order: number; is_active: number; created_at: string;
+  }>('SELECT id, label, icon, icon_ref, color, display_order, is_active, created_at FROM stamp_categories WHERE user_id = ? AND synced_at IS NULL', [userId]);
 
   if (unsynced.length === 0) return 0;
 
   const toSync = unsynced.map(c => ({
-    id: c.id, user_id: userId, label: c.label, icon: c.icon, color: c.color,
+    id: c.id, user_id: userId, label: c.label, icon: c.icon, icon_ref: c.icon_ref ?? null, color: c.color,
     display_order: c.display_order, is_active: c.is_active === 1, created_at: c.created_at,
   }));
 
@@ -1606,7 +1606,7 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
   // 14. Pull stamp_categories
   const { data: serverStampCategories, error: stampCatError } = await supabase
     .from('stamp_categories')
-    .select('id, label, icon, color, display_order, is_active, created_at')
+    .select('id, label, icon, icon_ref, color, display_order, is_active, created_at')
     .eq('user_id', userId);
 
   if (stampCatError) {
@@ -1633,7 +1633,7 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
     for (const cat of serverStampCategories) {
       if (pendingDeleted.has(cat.id)) continue;
       await upsertLocalRow('stamp_categories', {
-        id: cat.id, user_id: userId, label: cat.label, icon: cat.icon, color: cat.color,
+        id: cat.id, user_id: userId, label: cat.label, icon: cat.icon, icon_ref: cat.icon_ref ?? null, color: cat.color,
         display_order: cat.display_order, is_active: cat.is_active ? 1 : 0, created_at: cat.created_at, synced_at: now,
       });
       result.stampCategories++;

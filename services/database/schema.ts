@@ -263,6 +263,7 @@ CREATE TABLE IF NOT EXISTS stamp_categories (
   user_id TEXT NOT NULL,
   label TEXT NOT NULL,
   icon TEXT NOT NULL,
+  icon_ref TEXT,
   color TEXT NOT NULL,
   display_order INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
