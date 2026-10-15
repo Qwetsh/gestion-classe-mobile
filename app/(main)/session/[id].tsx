@@ -55,6 +55,10 @@ import {
   UndoBanner,
   ScreenControlSheet,
 } from '../../../components/session';
+import { TagBar, TagGhost, ERASER_TAG, type DraggedTag } from '../../../components/session/TagBar';
+import { TagEditorSheet } from '../../../components/session/TagEditorSheet';
+import { useStudentTagStore } from '../../../stores/studentTagStore';
+import * as Haptics from 'expo-haptics';
 import { triggerActionSignature, triggerErrorFeedback } from '../../../utils/haptics';
 import { getGroupSessionByLinkedSessionId } from '../../../services/database';
 import { SessionGroupView } from '../../../components/groups/SessionGroupView';
@@ -316,6 +320,26 @@ function NativeSessionScreen() {
 
   // Container position tracking for coordinate conversion
   const containerRef = useRef<View>(null);
+
+  // Étiquettes de surlignage (glisser-déposer sur un élève, locales au téléphone)
+  const { tags: studentTags, assignments: tagAssignments, load: loadStudentTags, toggle: toggleStudentTag, clearStudent: clearStudentTags } = useStudentTagStore();
+  const [draggedTag, setDraggedTag] = useState<DraggedTag | null>(null);
+  const [tagHoverStudentId, setTagHoverStudentId] = useState<string | null>(null);
+  const [showTagEditor, setShowTagEditor] = useState(false);
+  const [tagToast, setTagToast] = useState<string | null>(null);
+  const tagToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tagGhostPos = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const gridContainerRef = useRef<View>(null);
+  const gridOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const tagByIdMap = useMemo(() => new Map(studentTags.map((t) => [t.id, t])), [studentTags]);
+
+  useEffect(() => {
+    if (user?.id) loadStudentTags(user.id);
+  }, [user?.id, loadStudentTags]);
+
+  useEffect(() => () => {
+    if (tagToastTimerRef.current) clearTimeout(tagToastTimerRef.current);
+  }, []);
   const containerOffsetRef = useRef({ x: 0, y: 0 });
   // Taille de la zone de contenu : sert de limites au menu radial (clamp + flip)
   const containerBoundsRef = useRef({ width: 0, height: 0 });
@@ -1245,6 +1269,72 @@ function NativeSessionScreen() {
     return { grid_rows, grid_cols, cellSize, gap, disabledCells, positions: currentPlan.positions };
   }, [currentRoom, currentPlan, compactGrid]);
 
+  // ---- Étiquettes : glisser-déposer sur un élève ----
+  const showTagToast = useCallback((msg: string) => {
+    setTagToast(msg);
+    if (tagToastTimerRef.current) clearTimeout(tagToastTimerRef.current);
+    tagToastTimerRef.current = setTimeout(() => setTagToast(null), 2200);
+  }, []);
+
+  /** Élève sous le doigt (coordonnées écran), via l'origine mesurée de la grille. */
+  const studentAtPage = useCallback((pageX: number, pageY: number): StudentWithMapping | null => {
+    const origin = gridOriginRef.current;
+    if (!origin || !gridData || 'error' in gridData) return null;
+    const outer = gridData.cellSize + gridData.gap;
+    const c = Math.floor((pageX - origin.x) / outer);
+    const r = Math.floor((pageY - origin.y) / outer);
+    if (r < 0 || c < 0 || r >= gridData.grid_rows || c >= gridData.grid_cols) return null;
+    const sid = getStudentAtPosition(gridData.positions, r, c);
+    return sid ? students.find((st) => st.id === sid) ?? null : null;
+  }, [gridData, students]);
+
+  const moveTagGhost = useCallback((pageX: number, pageY: number) => {
+    const p = toContainerCoords(pageX, pageY);
+    // Au-dessus du doigt pour rester visible
+    tagGhostPos.setValue({ x: p.x - 50, y: p.y - 52 });
+  }, [toContainerCoords, tagGhostPos]);
+
+  const handleTagDragStart = useCallback((tag: DraggedTag, pageX: number, pageY: number) => {
+    clearLongPressTimer();
+    gridContainerRef.current?.measure((_x, _y, _w, _h, px, py) => {
+      gridOriginRef.current = { x: px, y: py };
+    });
+    moveTagGhost(pageX, pageY);
+    setDraggedTag(tag);
+    Haptics.selectionAsync().catch(() => {});
+  }, [moveTagGhost]);
+
+  const handleTagDragMove = useCallback((pageX: number, pageY: number) => {
+    moveTagGhost(pageX, pageY);
+    const st = studentAtPage(pageX, pageY);
+    const next = st?.id ?? null;
+    setTagHoverStudentId((prev) => (prev === next ? prev : next));
+  }, [moveTagGhost, studentAtPage]);
+
+  const handleTagDragEnd = useCallback(async (pageX: number, pageY: number) => {
+    const tag = draggedTag;
+    setDraggedTag(null);
+    setTagHoverStudentId(null);
+    const st = studentAtPage(pageX, pageY);
+    if (!tag || !st) return;
+    const name = getDisplayName(st);
+    if (tag.id === ERASER_TAG.id) {
+      if ((tagAssignments[st.id] ?? []).length === 0) return;
+      await clearStudentTags(st.id);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      showTagToast(`${name} : étiquettes retirées`);
+      return;
+    }
+    const added = await toggleStudentTag(st.id, tag.id);
+    Haptics.impactAsync(added ? Haptics.ImpactFeedbackStyle.Medium : Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    showTagToast(added ? `${name} : ${tag.label}` : `${name} : « ${tag.label} » retirée`);
+  }, [draggedTag, studentAtPage, tagAssignments, clearStudentTags, toggleStudentTag, showTagToast]);
+
+  const handleTagDragCancel = useCallback(() => {
+    setDraggedTag(null);
+    setTagHoverStudentId(null);
+  }, []);
+
   const renderGrid = useCallback(() => {
     if (!gridData) return null;
 
@@ -1285,6 +1375,10 @@ function NativeSessionScreen() {
         const isAbsent = student ? isStudentAbsent(student.id) : false;
         const isOut = student ? isStudentOut(student.id) : false;
         const activeSortie = student && isOut ? getActiveSortie(student.id) : null;
+        const cellTags = student
+          ? (tagAssignments[student.id] ?? []).map((tid) => tagByIdMap.get(tid)).filter((t): t is NonNullable<typeof t> => !!t)
+          : [];
+        const cellTagColor = cellTags[0]?.color ?? null;
 
         cells.push(
           <View
@@ -1311,13 +1405,24 @@ function NativeSessionScreen() {
             <View
               style={[
                 styles.gridCell,
+                cellTagColor && { backgroundColor: cellTagColor + '2E', borderColor: cellTagColor, borderWidth: 2 },
                 student && isAbsent && styles.gridCellAbsent,
                 student && isOut && styles.gridCellOut,
                 selectedStudent?.id === student?.id && styles.gridCellSelected,
+                student && tagHoverStudentId === student.id && draggedTag && {
+                  borderColor: draggedTag.color, borderWidth: 3, borderStyle: 'dashed' as const,
+                },
               ]}
             >
               {student ? (
                 <View style={styles.cellContent}>
+                  {cellTags.length > 0 && (
+                    <View style={styles.cellTagDots} pointerEvents="none">
+                      {cellTags.slice(0, 4).map((t) => (
+                        <View key={t.id} style={[styles.cellTagDot, { backgroundColor: t.color }]} />
+                      ))}
+                    </View>
+                  )}
                   {/* Dispositifs PAP / PPRE / PAI : indicateur seul, hors de la chaine ABS / sortie / compteurs */}
                   <AccommodationBadges student={student} size="xs" style={styles.cellAccommodations} />
                   <Text style={[styles.cellName, isAbsent && styles.cellNameAbsent, isOut && styles.cellNameOut]} numberOfLines={1}>
@@ -1366,13 +1471,13 @@ function NativeSessionScreen() {
 
     return (
       <View style={styles.gridWrapper}>
-        <View style={styles.gridContainer}>{rows}</View>
+        <View ref={gridContainerRef} collapsable={false} style={styles.gridContainer}>{rows}</View>
         <View style={styles.teacherArea}>
           <Text style={styles.teacherText}>TABLEAU</Text>
         </View>
       </View>
     );
-  }, [gridData, students, eventCountsByStudent, selectedStudent, isStudentAbsent, isStudentOut, getActiveSortie, formatElapsedTime, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
+  }, [gridData, students, eventCountsByStudent, selectedStudent, tagAssignments, tagByIdMap, tagHoverStudentId, draggedTag, isStudentAbsent, isStudentOut, getActiveSortie, formatElapsedTime, handleTouchStart, handleTouchMoveEvent, handleTouchEnd, clearLongPressTimer, closeMenu, getDisplayName]);
 
   if (isInitializing || !activeSession) {
     return (
@@ -1506,7 +1611,18 @@ function NativeSessionScreen() {
                 <Text style={styles.toolbarButtonText}>Supprimer</Text>
               </Pressable>
             </View>
-            <Text style={styles.hint}>Maintenir appuyé sur un élève</Text>
+            <TagBar
+              tags={studentTags}
+              onDragStart={handleTagDragStart}
+              onDragMove={handleTagDragMove}
+              onDragEnd={handleTagDragEnd}
+              onDragCancel={handleTagDragCancel}
+              onEdit={() => setShowTagEditor(true)}
+              onTapHint={() => showTagToast('Glissez l’étiquette vers le bas, sur un élève')}
+            />
+            <Text style={[styles.hint, tagToast && styles.hintToast]} numberOfLines={1}>
+              {tagToast ?? 'Maintenir appuyé sur un élève'}
+            </Text>
           </>
         )}
 
@@ -1525,6 +1641,16 @@ function NativeSessionScreen() {
             />
           )}
         </View>
+
+        {/* Étiquette sous le doigt pendant le glisser */}
+        {draggedTag && (
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.tagGhost, { transform: tagGhostPos.getTranslateTransform() }]}
+          >
+            <TagGhost tag={draggedTag} />
+          </Animated.View>
+        )}
 
         {/* Progress Circle */}
         <ProgressCircle
@@ -1867,6 +1993,12 @@ function NativeSessionScreen() {
       />
 
       {/* Reglages de seance (sheet 7b) */}
+      <TagEditorSheet
+        visible={showTagEditor}
+        userId={user?.id ?? null}
+        onClose={() => setShowTagEditor(false)}
+      />
+
       <SessionSettingsSheet
         visible={showSettingsSheet}
         onClose={() => setShowSettingsSheet(false)}
@@ -2461,6 +2593,31 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: theme.colors.text,
     textAlign: 'center',
+  },
+  cellTagDots: {
+    position: 'absolute',
+    top: 2,
+    left: 2,
+    flexDirection: 'row',
+    gap: 2,
+  },
+  cellTagDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+  tagGhost: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    zIndex: 50,
+    elevation: 50,
+  },
+  hintToast: {
+    color: theme.colors.primary,
+    fontFamily: theme.fonts.bodySemibold,
   },
   cellAccommodations: {
     position: 'absolute',

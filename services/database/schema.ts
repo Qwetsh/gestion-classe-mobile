@@ -3,7 +3,7 @@
  * Aligned with Supabase schema from architecture.md
  */
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 18;
 
 /**
  * SQL statements to create all tables
@@ -310,6 +310,25 @@ CREATE TABLE IF NOT EXISTS stamps (
   FOREIGN KEY (student_id) REFERENCES students(id),
   FOREIGN KEY (category_id) REFERENCES stamp_categories(id),
   UNIQUE(card_id, slot_number)
+);
+
+-- LOCAL ONLY : étiquettes de surlignage personnalisées (« Punition en cours », « À interroger »…)
+CREATE TABLE IF NOT EXISTS student_tags (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  color TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- LOCAL ONLY : étiquettes posées sur un élève, jusqu'à ce que le prof les retire
+CREATE TABLE IF NOT EXISTS student_tag_assignments (
+  student_id TEXT NOT NULL,
+  tag_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (student_id, tag_id),
+  FOREIGN KEY (tag_id) REFERENCES student_tags(id) ON DELETE CASCADE
 );
 
 -- Sélection de bonus par l'élève
