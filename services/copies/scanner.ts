@@ -69,12 +69,18 @@ export interface PreparedPage {
 }
 
 /**
- * Compresse une page selon COPY_PROFILE (grand côté ≤ 2200 px, JPEG 0,7) ; recompresse plus
+ * Compresse une page selon COPY_PROFILE (grand côté ≤ 2000 px, JPEG 0,75) ; recompresse plus
  * fort si elle dépasse encore la limite du bucket. Le fichier produit est dans le cache :
  * l'appelant le met en file (copie persistante) dès que la copie est validée.
  */
 export async function preparePage(uri: string): Promise<PreparedPage> {
-  const { width, height } = await getSize(uri);
+  let { width, height } = await getSize(uri);
+  if (!(width > 0 && height > 0)) {
+    // Taille illisible par Image.getSize : on la demande au manipulateur plutôt que d'envoyer
+    // la page en pleine résolution.
+    const probe = await ImageManipulator.manipulateAsync(uri, []);
+    ({ width, height } = probe);
+  }
   const resize = computeResize(width, height);
   const actions = resize ? [{ resize }] : [];
 

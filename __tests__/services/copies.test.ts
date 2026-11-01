@@ -48,6 +48,13 @@ describe('COPY_PROFILE', () => {
     expect(COPY_PROFILE.maxLongEdge).toBeGreaterThanOrEqual(1600);
   });
 
+  it('brings a phone scan down to 2000 px on the long edge, JPEG 0.75', () => {
+    expect(COPY_PROFILE.maxLongEdge).toBe(2000);
+    expect(COPY_PROFILE.jpegQuality).toBe(0.75);
+    expect(computeResize(2800, 3800)).toEqual({ height: 2000 });
+    expect(computeResize(1700, 2000)).toBeNull();
+  });
+
   it('stays under the 5 MB bucket limit, with a stronger fallback compression', () => {
     expect(COPY_PROFILE.maxBytes).toBeLessThan(5 * 1024 * 1024);
     expect(COPY_PROFILE.fallbackQuality).toBeLessThan(COPY_PROFILE.jpegQuality);
