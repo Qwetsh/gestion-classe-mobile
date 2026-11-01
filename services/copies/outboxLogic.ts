@@ -63,7 +63,31 @@ export interface DeletePageOp extends OpBase {
   storagePath: string;
 }
 
-export type OutboxOp = CreateAssessmentOp | CopyInfoOp | UploadPageOp | DeletePageOp;
+/**
+ * Photo du placement des élèves pour l'éval (migration 055) : prise automatiquement au premier
+ * scan ('auto', n'écrase jamais une photo existante) ou corrigée à la main ('manual').
+ * Annexe : son échec ne bloque jamais l'envoi des copies.
+ */
+export interface SavePlacementOp extends OpBase {
+  kind: 'save_placement';
+  mode: 'auto' | 'manual';
+  roomId: string | null;
+  /** {"r-c": student_id}, comme class_room_plans. */
+  positions: Positions;
+  /** ["r,c"], comme rooms ; null = la base reprend celles de la salle. */
+  disabledCells: string[] | null;
+}
+
+export type Positions = Record<string, string>;
+
+export type OutboxOp = CreateAssessmentOp | CopyInfoOp | UploadPageOp | DeletePageOp | SavePlacementOp;
+
+/** Opération propre à un élève (pages, informations de copie). */
+type StudentOp = CopyInfoOp | UploadPageOp | DeletePageOp;
+
+function isStudentOp(op: OutboxOp): op is StudentOp {
+  return op.kind === 'copy_info' || op.kind === 'upload_page' || op.kind === 'delete_page';
+}
 
 /** Instantané serveur d'une éval (mis en cache pour travailler hors ligne). */
 export interface ServerPage {
@@ -122,9 +146,7 @@ export function mergeStudentState(
   snapshot: ScanSnapshot,
   ops: OutboxOp[]
 ): StudentCopyState {
-  const mine = ops.filter(
-    (op) => op.kind !== 'create_assessment' && op.studentId === studentId
-  ) as Exclude<OutboxOp, CreateAssessmentOp>[];
+  const mine = ops.filter((op): op is StudentOp => isStudentOp(op) && op.studentId === studentId);
 
   const deleted = new Set(
     mine.filter((op): op is DeletePageOp => op.kind === 'delete_page').map((op) => op.pageId)
@@ -301,9 +323,15 @@ export function pickNext(
 ): OutboxOp | null {
   for (const op of ops) {
     if (isRunnable(op, blocked, now)) return op;
-    blocked.add(op.assessmentId);
+    // Une photo de placement en attente ne retient pas les copies derrière elle.
+    if (!isAnnexOp(op)) blocked.add(op.assessmentId);
   }
   return null;
+}
+
+/** Opération annexe : en échec, elle attend son tour sans bloquer le reste de l'éval. */
+export function isAnnexOp(op: OutboxOp): boolean {
+  return op.kind === 'save_placement';
 }
 
 /**
@@ -344,6 +372,52 @@ export function applyToSnapshot(snapshot: ScanSnapshot, op: OutboxOp): ScanSnaps
       };
     }
     case 'create_assessment':
+    case 'save_placement':
       return snapshot;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Placement de l'éval (migration 055)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clés de positions au format des plans de classe, "r-c". Les plans de groupe ont pu être
+ * écrits en "r,c" : on normalise, pour que le Correcteur lise toujours la même chose.
+ */
+export function normalizePositions(positions: Record<string, string> | null | undefined): Positions {
+  const out: Positions = {};
+  for (const [key, studentId] of Object.entries(positions ?? {})) {
+    if (!studentId) continue;
+    out[key.replace(',', '-')] = studentId;
+  }
+  return out;
+}
+
+/** Case occupée par un élève, ou null. */
+export function seatOf(positions: Positions, studentId: string): string | null {
+  return Object.keys(positions).find((k) => positions[k] === studentId) ?? null;
+}
+
+/**
+ * Place un élève sur une case. Si la case est prise, les deux élèves échangent leurs places ;
+ * un élève qui n'avait pas de place prend la case et l'occupant la perd.
+ */
+export function placeStudent(positions: Positions, studentId: string, cell: string): Positions {
+  const next: Positions = { ...positions };
+  const from = seatOf(next, studentId);
+  const occupant = next[cell];
+  if (from === cell) return next;
+  if (from) delete next[from];
+  next[cell] = studentId;
+  if (occupant && occupant !== studentId && from) next[from] = occupant;
+  return next;
+}
+
+/** Retire un élève du placement (absent ce jour-là, par exemple). */
+export function unseatStudent(positions: Positions, studentId: string): Positions {
+  const next: Positions = { ...positions };
+  const from = seatOf(next, studentId);
+  if (from) delete next[from];
+  return next;
 }

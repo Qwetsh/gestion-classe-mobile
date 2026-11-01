@@ -13,8 +13,10 @@ import {
   enqueueCopyInfo,
   enqueuePages,
   enqueueDeletePage,
+  enqueuePlacement,
   removeQueuedForAssessment,
 } from '../services/copies/outbox';
+import { buildPlacementFromLocalPlan, type EvalPlacement } from '../services/copies/placement';
 import {
   EMPTY_SNAPSHOT,
   applyToSnapshot,
@@ -31,6 +33,9 @@ import {
   setCachedAssessments,
   getCachedSnapshot,
   setCachedSnapshot,
+  isPlacementTaken,
+  markPlacementTaken,
+  type ScanContext,
 } from '../services/copies/localCache';
 import type { Student, WrittenAssessment } from '../types';
 
@@ -45,6 +50,9 @@ interface AssessmentState {
   assessmentsClassId: string | null;
   /** Éval ouverte sur l'écran de scan. */
   assessmentId: string | null;
+  classId: string | null;
+  /** Séance d'où l'on scanne (salle, demi-groupe) : sert à la photo du placement. */
+  context: ScanContext;
   students: Student[];
   snapshot: ScanSnapshot;
   /** File d'envoi complète (toutes évals), tenue à jour par abonnement. */
@@ -64,7 +72,7 @@ interface AssessmentActions {
     baremeTotal: number;
     sessionId: string | null;
   }) => Promise<WrittenAssessment>;
-  openAssessment: (assessmentId: string, classId: string) => Promise<void>;
+  openAssessment: (assessmentId: string, classId: string, context?: ScanContext) => Promise<void>;
   refreshSnapshot: () => Promise<void>;
   saveCopy: (input: {
     userId: string;
@@ -75,6 +83,8 @@ interface AssessmentActions {
   }) => Promise<void>;
   setAbsent: (userId: string, studentId: string, absent: boolean) => Promise<void>;
   deletePage: (userId: string, studentId: string, pageId: string, storagePath: string) => Promise<void>;
+  /** « Placement spécial pour l'éval » : remplace la photo du placement, pas le plan de la classe. */
+  savePlacement: (userId: string, placement: EvalPlacement) => Promise<void>;
   /** Efface les scans d'une éval (fichiers + index). L'éval et ses notes restent. */
   purgeCopies: (assessmentId: string) => Promise<number>;
   retryNow: () => Promise<void>;
@@ -153,10 +163,39 @@ export const useAssessmentStore = create<AssessmentStore>((set, get) => {
     set(patch);
   });
 
+  /**
+   * Premier scan d'une éval : photo du plan affiché en séance, pour l'alerte « voisins » du
+   * Correcteur (migration 055). Une seule fois par éval et par téléphone ; côté serveur, une
+   * photo déjà prise (ou corrigée à la main) n'est jamais remplacée par celle-ci.
+   */
+  const takeAutoPlacement = async (userId: string) => {
+    const { assessmentId, classId, context } = get();
+    if (!assessmentId || !classId || !context.roomId) return;
+    try {
+      if (await isPlacementTaken(assessmentId)) return;
+      const placement = await buildPlacementFromLocalPlan(classId, context.roomId, context.groupId);
+      if (!placement) return;
+      await enqueuePlacement({
+        userId,
+        assessmentId,
+        mode: 'auto',
+        roomId: placement.roomId,
+        positions: placement.positions,
+        disabledCells: placement.disabledCells,
+      });
+      await markPlacementTaken(assessmentId);
+    } catch (err) {
+      // Annexe : une photo manquée n'empêche jamais d'enregistrer la copie.
+      console.error('[assessmentStore] placement snapshot failed:', err);
+    }
+  };
+
   return {
     assessments: [],
     assessmentsClassId: null,
     assessmentId: null,
+    classId: null,
+    context: { sessionId: null, roomId: null, groupId: null },
     students: [],
     snapshot: EMPTY_SNAPSHOT,
     ops: [],
@@ -196,9 +235,11 @@ export const useAssessmentStore = create<AssessmentStore>((set, get) => {
       return created;
     },
 
-    openAssessment: async (assessmentId, classId) => {
+    openAssessment: async (assessmentId, classId, context) => {
       set({
         assessmentId,
+        classId,
+        context: context ?? { sessionId: null, roomId: null, groupId: null },
         isLoading: true,
         error: null,
         snapshot: (await getCachedSnapshot(assessmentId)) ?? EMPTY_SNAPSHOT,
@@ -231,6 +272,7 @@ export const useAssessmentStore = create<AssessmentStore>((set, get) => {
       if (!assessmentId) return;
       if (pageUris.length > 0) {
         await enqueuePages({ userId, assessmentId, studentId, firstOrder, sourceUris: pageUris });
+        await takeAutoPlacement(userId);
       }
       if (Object.keys(info).length > 0) {
         await enqueueCopyInfo({ userId, assessmentId, studentId, info });
@@ -254,6 +296,22 @@ export const useAssessmentStore = create<AssessmentStore>((set, get) => {
       const assessmentId = get().assessmentId;
       if (!assessmentId) return;
       await enqueueDeletePage({ userId, assessmentId, studentId, pageId, storagePath });
+      void drainOutbox();
+    },
+
+    savePlacement: async (userId, placement) => {
+      const assessmentId = get().assessmentId;
+      if (!assessmentId) return;
+      await enqueuePlacement({
+        userId,
+        assessmentId,
+        mode: 'manual',
+        roomId: placement.roomId,
+        positions: placement.positions,
+        disabledCells: placement.disabledCells,
+      });
+      // La photo est faite : le premier scan suivant n'en reprendra pas une automatique.
+      await markPlacementTaken(assessmentId);
       void drainOutbox();
     },
 

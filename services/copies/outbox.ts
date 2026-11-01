@@ -17,6 +17,7 @@ import { BUCKET_NAME, buildCopyPath } from './path';
 import {
   isNetworkError,
   pickNext,
+  isAnnexOp,
   markFailed,
   migrateLegacyQueue,
   cancelPendingUpload,
@@ -26,6 +27,8 @@ import {
   type CopyInfoOp,
   type UploadPageOp,
   type DeletePageOp,
+  type SavePlacementOp,
+  type Positions,
 } from './outboxLogic';
 
 /**
@@ -211,6 +214,35 @@ export async function enqueueDeletePage(params: {
   if (removed) await deleteAsync((removed as UploadPageOp).localPath, { idempotent: true }).catch(() => undefined);
 }
 
+/**
+ * Photo du placement de l'éval. 'auto' (premier scan) ne remplace jamais une photo déjà prise ;
+ * 'manual' (placement spécial) remplace la précédente, et une correction plus récente encore
+ * en attente rend la précédente inutile.
+ */
+export async function enqueuePlacement(params: {
+  userId: string;
+  assessmentId: string;
+  mode: 'auto' | 'manual';
+  roomId: string | null;
+  positions: Positions;
+  disabledCells: string[] | null;
+}): Promise<void> {
+  const op: SavePlacementOp = {
+    ...base('save_placement', params.userId, params.assessmentId),
+    mode: params.mode,
+    roomId: params.roomId,
+    positions: params.positions,
+    disabledCells: params.disabledCells,
+  };
+  await mutate((ops) => {
+    const kept =
+      params.mode === 'manual'
+        ? ops.filter((o) => !(o.kind === 'save_placement' && o.assessmentId === params.assessmentId))
+        : ops;
+    return [...kept, op];
+  });
+}
+
 /** Retire de la file tout ce qui concerne une éval (purge) et supprime les fichiers locaux. */
 export async function removeQueuedForAssessment(assessmentId: string): Promise<number> {
   let removed: OutboxOp[] = [];
@@ -328,6 +360,35 @@ async function runDeletePage(op: DeletePageOp): Promise<void> {
   fail(error);
 }
 
+/** Table absente (migration 055 pas encore appliquée) : la photo est abandonnée, pas les copies. */
+function isMissingTable(error: { code?: string; message?: string }): boolean {
+  const msg = error.message ?? '';
+  return (
+    error.code === 'PGRST205' ||
+    error.code === '42P01' ||
+    (/assessment_placements/.test(msg) && /not find|does not exist/i.test(msg))
+  );
+}
+
+async function runSavePlacement(op: SavePlacementOp): Promise<void> {
+  const row: Record<string, unknown> = {
+    assessment_id: op.assessmentId,
+    user_id: op.userId,
+    room_id: op.roomId,
+    positions: op.positions,
+    source: op.mode,
+  };
+  if (op.disabledCells) row.disabled_cells = op.disabledCells;
+  const { error } = await supabase!
+    .from('assessment_placements')
+    .upsert(row, { onConflict: 'assessment_id', ignoreDuplicates: op.mode === 'auto' });
+  if (error && isMissingTable(error)) {
+    console.warn('[CopyOutbox] assessment_placements absente : photo du placement ignorée');
+    return;
+  }
+  fail(error);
+}
+
 async function runOp(op: OutboxOp): Promise<void> {
   switch (op.kind) {
     case 'create_assessment':
@@ -338,6 +399,8 @@ async function runOp(op: OutboxOp): Promise<void> {
       return runUploadPage(op);
     case 'delete_page':
       return runDeletePage(op);
+    case 'save_placement':
+      return runSavePlacement(op);
   }
 }
 
@@ -385,7 +448,7 @@ export async function drainOutbox(force = false): Promise<DrainResult> {
         }
         const message = err instanceof Error ? err.message : String(err);
         console.error('[CopyOutbox] op failed:', next.kind, message);
-        blocked.add(next.assessmentId);
+        if (!isAnnexOp(next)) blocked.add(next.assessmentId);
         await mutate((ops) =>
           ops.map((op) => (op.id === next.id ? markFailed(op, message, Date.now()) : op))
         );
