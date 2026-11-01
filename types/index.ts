@@ -104,7 +104,7 @@ export interface Room {
 // Written Assessments (Copies d'éval scannées → correction PC)
 // ============================================
 // Types alignés sur les lignes Supabase (snake_case), car cloud-direct
-// (pas de mirroir SQLite local pour ces tables — cf. PLAN_scan_copies.md).
+// (pas de miroir SQLite : écritures via la file services/copies/outbox — cf. PLAN_copies_evaluation.md).
 
 export interface WrittenAssessment {
   id: string;
@@ -117,6 +117,15 @@ export interface WrittenAssessment {
   created_at: string;
   updated_at: string | null;
   is_deleted: boolean;
+  /** Séance où l'éval a été passée / scannée (migration 052, facultatif). */
+  session_id: string | null;
+  period: number | null;
+  kind: string;
+  published_to_students: boolean;
+  /** Nom de la série (même éval sur plusieurs classes), s'il y en a une. */
+  series_name: string | null;
+  /** Créée sur ce téléphone, pas encore arrivée sur le serveur. */
+  is_pending?: boolean;
 }
 
 export interface AssessmentCopyPage {
@@ -126,13 +135,6 @@ export interface AssessmentCopyPage {
   page_order: number;
   storage_path: string;
   created_at: string;
-}
-
-// Élève de la classe + nombre de pages scannées (uploadées) et en attente (offline) pour une éval
-export interface StudentScanStatus {
-  student: Student;
-  pageCount: number;    // pages confirmées côté serveur
-  pendingCount: number; // pages capturées hors-ligne, en file d'upload
 }
 
 // ============================================

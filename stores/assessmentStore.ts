@@ -2,227 +2,280 @@ import { create } from 'zustand';
 import { getStudentsByClassId } from '../services/database';
 import {
   listAssessments,
-  createAssessment as createAssessmentApi,
-  updateAssessment as updateAssessmentApi,
-  softDeleteAssessment,
-  purgeAssessment as purgeAssessmentApi,
-  getPageCountsByStudent,
-  type CreateAssessmentInput,
+  fetchScanSnapshot,
+  purgeAssessmentCopies,
 } from '../services/copies/assessments';
 import {
-  getPendingCountsByStudent,
+  readOutbox,
+  subscribeOutbox,
+  drainOutbox,
+  enqueueCreateAssessment,
+  enqueueCopyInfo,
+  enqueuePages,
+  enqueueDeletePage,
   removeQueuedForAssessment,
-} from '../services/copies/uploadQueue';
-import type { WrittenAssessment, StudentScanStatus } from '../types';
+} from '../services/copies/outbox';
+import {
+  EMPTY_SNAPSHOT,
+  applyToSnapshot,
+  mergeStudentState,
+  pendingCreations,
+  type CopyInfo,
+  type OutboxOp,
+  type ScanSnapshot,
+  type StudentCopyState,
+  type CreateAssessmentOp,
+} from '../services/copies/outboxLogic';
+import {
+  getCachedAssessments,
+  setCachedAssessments,
+  getCachedSnapshot,
+  setCachedSnapshot,
+} from '../services/copies/localCache';
+import type { Student, WrittenAssessment } from '../types';
+
+/** Élève de la classe + état de sa copie pour l'éval ouverte. */
+export interface StudentScanStatus extends StudentCopyState {
+  student: Student;
+}
 
 interface AssessmentState {
+  /** Évals scannables de la classe ouverte (serveur ou cache + créées hors ligne). */
   assessments: WrittenAssessment[];
-  currentAssessment: WrittenAssessment | null;
-  scanStatuses: StudentScanStatus[]; // élèves de la classe + nb pages scannées
+  assessmentsClassId: string | null;
+  /** Éval ouverte sur l'écran de scan. */
+  assessmentId: string | null;
+  students: Student[];
+  snapshot: ScanSnapshot;
+  /** File d'envoi complète (toutes évals), tenue à jour par abonnement. */
+  ops: OutboxOp[];
+  /** false : l'instantané vient du cache (pas de réseau au chargement). */
+  snapshotFresh: boolean;
   isLoading: boolean;
   error: string | null;
 }
 
 interface AssessmentActions {
-  loadAssessments: (userId: string, classId?: string) => Promise<void>;
-  addAssessment: (input: CreateAssessmentInput) => Promise<WrittenAssessment>;
-  editAssessment: (
-    id: string,
-    patch: Partial<Pick<WrittenAssessment, 'name' | 'subject' | 'date' | 'bareme_total'>>
-  ) => Promise<void>;
-  removeAssessment: (id: string) => Promise<void>;
-  purgeAssessment: (id: string) => Promise<number>; // renvoie le nb de fichiers Storage supprimés
-  setCurrentAssessment: (assessment: WrittenAssessment | null) => void;
-  loadScanStatuses: (assessmentId: string, classId: string) => Promise<void>;
-  bumpPageCount: (studentId: string, delta?: number) => void;
-  bumpPendingCount: (studentId: string, delta?: number) => void;
+  loadAssessments: (userId: string, classId: string) => Promise<void>;
+  createAssessment: (input: {
+    userId: string;
+    classId: string;
+    name: string;
+    baremeTotal: number;
+    sessionId: string | null;
+  }) => Promise<WrittenAssessment>;
+  openAssessment: (assessmentId: string, classId: string) => Promise<void>;
+  refreshSnapshot: () => Promise<void>;
+  saveCopy: (input: {
+    userId: string;
+    studentId: string;
+    firstOrder: number;
+    pageUris: string[];
+    info: CopyInfo;
+  }) => Promise<void>;
+  setAbsent: (userId: string, studentId: string, absent: boolean) => Promise<void>;
+  deletePage: (userId: string, studentId: string, pageId: string, storagePath: string) => Promise<void>;
+  /** Efface les scans d'une éval (fichiers + index). L'éval et ses notes restent. */
+  purgeCopies: (assessmentId: string) => Promise<number>;
+  retryNow: () => Promise<void>;
   clearError: () => void;
-  reset: () => void;
 }
 
 type AssessmentStore = AssessmentState & AssessmentActions;
 
-const initialState: AssessmentState = {
-  assessments: [],
-  currentAssessment: null,
-  scanStatuses: [],
-  isLoading: false,
-  error: null,
-};
+function todayIso(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-const OFFLINE_CREATE_ERROR =
-  'Impossible de créer l’évaluation (connexion requise). Réessaie une fois en ligne.';
+/** Une éval créée hors ligne, telle que l'écran l'affiche en attendant le serveur. */
+function pendingToAssessment(op: CreateAssessmentOp): WrittenAssessment {
+  return {
+    id: op.assessmentId,
+    user_id: op.userId,
+    class_id: op.classId,
+    name: op.name,
+    subject: null,
+    date: op.date,
+    bareme_total: op.baremeTotal,
+    created_at: op.createdAt,
+    updated_at: null,
+    is_deleted: false,
+    session_id: op.sessionId,
+    period: null,
+    kind: 'ecrit',
+    published_to_students: false,
+    series_name: null,
+    is_pending: true,
+  };
+}
 
-export const useAssessmentStore = create<AssessmentStore>((set, get) => ({
-  ...initialState,
+function withPending(list: WrittenAssessment[], ops: OutboxOp[], classId: string): WrittenAssessment[] {
+  const known = new Set(list.map((a) => a.id));
+  const pending = pendingCreations(ops)
+    .filter((op) => op.classId === classId && !known.has(op.assessmentId))
+    .map(pendingToAssessment);
+  return [...pending, ...list];
+}
 
-  loadAssessments: async (userId: string, classId?: string) => {
-    set({ isLoading: true, error: null });
-    try {
-      const assessments = await listAssessments(userId, classId);
-      set({ assessments, isLoading: false });
-    } catch (error) {
-      console.error('[assessmentStore] Failed to load assessments:', error);
-      set({
-        error: error instanceof Error ? error.message : 'Erreur lors du chargement des évaluations',
-        isLoading: false,
-      });
+/** Statuts de toute la classe pour l'éval ouverte (calcul pur, à mémoïser côté écran). */
+export function buildScanStatuses(
+  students: Student[],
+  snapshot: ScanSnapshot,
+  ops: OutboxOp[],
+  assessmentId: string | null
+): StudentScanStatus[] {
+  if (!assessmentId) return [];
+  const scoped = ops.filter((op) => op.assessmentId === assessmentId);
+  return students.map((student) => ({
+    student,
+    ...mergeStudentState(student.id, snapshot, scoped),
+  }));
+}
+
+export const useAssessmentStore = create<AssessmentStore>((set, get) => {
+  // La file vit hors du store (disque) : on s'y abonne une fois pour toutes.
+  void readOutbox().then((ops) => set({ ops }));
+  subscribeOutbox((ops, completed) => {
+    const { assessmentId, snapshot, assessments, assessmentsClassId } = get();
+    const patch: Partial<AssessmentState> = { ops };
+    if (completed && completed.assessmentId === assessmentId) {
+      const next = applyToSnapshot(snapshot, completed);
+      patch.snapshot = next;
+      if (assessmentId) void setCachedSnapshot(assessmentId, next);
     }
-  },
+    if (completed?.kind === 'create_assessment') {
+      patch.assessments = assessments.map((a) =>
+        a.id === completed.assessmentId ? { ...a, is_pending: false } : a
+      );
+      if (assessmentsClassId) void setCachedAssessments(assessmentsClassId, patch.assessments);
+    }
+    set(patch);
+  });
 
-  addAssessment: async (input: CreateAssessmentInput) => {
-    set({ isLoading: true, error: null });
-    try {
-      const created = await createAssessmentApi(input);
-      if (!created) {
-        // cloud-direct : un null = pas de connexion / RLS / insert refusé
-        set({ error: OFFLINE_CREATE_ERROR, isLoading: false });
-        throw new Error(OFFLINE_CREATE_ERROR);
+  return {
+    assessments: [],
+    assessmentsClassId: null,
+    assessmentId: null,
+    students: [],
+    snapshot: EMPTY_SNAPSHOT,
+    ops: [],
+    snapshotFresh: false,
+    isLoading: false,
+    error: null,
+
+    loadAssessments: async (userId, classId) => {
+      set({ isLoading: true, error: null, assessmentsClassId: classId });
+      const ops = await readOutbox();
+      const cached = await getCachedAssessments(classId);
+      if (get().assessmentsClassId === classId) {
+        set({ assessments: withPending(cached, ops, classId) });
       }
-      set((state) => ({
-        assessments: [created, ...state.assessments],
-        currentAssessment: created,
-        isLoading: false,
-      }));
+      const fresh = await listAssessments(userId, classId);
+      if (get().assessmentsClassId !== classId) return;
+      if (fresh) {
+        await setCachedAssessments(classId, fresh);
+        set({ assessments: withPending(fresh, get().ops, classId), isLoading: false });
+      } else {
+        set({ isLoading: false });
+      }
+    },
+
+    createAssessment: async ({ userId, classId, name, baremeTotal, sessionId }) => {
+      const op = await enqueueCreateAssessment({
+        userId,
+        classId,
+        name,
+        date: todayIso(),
+        baremeTotal,
+        sessionId,
+      });
+      const created = pendingToAssessment(op);
+      set((s) => ({ assessments: [created, ...s.assessments.filter((a) => a.id !== created.id)] }));
+      void drainOutbox();
       return created;
-    } catch (error) {
-      if (!get().error) {
-        set({
-          error: error instanceof Error ? error.message : 'Erreur lors de la création de l’évaluation',
-          isLoading: false,
-        });
-      }
-      throw error;
-    }
-  },
+    },
 
-  editAssessment: async (id, patch) => {
-    set({ isLoading: true, error: null });
-    try {
-      const updated = await updateAssessmentApi(id, patch);
-      if (updated) {
-        set((state) => ({
-          assessments: state.assessments.map((a) => (a.id === id ? updated : a)),
-          currentAssessment:
-            state.currentAssessment?.id === id ? updated : state.currentAssessment,
-          isLoading: false,
-        }));
-      } else {
-        set({ isLoading: false });
-      }
-    } catch (error) {
-      console.error('[assessmentStore] Failed to edit assessment:', error);
+    openAssessment: async (assessmentId, classId) => {
       set({
-        error: error instanceof Error ? error.message : 'Erreur lors de la modification',
-        isLoading: false,
+        assessmentId,
+        isLoading: true,
+        error: null,
+        snapshot: (await getCachedSnapshot(assessmentId)) ?? EMPTY_SNAPSHOT,
+        snapshotFresh: false,
       });
-      throw error;
-    }
-  },
-
-  removeAssessment: async (id: string) => {
-    set({ isLoading: true, error: null });
-    try {
-      const ok = await softDeleteAssessment(id);
-      if (ok) {
-        set((state) => ({
-          assessments: state.assessments.filter((a) => a.id !== id),
-          currentAssessment:
-            state.currentAssessment?.id === id ? null : state.currentAssessment,
-          isLoading: false,
-        }));
-      } else {
-        set({ isLoading: false });
+      try {
+        const students = await getStudentsByClassId(classId);
+        if (get().assessmentId !== assessmentId) return;
+        set({ students });
+      } catch (error) {
+        console.error('[assessmentStore] students load failed:', error);
+        set({ error: 'Élèves introuvables sur le téléphone. Synchronise d’abord.' });
       }
-    } catch (error) {
-      console.error('[assessmentStore] Failed to remove assessment:', error);
-      set({
-        error: error instanceof Error ? error.message : 'Erreur lors de la suppression',
-        isLoading: false,
-      });
-      throw error;
-    }
-  },
+      await get().refreshSnapshot();
+      set({ isLoading: false });
+      void drainOutbox();
+    },
 
-  purgeAssessment: async (id: string) => {
-    set({ isLoading: true, error: null });
-    try {
-      // Nettoie la file offline locale d'abord (évite de ré-uploader des copies effacées)
-      await removeQueuedForAssessment(id);
-      const result = await purgeAssessmentApi(id);
+    refreshSnapshot: async () => {
+      const assessmentId = get().assessmentId;
+      if (!assessmentId) return;
+      const fresh = await fetchScanSnapshot(assessmentId);
+      if (!fresh || get().assessmentId !== assessmentId) return;
+      await setCachedSnapshot(assessmentId, fresh);
+      set({ snapshot: fresh, snapshotFresh: true });
+    },
+
+    saveCopy: async ({ userId, studentId, firstOrder, pageUris, info }) => {
+      const assessmentId = get().assessmentId;
+      if (!assessmentId) return;
+      if (pageUris.length > 0) {
+        await enqueuePages({ userId, assessmentId, studentId, firstOrder, sourceUris: pageUris });
+      }
+      if (Object.keys(info).length > 0) {
+        await enqueueCopyInfo({ userId, assessmentId, studentId, info });
+      }
+      void drainOutbox();
+    },
+
+    setAbsent: async (userId, studentId, absent) => {
+      const assessmentId = get().assessmentId;
+      if (!assessmentId) return;
+      await enqueueCopyInfo({
+        userId,
+        assessmentId,
+        studentId,
+        info: { status: absent ? 'absent' : 'noted' },
+      });
+      void drainOutbox();
+    },
+
+    deletePage: async (userId, studentId, pageId, storagePath) => {
+      const assessmentId = get().assessmentId;
+      if (!assessmentId) return;
+      await enqueueDeletePage({ userId, assessmentId, studentId, pageId, storagePath });
+      void drainOutbox();
+    },
+
+    purgeCopies: async (assessmentId) => {
+      // La file locale d'abord : on ne ré-enverra pas des copies qu'on vient d'effacer.
+      await removeQueuedForAssessment(assessmentId);
+      const result = await purgeAssessmentCopies(assessmentId);
       if (!result.success) {
-        set({
-          error: result.error ?? 'Échec de la suppression',
-          isLoading: false,
-        });
-        throw new Error(result.error ?? 'Échec de la suppression');
+        const message = result.error ?? 'Échec de la suppression';
+        set({ error: message });
+        throw new Error(message);
       }
-      set((state) => ({
-        assessments: state.assessments.filter((a) => a.id !== id),
-        currentAssessment: state.currentAssessment?.id === id ? null : state.currentAssessment,
-        isLoading: false,
-      }));
+      await setCachedSnapshot(assessmentId, { ...EMPTY_SNAPSHOT, fetchedAt: new Date().toISOString() });
+      if (get().assessmentId === assessmentId) await get().refreshSnapshot();
       return result.filesDeleted;
-    } catch (error) {
-      if (!get().error) {
-        set({
-          error: error instanceof Error ? error.message : 'Erreur lors de la suppression',
-          isLoading: false,
-        });
-      }
-      throw error;
-    }
-  },
+    },
 
-  setCurrentAssessment: (assessment) => set({ currentAssessment: assessment }),
+    retryNow: async () => {
+      await drainOutbox(true);
+      await get().refreshSnapshot();
+    },
 
-  loadScanStatuses: async (assessmentId: string, classId: string) => {
-    set({ isLoading: true, error: null });
-    try {
-      // Élèves depuis SQLite local (offline-first) + compteurs serveur + file offline.
-      const [students, counts, pending] = await Promise.all([
-        getStudentsByClassId(classId),
-        getPageCountsByStudent(assessmentId),
-        getPendingCountsByStudent(assessmentId),
-      ]);
-      const scanStatuses: StudentScanStatus[] = students.map((student) => ({
-        student,
-        pageCount: counts[student.id] ?? 0,
-        pendingCount: pending[student.id] ?? 0,
-      }));
-      set({ scanStatuses, isLoading: false });
-    } catch (error) {
-      console.error('[assessmentStore] Failed to load scan statuses:', error);
-      set({
-        error: error instanceof Error ? error.message : 'Erreur lors du chargement des élèves',
-        isLoading: false,
-      });
-    }
-  },
-
-  // Mise à jour optimiste du compteur uploadé après un scan (delta +1 par défaut)
-  bumpPageCount: (studentId: string, delta = 1) => {
-    set((state) => ({
-      scanStatuses: state.scanStatuses.map((s) =>
-        s.student.id === studentId
-          ? { ...s, pageCount: Math.max(0, s.pageCount + delta) }
-          : s
-      ),
-    }));
-  },
-
-  // Mise à jour optimiste du compteur "en attente" (file offline)
-  bumpPendingCount: (studentId: string, delta = 1) => {
-    set((state) => ({
-      scanStatuses: state.scanStatuses.map((s) =>
-        s.student.id === studentId
-          ? { ...s, pendingCount: Math.max(0, s.pendingCount + delta) }
-          : s
-      ),
-    }));
-  },
-
-  clearError: () => set({ error: null }),
-
-  reset: () => set(initialState),
-}));
+    clearError: () => set({ error: null }),
+  };
+});

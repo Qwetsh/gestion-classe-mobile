@@ -17,10 +17,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CategoryIcon } from '../../../components/CategoryIcon';
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   MessageSquare,
   Mic,
+  ScanLine,
   Pencil,
   Settings,
   Shuffle,
@@ -59,7 +60,7 @@ import { TagBar, TagGhost, ERASER_TAG, type DraggedTag } from '../../../componen
 import { TagEditorSheet } from '../../../components/session/TagEditorSheet';
 import { useStudentTagStore } from '../../../stores/studentTagStore';
 import * as Haptics from 'expo-haptics';
-import { triggerActionSignature, triggerErrorFeedback } from '../../../utils/haptics';
+import { triggerActionSignature, triggerErrorFeedback, triggerLightFeedback } from '../../../utils/haptics';
 import { getGroupSessionByLinkedSessionId } from '../../../services/database';
 import { SessionGroupView } from '../../../components/groups/SessionGroupView';
 import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOverlay';
@@ -82,6 +83,8 @@ import {
 // These are only used on native platforms (iOS/Android)
 import { RadialMenu } from '../../../components/radial';
 import { useRadialMenu, RadialMenuSelection } from '../../../hooks/useRadialMenu';
+import { buildMenuItems } from '../../../constants/menuItems';
+import { getActiveForSession, type ActiveCopyAssessment } from '../../../services/copies/localCache';
 
 const IS_NATIVE = Platform.OS === 'ios' || Platform.OS === 'android';
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -499,12 +502,58 @@ function NativeSessionScreen() {
     setUndoBanner((prev) => ({ ...prev, visible: false }));
   }, []);
 
+  // Copies d'éval : éval choisie pour cette séance (retenue sur le téléphone)
+  const [copyAssessment, setCopyAssessment] = useState<ActiveCopyAssessment | null>(null);
+  const sessionIdForCopies = activeSession?.id ?? null;
+  useFocusEffect(
+    useCallback(() => {
+      if (!sessionIdForCopies) return;
+      getActiveForSession(sessionIdForCopies).then(setCopyAssessment);
+    }, [sessionIdForCopies])
+  );
+  const radialItems = useMemo(() => buildMenuItems(!!copyAssessment), [copyAssessment]);
+
+  const openCopyScan = useCallback(
+    (studentId?: string) => {
+      if (!copyAssessment) return;
+      const { assessmentId, classId, name } = copyAssessment;
+      router.push(
+        `/(main)/assessments/scan?assessmentId=${assessmentId}&classId=${classId}&name=${encodeURIComponent(name)}${
+          studentId ? `&studentId=${studentId}` : ''
+        }`
+      );
+    },
+    [copyAssessment]
+  );
+
+  const handleOpenCopiesChooser = useCallback(() => {
+    if (!activeSession) return;
+    router.push(
+      `/(main)/assessments?classId=${activeSession.class_id}&sessionId=${activeSession.id}&className=${encodeURIComponent(
+        currentClass?.name ?? ''
+      )}`
+    );
+  }, [activeSession, currentClass?.name]);
+
+  // Barre « Copies » : reprend l'éval de la séance, sinon demande laquelle (appui long = changer)
+  const handleOpenCopies = useCallback(() => {
+    if (copyAssessment) openCopyScan();
+    else handleOpenCopiesChooser();
+  }, [copyAssessment, openCopyScan, handleOpenCopiesChooser]);
+
   // Handle selection from radial menu
   const handleRadialSelection = useCallback(async (selection: RadialMenuSelection) => {
     if (!selectedStudent) return;
 
     const itemId = selection.parentId || selection.itemId;
     const subItemId = selection.parentId ? selection.itemId : null;
+
+    if (subItemId === 'copie') {
+      triggerLightFeedback();
+      openCopyScan(selectedStudent.id);
+      setSelectedStudent(null);
+      return;
+    }
 
     switch (itemId) {
       case 'participation': {
@@ -559,7 +608,7 @@ function NativeSessionScreen() {
     }
 
     setSelectedStudent(null);
-  }, [selectedStudent, addEvent, distinctHaptics, showUndoBanner, showErrorBanner]);
+  }, [selectedStudent, addEvent, distinctHaptics, showUndoBanner, showErrorBanner, openCopyScan]);
 
   const {
     menuState,
@@ -576,7 +625,7 @@ function NativeSessionScreen() {
     closeMenu,
     handleTouchMove,
     handleSelection,
-  } = useRadialMenu(handleRadialSelection);
+  } = useRadialMenu(handleRadialSelection, radialItems);
 
   const menuOpenRef = useRef(false);
   const lastTouchRef = useRef({ x: 0, y: 0 });
@@ -1585,6 +1634,15 @@ function NativeSessionScreen() {
                     </Text>
                   </View>
                 )}
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}
+                onPress={handleOpenCopies}
+                onLongPress={handleOpenCopiesChooser}
+              >
+                <ScanLine size={17} color={theme.colors.text} strokeWidth={1.8} />
+                <Text style={styles.toolbarButtonText}>Copies</Text>
+                {copyAssessment && <View style={styles.noteIndicator} />}
               </Pressable>
               <Pressable
                 style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]}

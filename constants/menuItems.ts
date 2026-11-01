@@ -64,6 +64,22 @@ export const MENU_ITEMS: MenuItemType[] = [
   },
 ];
 
+/** Raccourci « Scanner la copie », ajouté au sous-menu Sortie quand une éval est choisie en séance. */
+export const COPY_MENU_ITEM: MenuItemType = {
+  id: 'copie',
+  label: 'Copie',
+  icon: 'scan-line',
+  color: '#2DD4BF',
+};
+
+/** Entrées du menu radial, avec le raccourci de scan si une éval est en cours. */
+export function buildMenuItems(withCopyScan: boolean): MenuItemType[] {
+  if (!withCopyScan) return MENU_ITEMS;
+  return MENU_ITEMS.map((item) =>
+    item.id === 'sortie' ? { ...item, subItems: [...(item.subItems ?? []), COPY_MENU_ITEM] } : item
+  );
+}
+
 export const MENU_RADIUS = 120;
 export const ITEM_SIZE = 70;
 export const SUBMENU_RADIUS = 100;

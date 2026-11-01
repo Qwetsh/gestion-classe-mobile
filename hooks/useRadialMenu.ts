@@ -26,7 +26,15 @@ export interface RadialMenuSelection {
 const SUBMENU_HOVER_DELAY = 300;
 const BONUS_FILL_DURATION = 1500; // ms to fill the arc for bonus
 
-export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => void) {
+/**
+ * `items` : entrées du premier anneau. Les directions restent celles de MENU_ITEMS (même ordre,
+ * mêmes ids : le rendu et le flick s'appuient dessus) ; seuls les sous-menus peuvent varier,
+ * par exemple « Copie » sous « Sortie » quand une éval est en cours de scan.
+ */
+export function useRadialMenu(
+  onSelect?: (selection: RadialMenuSelection) => void,
+  items: MenuItemType[] = MENU_ITEMS
+) {
   const [menuState, setMenuState] = useState<MenuState>('closed');
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [selectedItem, setSelectedItem] = useState<MenuItemType | null>(null);
@@ -48,6 +56,8 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
   const boundsRef = useRef<MenuBounds | null>(null);
   const activeSubmenuRef = useRef<MenuItemType | null>(null);
   const onSelectRef = useRef(onSelect);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const isMountedRef = useRef(true);
 
   // Keep onSelect ref updated
@@ -309,7 +319,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
       centerY = currentPosition.y + submenuPos.y;
       radius = SUBMENU_RADIUS;
     } else {
-      currentItems = MENU_ITEMS;
+      currentItems = itemsRef.current;
       centerX = currentPosition.x;
       centerY = currentPosition.y;
       radius = MENU_RADIUS;
@@ -371,7 +381,7 @@ export function useRadialMenu(onSelect?: (selection: RadialMenuSelection) => voi
       centerY = currentPosition.y + submenuPos.y;
       radius = SUBMENU_RADIUS;
     } else {
-      currentItems = MENU_ITEMS;
+      currentItems = itemsRef.current;
       centerX = currentPosition.x;
       centerY = currentPosition.y;
       radius = MENU_RADIUS;
