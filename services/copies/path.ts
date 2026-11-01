@@ -38,6 +38,38 @@ export function computeResize(
   return width >= height ? { width: maxLongEdge } : { height: maxLongEdge };
 }
 
+export interface PurgePlan {
+  /** Fichiers a supprimer (eleves qui ont une transcription). */
+  paths: string[];
+  /** Eleves dont on supprime les pages. */
+  purgedStudents: string[];
+  /** Eleves qui ont des pages mais pas de transcription : leurs scans restent. */
+  keptStudents: string[];
+}
+
+/**
+ * Partage les pages d'une eval entre celles qu'on peut supprimer et celles qu'on garde :
+ * une copie ne perd ses scans que si le Correcteur l'a transcrite (migration 056), sinon il ne
+ * resterait aucune trace de ce que l'eleve a ecrit. Meme regle que la purge de nuit et le web.
+ */
+export function planCopyPurge(
+  pages: { student_id: string; storage_path: string }[],
+  transcribed: ReadonlySet<string>
+): PurgePlan {
+  const paths: string[] = [];
+  const purged = new Set<string>();
+  const kept = new Set<string>();
+  for (const p of pages) {
+    if (transcribed.has(p.student_id)) {
+      paths.push(p.storage_path);
+      purged.add(p.student_id);
+    } else {
+      kept.add(p.student_id);
+    }
+  }
+  return { paths, purgedStudents: [...purged], keptStudents: [...kept] };
+}
+
 /**
  * Construit le chemin de stockage d'une page de copie.
  * Format: userId/{assessmentId}/{studentId}/{pageId}.jpg

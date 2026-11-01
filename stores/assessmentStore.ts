@@ -14,7 +14,6 @@ import {
   enqueuePages,
   enqueueDeletePage,
   enqueuePlacement,
-  removeQueuedForAssessment,
 } from '../services/copies/outbox';
 import { buildPlacementFromLocalPlan, type EvalPlacement } from '../services/copies/placement';
 import {
@@ -86,7 +85,8 @@ interface AssessmentActions {
   /** « Placement spécial pour l'éval » : remplace la photo du placement, pas le plan de la classe. */
   savePlacement: (userId: string, placement: EvalPlacement) => Promise<void>;
   /** Efface les scans d'une éval (fichiers + index). L'éval et ses notes restent. */
-  purgeCopies: (assessmentId: string) => Promise<number>;
+  /** Efface les scans des copies transcrites ; renvoie fichiers supprimés et copies gardées. */
+  purgeCopies: (assessmentId: string) => Promise<{ files: number; kept: number }>;
   retryNow: () => Promise<void>;
   clearError: () => void;
 }
@@ -316,17 +316,15 @@ export const useAssessmentStore = create<AssessmentStore>((set, get) => {
     },
 
     purgeCopies: async (assessmentId) => {
-      // La file locale d'abord : on ne ré-enverra pas des copies qu'on vient d'effacer.
-      await removeQueuedForAssessment(assessmentId);
+      // La file locale reste : une page pas encore envoyée n'a pas de transcription, on la garde.
       const result = await purgeAssessmentCopies(assessmentId);
       if (!result.success) {
         const message = result.error ?? 'Échec de la suppression';
         set({ error: message });
         throw new Error(message);
       }
-      await setCachedSnapshot(assessmentId, { ...EMPTY_SNAPSHOT, fetchedAt: new Date().toISOString() });
       if (get().assessmentId === assessmentId) await get().refreshSnapshot();
-      return result.filesDeleted;
+      return { files: result.filesDeleted, kept: result.kept };
     },
 
     retryNow: async () => {

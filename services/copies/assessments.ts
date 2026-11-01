@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from '../supabase';
-import { BUCKET_NAME } from './path';
+import { BUCKET_NAME, planCopyPurge } from './path';
 import type { ScanSnapshot } from './outboxLogic';
 import type { WrittenAssessment } from '../../types';
 
@@ -92,6 +92,8 @@ export async function fetchScanSnapshot(assessmentId: string): Promise<ScanSnaps
 export interface PurgeResult {
   success: boolean;
   filesDeleted: number;
+  /** Copies sans transcription : leurs scans sont gardés. */
+  kept: number;
   error?: string;
 }
 
@@ -99,25 +101,37 @@ export interface PurgeResult {
  * Efface les SCANS d'une éval : fichiers du bucket (libère l'espace) puis lignes
  * assessment_copy_pages. L'éval, ses notes et leur détail restent : avant le 01/11/2026 on
  * supprimait la ligne written_assessments, dont la cascade emportait aussi assessment_grades.
- * Irréversible. Ne touche pas la file locale (gérée côté outbox).
+ * Seules les copies transcrites par le Correcteur perdent leurs scans (migration 056) ; tant
+ * que la table n'existe pas, rien n'est supprimé. Irréversible. Ne touche pas la file locale :
+ * une page encore sur le téléphone n'est transcrite par personne.
  */
 export async function purgeAssessmentCopies(assessmentId: string): Promise<PurgeResult> {
   if (!isSupabaseConfigured || !supabase) {
-    return { success: false, filesDeleted: 0, error: 'Supabase non configure' };
+    return { success: false, filesDeleted: 0, kept: 0, error: 'Supabase non configure' };
   }
 
   try {
-    // 1) Recupere tous les chemins de fichiers a effacer
-    const { data: pages, error: listError } = await supabase
-      .from('assessment_copy_pages')
-      .select('storage_path')
-      .eq('assessment_id', assessmentId);
+    // 1) Pages de l'éval, et copies transcrites
+    const [pagesRes, transcriptsRes] = await Promise.all([
+      supabase.from('assessment_copy_pages').select('student_id, storage_path').eq('assessment_id', assessmentId),
+      supabase.from('assessment_copy_transcripts').select('student_id').eq('assessment_id', assessmentId),
+    ]);
 
-    if (listError) {
-      return { success: false, filesDeleted: 0, error: listError.message };
+    if (pagesRes.error) {
+      return { success: false, filesDeleted: 0, kept: 0, error: pagesRes.error.message };
+    }
+    const missingTable = ['PGRST205', '42P01'].includes(transcriptsRes.error?.code ?? '');
+    if (transcriptsRes.error && !missingTable) {
+      return { success: false, filesDeleted: 0, kept: 0, error: transcriptsRes.error.message };
     }
 
-    const paths = (pages ?? []).map((p) => (p as { storage_path: string }).storage_path);
+    const pages = (pagesRes.data ?? []) as { student_id: string; storage_path: string }[];
+    const transcribed = new Set(
+      ((transcriptsRes.data ?? []) as { student_id: string }[]).map((t) => t.student_id)
+    );
+    const plan = planCopyPurge(pages, transcribed);
+    const paths = plan.paths;
+    const kept = plan.keptStudents.length;
 
     // 2) Supprime les objets Storage par lots (l'API accepte un tableau)
     let filesDeleted = 0;
@@ -127,26 +141,30 @@ export async function purgeAssessmentCopies(assessmentId: string): Promise<Purge
       if (slice.length === 0) continue;
       const { error: rmError } = await supabase.storage.from(BUCKET_NAME).remove(slice);
       if (rmError) {
-        return { success: false, filesDeleted, error: rmError.message };
+        return { success: false, filesDeleted, kept, error: rmError.message };
       }
       filesDeleted += slice.length;
     }
 
-    // 3) Supprime l'index des pages (l'éval et ses notes restent)
-    const { error: delError } = await supabase
-      .from('assessment_copy_pages')
-      .delete()
-      .eq('assessment_id', assessmentId);
+    // 3) Supprime l'index de ces pages (l'éval, ses notes et les autres copies restent)
+    if (plan.purgedStudents.length > 0) {
+      const { error: delError } = await supabase
+        .from('assessment_copy_pages')
+        .delete()
+        .eq('assessment_id', assessmentId)
+        .in('student_id', plan.purgedStudents);
 
-    if (delError) {
-      return { success: false, filesDeleted, error: delError.message };
+      if (delError) {
+        return { success: false, filesDeleted, kept, error: delError.message };
+      }
     }
 
-    return { success: true, filesDeleted };
+    return { success: true, filesDeleted, kept };
   } catch (err) {
     return {
       success: false,
       filesDeleted: 0,
+      kept: 0,
       error: err instanceof Error ? err.message : 'Erreur inconnue',
     };
   }

@@ -243,21 +243,6 @@ export async function enqueuePlacement(params: {
   });
 }
 
-/** Retire de la file tout ce qui concerne une éval (purge) et supprime les fichiers locaux. */
-export async function removeQueuedForAssessment(assessmentId: string): Promise<number> {
-  let removed: OutboxOp[] = [];
-  await mutate((ops) => {
-    removed = ops.filter((op) => op.assessmentId === assessmentId);
-    return ops.filter((op) => op.assessmentId !== assessmentId);
-  });
-  for (const op of removed) {
-    if (op.kind === 'upload_page') {
-      await deleteAsync(op.localPath, { idempotent: true }).catch(() => undefined);
-    }
-  }
-  return removed.length;
-}
-
 // ---------------------------------------------------------------------------
 // Exécution des opérations
 // ---------------------------------------------------------------------------
