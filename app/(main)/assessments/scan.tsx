@@ -10,12 +10,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { ChevronLeft, ScanLine, CloudUpload, AlertTriangle, Trash2 } from 'lucide-react-native';
+import { ChevronLeft, ScanLine, CloudUpload, AlertTriangle, Trash2, LayoutGrid } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores';
 import { useAssessmentStore, buildScanStatuses, type StudentScanStatus } from '../../../stores/assessmentStore';
 import { theme } from '../../../constants/theme';
 import { OfflineIndicator } from '../../../components';
 import { CopySheet, type CopySheetSave } from '../../../components/copies/CopySheet';
+import { PlacementSheet } from '../../../components/copies/PlacementSheet';
 import { scanPages, preparePage } from '../../../services/copies/scanner';
 import { nextPageOrder, summarize, type CopyPageView } from '../../../services/copies/outboxLogic';
 import { getLastVersion, setLastVersion } from '../../../services/copies/localCache';
@@ -41,7 +42,18 @@ export default function ScanScreen() {
     classId: string;
     name?: string;
     studentId?: string;
+    sessionId?: string;
+    roomId?: string;
+    groupId?: string;
   }>();
+  const context = useMemo(
+    () => ({
+      sessionId: params.sessionId || null,
+      roomId: params.roomId || null,
+      groupId: params.groupId || null,
+    }),
+    [params.sessionId, params.roomId, params.groupId]
+  );
   const { assessmentId, classId } = params;
   const evalName = params.name ?? 'Évaluation';
 
@@ -57,6 +69,7 @@ export default function ScanScreen() {
     saveCopy,
     setAbsent,
     deletePage,
+    savePlacement,
     purgeCopies,
     retryNow,
     clearError,
@@ -68,11 +81,12 @@ export default function ScanScreen() {
   const [preparing, setPreparing] = useState(false);
   const [defaultVersion, setDefaultVersion] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [showPlacement, setShowPlacement] = useState(false);
   const shortcutHandled = useRef(false);
 
   useEffect(() => {
     if (!assessmentId || !classId) return;
-    openAssessment(assessmentId, classId);
+    openAssessment(assessmentId, classId, context);
     getLastVersion(assessmentId).then(setDefaultVersion);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId, classId]);
@@ -276,6 +290,9 @@ export default function ScanScreen() {
             {counts.todo} à scanner
           </Text>
         </View>
+        <Pressable onPress={() => setShowPlacement(true)} style={styles.iconButton} hitSlop={12}>
+          <LayoutGrid size={20} color={theme.colors.textSecondary} />
+        </Pressable>
         <Pressable onPress={handlePurge} style={styles.iconButton} hitSlop={12}>
           <Trash2 size={20} color={theme.colors.textSecondary} />
         </Pressable>
@@ -361,6 +378,24 @@ export default function ScanScreen() {
           <Text style={styles.overlayText}>Préparation des pages…</Text>
         </View>
       )}
+
+      {assessmentId && classId ? (
+        <PlacementSheet
+          visible={showPlacement}
+          assessmentId={assessmentId}
+          classId={classId}
+          context={context}
+          students={students}
+          ops={ops}
+          onClose={() => setShowPlacement(false)}
+          onSave={async (placement) => {
+            setShowPlacement(false);
+            if (!user?.id) return;
+            await savePlacement(user.id, placement);
+            triggerSuccessFeedback();
+          }}
+        />
+      ) : null}
 
       <CopySheet
         status={selected}

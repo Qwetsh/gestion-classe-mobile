@@ -46,7 +46,13 @@ function formatDate(date: string | null): string {
  * directement.
  */
 export default function ChooseAssessmentScreen() {
-  const params = useLocalSearchParams<{ classId: string; className?: string; sessionId?: string }>();
+  const params = useLocalSearchParams<{
+    classId: string;
+    className?: string;
+    sessionId?: string;
+    roomId?: string;
+    groupId?: string;
+  }>();
   const { classId } = params;
   const sessionId = params.sessionId || null;
 
@@ -73,8 +79,11 @@ export default function ChooseAssessmentScreen() {
     if (sessionId) {
       await setActiveForSession(sessionId, { assessmentId: a.id, classId: a.class_id, name: a.name });
     }
+    const ctx = `${sessionId ? `&sessionId=${sessionId}` : ''}${params.roomId ? `&roomId=${params.roomId}` : ''}${
+      params.groupId ? `&groupId=${params.groupId}` : ''
+    }`;
     router.replace(
-      `/(main)/assessments/scan?assessmentId=${a.id}&classId=${a.class_id}&name=${encodeURIComponent(a.name)}`
+      `/(main)/assessments/scan?assessmentId=${a.id}&classId=${a.class_id}&name=${encodeURIComponent(a.name)}${ctx}`
     );
   };
 

@@ -512,6 +512,12 @@ function NativeSessionScreen() {
     }, [sessionIdForCopies])
   );
   const radialItems = useMemo(() => buildMenuItems(!!copyAssessment), [copyAssessment]);
+  // Salle et demi-groupe de la séance : la photo du placement de l'éval part de ce plan-là.
+  const sessionScanContext = activeSession
+    ? `&sessionId=${activeSession.id}&roomId=${activeSession.room_id}${
+        activeSession.group_id ? `&groupId=${activeSession.group_id}` : ''
+      }`
+    : '';
 
   const openCopyScan = useCallback(
     (studentId?: string) => {
@@ -520,20 +526,20 @@ function NativeSessionScreen() {
       router.push(
         `/(main)/assessments/scan?assessmentId=${assessmentId}&classId=${classId}&name=${encodeURIComponent(name)}${
           studentId ? `&studentId=${studentId}` : ''
-        }`
+        }${sessionScanContext}`
       );
     },
-    [copyAssessment]
+    [copyAssessment, sessionScanContext]
   );
 
   const handleOpenCopiesChooser = useCallback(() => {
     if (!activeSession) return;
     router.push(
-      `/(main)/assessments?classId=${activeSession.class_id}&sessionId=${activeSession.id}&className=${encodeURIComponent(
+      `/(main)/assessments?classId=${activeSession.class_id}&className=${encodeURIComponent(
         currentClass?.name ?? ''
-      )}`
+      )}${sessionScanContext}`
     );
-  }, [activeSession, currentClass?.name]);
+  }, [activeSession, currentClass?.name, sessionScanContext]);
 
   // Barre « Copies » : reprend l'éval de la séance, sinon demande laquelle (appui long = changer)
   const handleOpenCopies = useCallback(() => {

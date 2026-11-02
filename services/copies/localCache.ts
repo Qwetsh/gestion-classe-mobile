@@ -22,18 +22,33 @@ export interface ActiveCopyAssessment {
   name: string;
 }
 
+/** Séance d'où l'on scanne : salle et demi-groupe, pour la photo du placement. */
+export interface ScanContext {
+  sessionId: string | null;
+  roomId: string | null;
+  groupId: string | null;
+}
+
 interface CacheShape {
   assessmentsByClass: Record<string, WrittenAssessment[]>;
   snapshots: Record<string, ScanSnapshot>;
   activeBySession: Record<string, ActiveCopyAssessment>;
   lastVersion: Record<string, string | null>;
+  /** Évals dont la photo du placement a déjà été mise en file (premier scan). */
+  placementTaken: Record<string, true>;
 }
 
 let memory: CacheShape | null = null;
 
 async function load(): Promise<CacheShape> {
   if (memory) return memory;
-  const empty: CacheShape = { assessmentsByClass: {}, snapshots: {}, activeBySession: {}, lastVersion: {} };
+  const empty: CacheShape = {
+    assessmentsByClass: {},
+    snapshots: {},
+    activeBySession: {},
+    lastVersion: {},
+    placementTaken: {},
+  };
   try {
     const info = await getInfoAsync(CACHE_FILE);
     memory = info.exists ? { ...empty, ...JSON.parse(await readAsStringAsync(CACHE_FILE)) } : empty;
@@ -102,5 +117,15 @@ export async function getLastVersion(assessmentId: string): Promise<string | nul
 export async function setLastVersion(assessmentId: string, version: string | null): Promise<void> {
   await save((c) => {
     c.lastVersion[assessmentId] = version;
+  });
+}
+
+export async function isPlacementTaken(assessmentId: string): Promise<boolean> {
+  return !!(await load()).placementTaken?.[assessmentId];
+}
+
+export async function markPlacementTaken(assessmentId: string): Promise<void> {
+  await save((c) => {
+    c.placementTaken = { ...(c.placementTaken ?? {}), [assessmentId]: true };
   });
 }

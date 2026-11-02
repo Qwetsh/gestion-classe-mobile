@@ -16,8 +16,11 @@ import {
   migrateLegacyQueue,
   nextPageOrder,
   nextRetryDelayMs,
+  normalizePositions,
   pickNext,
+  placeStudent,
   summarize,
+  unseatStudent,
   type OutboxOp,
   type ScanSnapshot,
   type UploadPageOp,
@@ -231,5 +234,56 @@ describe('summarize', () => {
     const s = summarize([upload(), markFailed(upload({ id: 'x' }), 'bucket plein', 0)], 'a');
     expect(s).toEqual({ pendingPages: 2, total: 2, lastError: 'bucket plein' });
     expect(summarize([upload()], 'other').total).toBe(0);
+  });
+});
+
+describe("placement de l'éval", () => {
+  const placementOp = (over: Partial<OutboxOp> = {}): OutboxOp =>
+    ({
+      kind: 'save_placement',
+      id: 'op-place',
+      userId: 'u',
+      assessmentId: 'a',
+      mode: 'auto',
+      roomId: 'room',
+      positions: { '0-0': 's1' },
+      disabledCells: null,
+      createdAt: T0,
+      attempts: 2,
+      nextAttemptAt: '2026-11-01T09:00:00.000Z',
+      ...over,
+    }) as OutboxOp;
+  const now = Date.parse('2026-11-01T08:30:00.000Z');
+
+  it('ne retient jamais les copies derrière une photo de placement en attente', () => {
+    const page = upload({ id: 'after' });
+    expect(pickNext([placementOp(), page], new Set(), now)).toBe(page);
+  });
+
+  it("reste ignorée par l'état des élèves et l'instantané", () => {
+    expect(mergeStudentState('s', snapshot, [placementOp()]).pages).toHaveLength(2);
+    expect(applyToSnapshot(snapshot, placementOp())).toBe(snapshot);
+  });
+
+  it('normalise les clés au format des plans de classe « r-c »', () => {
+    expect(normalizePositions({ '1,2': 'x', '0-3': 'y', '2-2': '' })).toEqual({ '1-2': 'x', '0-3': 'y' });
+    expect(normalizePositions(null)).toEqual({});
+  });
+
+  it('déplace un élève sur une case libre', () => {
+    expect(placeStudent({ '0-0': 'a' }, 'a', '1-1')).toEqual({ '1-1': 'a' });
+  });
+
+  it('échange deux élèves quand la case est prise', () => {
+    expect(placeStudent({ '0-0': 'a', '0-1': 'b' }, 'a', '0-1')).toEqual({ '0-0': 'b', '0-1': 'a' });
+  });
+
+  it("un élève sans place prend la case, l'occupant perd la sienne", () => {
+    expect(placeStudent({ '0-1': 'b' }, 'a', '0-1')).toEqual({ '0-1': 'a' });
+  });
+
+  it('retire un élève du placement (absent ce jour-là)', () => {
+    expect(unseatStudent({ '0-0': 'a', '0-1': 'b' }, 'a')).toEqual({ '0-1': 'b' });
+    expect(unseatStudent({ '0-1': 'b' }, 'zz')).toEqual({ '0-1': 'b' });
   });
 });
