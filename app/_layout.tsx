@@ -14,6 +14,7 @@ import { useDatabase, useAutoSync, useImmersiveMode } from '../hooks';
 import { useNetworkStore } from '../stores';
 import { ErrorBoundary, OfflineIndicator } from '../components';
 import { theme } from '../constants/theme';
+import { startOutboxDriver } from '../services/copies/outbox';
 
 export default function RootLayout() {
   const { isReady: isDatabaseReady, error: databaseError } = useDatabase();
@@ -30,6 +31,9 @@ export default function RootLayout() {
     const unsubscribe = initializeNetwork();
     return () => unsubscribe();
   }, []);
+
+  // Copies d'éval : la file d'envoi se vide dès que le réseau le permet, où que l'on soit dans l'app
+  useEffect(() => startOutboxDriver(), []);
 
   // Enable auto-sync (when network restored or session ends)
   useAutoSync();

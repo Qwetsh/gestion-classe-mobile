@@ -1,4 +1,31 @@
-import { MENU_ITEMS, MENU_RADIUS, SUBMENU_RADIUS, ITEM_SIZE, LONG_PRESS_DURATION } from '../../constants/menuItems';
+import {
+  MENU_ITEMS,
+  MENU_RADIUS,
+  SUBMENU_RADIUS,
+  ITEM_SIZE,
+  LONG_PRESS_DURATION,
+  COPY_MENU_ITEM,
+  buildMenuItems,
+} from '../../constants/menuItems';
+
+describe('buildMenuItems (raccourci « Copie »)', () => {
+  it('returns the regular menu when no assessment is being scanned', () => {
+    expect(buildMenuItems(false)).toBe(MENU_ITEMS);
+  });
+
+  it('adds « Copie » to the Sortie submenu only, keeping the 4 directions in order', () => {
+    const items = buildMenuItems(true);
+    expect(items.map(i => i.id)).toEqual(MENU_ITEMS.map(i => i.id));
+    const sortie = items.find(i => i.id === 'sortie')!;
+    const original = MENU_ITEMS.find(i => i.id === 'sortie')!;
+    expect(sortie.subItems!.map(i => i.id)).toEqual([...original.subItems!.map(i => i.id), COPY_MENU_ITEM.id]);
+  });
+
+  it('never mutates the shared MENU_ITEMS', () => {
+    buildMenuItems(true);
+    expect(MENU_ITEMS.find(i => i.id === 'sortie')!.subItems!.some(i => i.id === 'copie')).toBe(false);
+  });
+});
 
 describe('Menu Items Configuration', () => {
   it('should have exactly 4 primary items (remarque moved to toolbar)', () => {

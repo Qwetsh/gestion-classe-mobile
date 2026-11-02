@@ -1,140 +1,91 @@
 import { supabase, isSupabaseConfigured } from '../supabase';
 import { BUCKET_NAME } from './path';
+import type { ScanSnapshot } from './outboxLogic';
 import type { WrittenAssessment } from '../../types';
 
 /**
- * CRUD des evaluations ecrites (written_assessments) en Supabase direct (cloud-direct).
- * Les copies elles-memes (images + index pages) sont protegees offline par la file
- * d'upload (cf. Jalon 4). Creer/lister une eval demande une connexion.
+ * Lecture des évals écrites et de l'état de leurs copies, en Supabase direct.
+ * Les ÉCRITURES (création d'éval, pages, absents…) passent par la file d'envoi (./outbox) :
+ * elles doivent marcher hors ligne. Ces lectures renvoient `null` hors ligne, et l'appelant
+ * se rabat sur le dernier instantané mis en cache (./localCache).
  */
 
 const TABLE = 'written_assessments';
 
-export interface CreateAssessmentInput {
-  userId: string;
-  classId: string;
-  name: string;
-  subject?: string | null;
-  date?: string | null;
-  baremeTotal?: number;
-}
+/** Les copies papier ne concernent que les évaluations écrites et les devoirs maison. */
+const SCANNABLE_KINDS = ['ecrit', 'dm'];
 
 /**
- * Liste les evals d'un utilisateur (non supprimees), plus recentes d'abord.
- * Optionnellement filtrees par classe.
+ * Évals scannables d'une classe (non supprimées), plus récentes d'abord.
+ * `null` en cas d'échec (hors ligne) — distinct d'une liste vide.
  */
 export async function listAssessments(
   userId: string,
-  classId?: string
-): Promise<WrittenAssessment[]> {
-  if (!isSupabaseConfigured || !supabase) return [];
+  classId: string
+): Promise<WrittenAssessment[] | null> {
+  if (!isSupabaseConfigured || !supabase) return null;
 
   try {
-    let query = supabase
+    const { data, error } = await supabase
       .from(TABLE)
-      .select('*')
+      .select(
+        'id, user_id, class_id, name, subject, date, bareme_total, created_at, updated_at, is_deleted, session_id, period, kind, published_to_students, assessment_series(name)'
+      )
       .eq('user_id', userId)
+      .eq('class_id', classId)
       .eq('is_deleted', false)
+      .in('kind', SCANNABLE_KINDS)
+      .order('date', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false });
 
-    if (classId) {
-      query = query.eq('class_id', classId);
-    }
-
-    const { data, error } = await query;
     if (error) {
       console.error('[Assessments] List error:', error);
-      return [];
+      return null;
     }
-    return (data ?? []) as WrittenAssessment[];
+    return (data ?? []).map((row) => {
+      const { assessment_series, ...rest } = row as typeof row & {
+        assessment_series: { name: string } | { name: string }[] | null;
+      };
+      const series = Array.isArray(assessment_series) ? assessment_series[0] : assessment_series;
+      return { ...rest, series_name: series?.name ?? null } as WrittenAssessment;
+    });
   } catch (err) {
     console.error('[Assessments] List failed:', err);
-    return [];
-  }
-}
-
-/**
- * Cree une eval. Renvoie la ligne creee, ou null en cas d'echec (ex: hors-ligne).
- */
-export async function createAssessment(
-  input: CreateAssessmentInput
-): Promise<WrittenAssessment | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-
-  try {
-    const { data, error } = await supabase
-      .from(TABLE)
-      .insert({
-        user_id: input.userId,
-        class_id: input.classId,
-        name: input.name,
-        subject: input.subject ?? null,
-        date: input.date ?? null,
-        bareme_total: input.baremeTotal ?? 20,
-      })
-      .select('*')
-      .single();
-
-    if (error) {
-      console.error('[Assessments] Create error:', error);
-      return null;
-    }
-    return data as WrittenAssessment;
-  } catch (err) {
-    console.error('[Assessments] Create failed:', err);
     return null;
   }
 }
 
 /**
- * Met a jour une eval (nom, matiere, date, bareme).
+ * État serveur des copies d'une éval : pages (dans l'ordre) et informations par élève
+ * (absent, version du sujet, adaptée, annotée). `null` hors ligne.
  */
-export async function updateAssessment(
-  id: string,
-  patch: Partial<Pick<WrittenAssessment, 'name' | 'subject' | 'date' | 'bareme_total'>>
-): Promise<WrittenAssessment | null> {
+export async function fetchScanSnapshot(assessmentId: string): Promise<ScanSnapshot | null> {
   if (!isSupabaseConfigured || !supabase) return null;
 
   try {
-    const { data, error } = await supabase
-      .from(TABLE)
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .select('*')
-      .single();
-
-    if (error) {
-      console.error('[Assessments] Update error:', error);
+    const [pagesRes, infosRes] = await Promise.all([
+      supabase
+        .from('assessment_copy_pages')
+        .select('id, student_id, page_order, storage_path')
+        .eq('assessment_id', assessmentId)
+        .order('page_order', { ascending: true }),
+      supabase
+        .from('assessment_grades')
+        .select('student_id, status, subject_version, is_adapted, copy_annotated')
+        .eq('assessment_id', assessmentId),
+    ]);
+    if (pagesRes.error || infosRes.error) {
+      console.error('[Assessments] Snapshot error:', pagesRes.error ?? infosRes.error);
       return null;
     }
-    return data as WrittenAssessment;
+    return {
+      pages: pagesRes.data ?? [],
+      infos: infosRes.data ?? [],
+      fetchedAt: new Date().toISOString(),
+    };
   } catch (err) {
-    console.error('[Assessments] Update failed:', err);
+    console.error('[Assessments] Snapshot failed:', err);
     return null;
-  }
-}
-
-/**
- * Suppression logique d'une eval (is_deleted = true).
- * Les pages/fichiers Storage ne sont pas purges ici (suppression RGPD = action dediee).
- */
-export async function softDeleteAssessment(id: string): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase) return false;
-
-  try {
-    const { error } = await supabase
-      .from(TABLE)
-      .update({ is_deleted: true, updated_at: new Date().toISOString() })
-      .eq('id', id);
-
-    if (error) {
-      console.error('[Assessments] Soft delete error:', error);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error('[Assessments] Soft delete failed:', err);
-    return false;
   }
 }
 
@@ -145,11 +96,12 @@ export interface PurgeResult {
 }
 
 /**
- * PURGE complete d'une eval : supprime les FICHIERS du bucket Storage (libere l'espace)
- * PUIS la ligne written_assessments (le CASCADE DB supprime les lignes assessment_copy_pages).
- * Irreversible. Ne touche pas la file offline locale (gere separement cote uploadQueue).
+ * Efface les SCANS d'une éval : fichiers du bucket (libère l'espace) puis lignes
+ * assessment_copy_pages. L'éval, ses notes et leur détail restent : avant le 01/11/2026 on
+ * supprimait la ligne written_assessments, dont la cascade emportait aussi assessment_grades.
+ * Irréversible. Ne touche pas la file locale (gérée côté outbox).
  */
-export async function purgeAssessment(assessmentId: string): Promise<PurgeResult> {
+export async function purgeAssessmentCopies(assessmentId: string): Promise<PurgeResult> {
   if (!isSupabaseConfigured || !supabase) {
     return { success: false, filesDeleted: 0, error: 'Supabase non configure' };
   }
@@ -180,11 +132,11 @@ export async function purgeAssessment(assessmentId: string): Promise<PurgeResult
       filesDeleted += slice.length;
     }
 
-    // 3) Supprime la ligne d'eval (hard delete) -> cascade sur assessment_copy_pages
+    // 3) Supprime l'index des pages (l'éval et ses notes restent)
     const { error: delError } = await supabase
-      .from('written_assessments')
+      .from('assessment_copy_pages')
       .delete()
-      .eq('id', assessmentId);
+      .eq('assessment_id', assessmentId);
 
     if (delError) {
       return { success: false, filesDeleted, error: delError.message };
@@ -197,37 +149,5 @@ export async function purgeAssessment(assessmentId: string): Promise<PurgeResult
       filesDeleted: 0,
       error: err instanceof Error ? err.message : 'Erreur inconnue',
     };
-  }
-}
-
-/**
- * Renvoie une map studentId -> nombre de pages scannees pour une eval.
- * Sert a afficher la pastille "X pages" par eleve sur l'ecran de scan.
- */
-export async function getPageCountsByStudent(
-  assessmentId: string
-): Promise<Record<string, number>> {
-  if (!isSupabaseConfigured || !supabase) return {};
-
-  try {
-    const { data, error } = await supabase
-      .from('assessment_copy_pages')
-      .select('student_id')
-      .eq('assessment_id', assessmentId);
-
-    if (error) {
-      console.error('[Assessments] Page counts error:', error);
-      return {};
-    }
-
-    const counts: Record<string, number> = {};
-    for (const row of data ?? []) {
-      const sid = (row as { student_id: string }).student_id;
-      counts[sid] = (counts[sid] ?? 0) + 1;
-    }
-    return counts;
-  } catch (err) {
-    console.error('[Assessments] Page counts failed:', err);
-    return {};
   }
 }

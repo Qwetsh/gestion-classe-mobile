@@ -756,6 +756,42 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 17 -> 18: étiquettes de surlignage des élèves (locales uniquement).
+  // NB : SCHEMA_VERSION était resté à 16, la v17 ne tournait donc pas sur les téléphones
+  // déjà en v16 ; le passage à 18 la déclenche enfin.
+  if (fromVersion < 18) {
+    console.log('[Database] Applying migration: student_tags (v18)');
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS student_tags (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          color TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS student_tag_assignments (
+          student_id TEXT NOT NULL,
+          tag_id TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (student_id, tag_id),
+          FOREIGN KEY (tag_id) REFERENCES student_tags(id) ON DELETE CASCADE
+        )
+      `);
+      await db.runAsync('UPDATE schema_version SET version = ?', [18]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v18 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v18 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -769,6 +805,8 @@ export async function resetDatabase(): Promise<void> {
 
   // Drop all tables (in dependency order)
   const tables = [
+    'student_tag_assignments',
+    'student_tags',
     'pending_deletions',
     'bonus_selections',
     'stamps',

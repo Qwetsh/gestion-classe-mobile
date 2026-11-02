@@ -7,6 +7,7 @@ import {
   Hand,
   LogOut,
   MessageCircle,
+  ScanLine,
   XCircle,
 } from 'lucide-react-native';
 
@@ -19,6 +20,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; color?: string;
   'door-open': DoorOpen,
   'clipboard-list': ClipboardList,
   ban: Ban,
+  'scan-line': ScanLine,
 };
 
 interface RadialIconProps {
