@@ -7,7 +7,7 @@
  * every upload silently breaks (RLS denies). Hence we lock the format here.
  */
 
-import { buildCopyPath, computeResize, COPY_PROFILE } from '../../services/copies/path';
+import { buildCopyPath, computeResize, COPY_PROFILE, planCopyPurge } from '../../services/copies/path';
 
 describe('buildCopyPath', () => {
   it('puts userId as the first segment (required by storage RLS)', () => {
@@ -58,5 +58,25 @@ describe('COPY_PROFILE', () => {
   it('stays under the 5 MB bucket limit, with a stronger fallback compression', () => {
     expect(COPY_PROFILE.maxBytes).toBeLessThan(5 * 1024 * 1024);
     expect(COPY_PROFILE.fallbackQuality).toBeLessThan(COPY_PROFILE.jpegQuality);
+  });
+});
+
+describe('planCopyPurge', () => {
+  const pages = [
+    { student_id: 'a', storage_path: 'u/e/a/1.jpg' },
+    { student_id: 'a', storage_path: 'u/e/a/2.jpg' },
+    { student_id: 'b', storage_path: 'u/e/b/1.jpg' },
+  ];
+
+  it('only deletes the scans of transcribed copies', () => {
+    expect(planCopyPurge(pages, new Set(['a']))).toEqual({
+      paths: ['u/e/a/1.jpg', 'u/e/a/2.jpg'],
+      purgedStudents: ['a'],
+      keptStudents: ['b'],
+    });
+  });
+
+  it('keeps everything when nothing is transcribed', () => {
+    expect(planCopyPurge(pages, new Set())).toMatchObject({ paths: [], keptStudents: ['a', 'b'] });
   });
 });

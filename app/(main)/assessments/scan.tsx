@@ -217,8 +217,8 @@ export default function ScanScreen() {
   const handlePurge = () => {
     if (!assessmentId) return;
     Alert.alert(
-      'Effacer tous les scans ?',
-      `Les pages scannées de « ${evalName} » seront supprimées du téléphone et du serveur. L’éval, les notes et les absents restent.`,
+      'Effacer les scans ?',
+      `Les pages scannées de « ${evalName} » seront supprimées du serveur. L’éval, les notes et les absents restent.\n\nSeules les copies déjà transcrites par le correcteur perdent leurs scans : les autres sont gardées. Pour refaire une copie, supprime ses pages une à une.`,
       [
         { text: 'Annuler', style: 'cancel' },
         {
@@ -226,8 +226,12 @@ export default function ScanScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const n = await purgeCopies(assessmentId);
-              Alert.alert('Scans effacés', `${n} fichier${n > 1 ? 's' : ''} supprimé${n > 1 ? 's' : ''}.`);
+              const { files: n, kept } = await purgeCopies(assessmentId);
+              const keptText =
+                kept > 0
+                  ? `\n${kept} copie${kept > 1 ? 's' : ''} sans transcription : scans conservés.`
+                  : '';
+              Alert.alert('Scans effacés', `${n} fichier${n > 1 ? 's' : ''} supprimé${n > 1 ? 's' : ''}.${keptText}`);
             } catch (err) {
               Alert.alert('Suppression impossible', err instanceof Error ? err.message : 'Réessaie en ligne.');
             }
