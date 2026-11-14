@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { EyeOff, Eye, Timer, TimerOff, Monitor, LayoutGrid, PenLine } from 'lucide-react-native';
+import { EyeOff, Eye, Timer, TimerOff, Monitor, LayoutGrid, PenLine, ChevronLeft, ChevronRight, Maximize2 } from 'lucide-react-native';
 import { BottomSheet } from './BottomSheet';
 import { theme } from '../../constants/theme';
 import { triggerLightFeedback } from '../../utils/haptics';
@@ -21,7 +21,8 @@ const TIMER_PRESETS = [
 
 /**
  * Sheet « Écran » : télécommande de l'écran projeté (mode « en classe »).
- * Minuteur, rideau. Aucune donnée élève n'est produite ici.
+ * Minuteur, rideau, et Suivant / Précédent quand un cours rédigé est projeté (lot 4c).
+ * Aucune donnée élève n'est produite ici.
  */
 export function ScreenControlSheet({ visible, onClose }: ScreenControlSheetProps) {
   const [timerRunning, setTimerRunning] = useState(false);
@@ -44,6 +45,13 @@ export function ScreenControlSheet({ visible, onClose }: ScreenControlSheetProps
     triggerLightFeedback();
     setTimerRunning(false);
     void sendClassroomCommand({ kind: 'timer', action: 'stop' });
+  }, []);
+
+  /** Cours rédigé projeté : écran suivant / précédent, vue d'ensemble (montre le cours si besoin). */
+  const nav = useCallback((action: 'next' | 'prev' | 'overview') => {
+    triggerLightFeedback();
+    setView('board');
+    void sendClassroomCommand({ kind: 'nav', action });
   }, []);
 
   const toggleCurtain = useCallback(() => {
@@ -99,9 +107,36 @@ export function ScreenControlSheet({ visible, onClose }: ScreenControlSheetProps
           onPress={() => switchView('board')}
         >
           <PenLine size={15} color={view === 'board' ? theme.colors.primary : theme.colors.text} strokeWidth={1.8} />
-          <Text style={[styles.presetText, view === 'board' && styles.presetTextActive]}>Tableau blanc</Text>
+          <Text style={[styles.presetText, view === 'board' && styles.presetTextActive]}>Tableau ou cours</Text>
         </Pressable>
       </View>
+
+      <Text style={styles.sectionLabel}>COURS PROJETÉ</Text>
+      <View style={styles.presetRow}>
+        <Pressable
+          style={({ pressed }) => [styles.navButton, pressed && styles.pressed]}
+          onPress={() => nav('prev')}
+          accessibilityLabel="Écran précédent du cours"
+        >
+          <ChevronLeft size={22} color={theme.colors.text} strokeWidth={2} />
+          <Text style={styles.presetText}>Précédent</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.navButton, styles.navButtonMain, pressed && styles.pressed]}
+          onPress={() => nav('next')}
+          accessibilityLabel="Écran suivant du cours"
+        >
+          <ChevronRight size={22} color="#FFFFFF" strokeWidth={2} />
+          <Text style={[styles.presetText, styles.navButtonMainText]}>Suivant</Text>
+        </Pressable>
+      </View>
+      <Pressable
+        style={({ pressed }) => [styles.wideButton, pressed && styles.pressed]}
+        onPress={() => nav('overview')}
+      >
+        <Maximize2 size={16} color={theme.colors.text} strokeWidth={1.8} />
+        <Text style={styles.wideButtonText}>Vue d’ensemble du cours</Text>
+      </Pressable>
       <Pressable
         style={({ pressed }) => [styles.wideButton, curtain && styles.wideButtonActive, pressed && styles.pressed]}
         onPress={toggleCurtain}
@@ -177,6 +212,25 @@ const styles = StyleSheet.create({
   },
   presetTextActive: {
     color: theme.colors.primary,
+  },
+  navButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 12,
+    paddingVertical: 14,
+  },
+  navButtonMain: {
+    flex: 1.6,
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  navButtonMainText: {
+    color: '#FFFFFF',
   },
   wideButton: {
     flexDirection: 'row',
