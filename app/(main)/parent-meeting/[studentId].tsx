@@ -17,6 +17,7 @@ import { theme, PERIOD_LABELS_FULL } from '../../../constants';
 import {
   BehaviorPositioning,
   GradePositioning,
+  ImplicationGrade,
   JournalSession,
   Rank,
   GRADE_STATUS_SHORT,
@@ -24,6 +25,7 @@ import {
   getPeriodDates,
   loadBehaviorPositioning,
   loadGradePositioning,
+  loadImplicationGrade,
   loadSessionJournal,
 } from '../../../services/meetingInsights';
 
@@ -98,6 +100,18 @@ function rankTone(r: Rank | null): 'good' | 'mid' | 'low' | 'none' {
   return q <= 0.33 ? 'good' : q >= 0.67 ? 'low' : 'mid';
 }
 
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n > 1 ? 's' : ''}`;
+}
+
+/** Détail du calcul, comme le panneau « Calcul » du web. */
+function implicationDetail(g: ImplicationGrade): string {
+  if (g.archived) return `${plural(g.participations, 'participation')}, ${plural(g.absences, 'absence')}`;
+  const malus = g.malusPenalty ? ` − ${g.malus} malus` : '';
+  if (g.baseGrade !== null) return `Base ${formatGrade(g.baseGrade, 0)} + ${plural(g.participations, 'participation')}${malus}`;
+  return `${plural(g.participations, 'participation')}${malus} sur un objectif de ${formatGrade(g.adjustedTarget)}`;
+}
+
 function gradeTone(v: number | null): string {
   if (v === null) return theme.colors.textTertiary;
   if (v >= 14) return theme.colors.success;
@@ -125,6 +139,8 @@ export default function StudentDashboardScreen() {
   const [gradeData, setGradeData] = useState<GradePositioning | null>(null);
   const [gradeError, setGradeError] = useState<string | null>(null);
   const [isLoadingGrades, setIsLoadingGrades] = useState(false);
+  const [implication, setImplication] = useState<ImplicationGrade | null>(null);
+  const [implicationError, setImplicationError] = useState<string | null>(null);
   const [showAllJournal, setShowAllJournal] = useState(false);
   const [onlyCommented, setOnlyCommented] = useState(false);
 
@@ -168,6 +184,21 @@ export default function StudentDashboardScreen() {
         if (!cancelled) setGradeError('Notes indisponibles (connexion requise)');
       })
       .finally(() => { if (!cancelled) setIsLoadingGrades(false); });
+    return () => { cancelled = true; };
+  }, [user?.id, studentId, classId, selectedPeriod]);
+
+  // Note d'implication (Supabase, même calcul que « Suivi élèves » sur le web)
+  useEffect(() => {
+    if (!user?.id || !studentId || !classId) return;
+    let cancelled = false;
+    setImplication(null);
+    setImplicationError(null);
+    loadImplicationGrade(user.id, studentId, classId, selectedPeriod)
+      .then((g) => { if (!cancelled) setImplication(g); })
+      .catch((err) => {
+        console.warn('[meeting] implication', err);
+        if (!cancelled) setImplicationError('Note indisponible (connexion requise)');
+      });
     return () => { cancelled = true; };
   }, [user?.id, studentId, classId, selectedPeriod]);
 
@@ -269,12 +300,20 @@ export default function StudentDashboardScreen() {
                     .filter(Boolean).join(' · ')}
                 </Text>
               </View>
+              {implication && (
+                <View style={styles.headerAvg}>
+                  <Text style={[styles.headerAvgValue, { color: gradeTone(implication.grade) }]}>
+                    {formatGrade(implication.grade)}
+                  </Text>
+                  <Text style={styles.headerAvgLabel}>implic. /20</Text>
+                </View>
+              )}
               {gradeData?.studentAverage != null && (
                 <View style={styles.headerAvg}>
                   <Text style={[styles.headerAvgValue, { color: gradeTone(gradeData.studentAverage) }]}>
                     {formatGrade(gradeData.studentAverage)}
                   </Text>
-                  <Text style={styles.headerAvgLabel}>moy. /20</Text>
+                  <Text style={styles.headerAvgLabel}>évals /20</Text>
                 </View>
               )}
             </View>
@@ -305,6 +344,24 @@ export default function StudentDashboardScreen() {
           {/* Positionnement */}
           <SectionTitle title="Positionnement" />
           <View style={styles.card}>
+            <Text style={styles.blockTitle}>
+              Note d'implication <Text style={styles.blockSub}>· T{implication?.trimester ?? '?'}{implication?.archived ? ', archivée' : ''}</Text>
+            </Text>
+            {implication ? (
+              <>
+                <View style={styles.rankRow}>
+                  <Text style={styles.rankLabel}>{implicationDetail(implication)}</Text>
+                  <Text style={[styles.rankValue, { color: gradeTone(implication.grade) }]}>
+                    {formatGrade(implication.grade)}/20
+                  </Text>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.emptyInline}>{implicationError ?? 'Pas de note pour cette période'}</Text>
+            )}
+
+            <View style={styles.blockDivider} />
+
             <Text style={styles.blockTitle}>Comportement <Text style={styles.blockSub}>· score par séance</Text></Text>
             {behavior ? (
               <>

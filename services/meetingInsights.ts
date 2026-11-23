@@ -509,6 +509,138 @@ export async function loadGradePositioning(
   };
 }
 
+// ============================================================
+// Note d'implication (même calcul que « Suivi élèves » sur le web)
+// ============================================================
+
+export interface ImplicationGrade {
+  /** Note /20, bornée à [0, 20]. */
+  grade: number;
+  trimester: number;
+  /** Note figée à la clôture du trimestre (trimester_grades). */
+  archived: boolean;
+  /** Mode « note de base » : base + participations (− malus). Sinon mode « objectif ». */
+  baseGrade: number | null;
+  participations: number;
+  malus: number;
+  malusPenalty: boolean;
+  absences: number;
+  /** Objectif réduit par les absences (mode objectif). */
+  adjustedTarget: number;
+}
+
+/**
+ * Trimestre courant et début réel du trimestre : réglages du prof (trimester_settings,
+ * trimester_boundaries), pas les dates calendaires des périodes du téléphone.
+ * Trimestre passé → note archivée ; trimestre courant ou « année » → calcul en direct.
+ */
+export async function loadImplicationGrade(
+  userId: string,
+  studentId: string,
+  classId: string,
+  period: Period,
+): Promise<ImplicationGrade | null> {
+  if (!supabase) throw new Error('Supabase non configuré');
+  const sb = supabase;
+
+  const { data: settings, error: settingsError } = await sb
+    .from('trimester_settings')
+    .select('current_trimester, school_year')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (settingsError) throw new Error(settingsError.message);
+  const current: number = settings?.current_trimester ?? 1;
+  const schoolYear: string = settings?.school_year ?? currentSchoolYear();
+  const wanted = trimesterOf(period) ?? current;
+
+  if (wanted > current) return null;
+
+  if (wanted < current) {
+    const { data: archived, error } = await sb
+      .from('trimester_grades')
+      .select('grade, participations, absences, adjusted_target')
+      .eq('student_id', studentId)
+      .eq('trimester', wanted)
+      .eq('school_year', schoolYear)
+      .order('archived_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    const grade = toNumber(archived?.grade);
+    if (!archived || grade === null) return null;
+    return {
+      grade,
+      trimester: wanted,
+      archived: true,
+      baseGrade: null,
+      participations: archived.participations ?? 0,
+      malus: 0,
+      malusPenalty: false,
+      absences: archived.absences ?? 0,
+      adjustedTarget: toNumber(archived.adjusted_target) ?? 0,
+    };
+  }
+
+  const [boundaryRes, configRes, manualRes] = await Promise.all([
+    sb.from('trimester_boundaries')
+      .select('started_at')
+      .eq('user_id', userId)
+      .eq('school_year', schoolYear)
+      .eq('trimester', current)
+      .maybeSingle(),
+    sb.from('class_trimester_config')
+      .select('target_participations, total_sessions_expected, bavardage_penalty, base_grade')
+      .eq('class_id', classId)
+      .maybeSingle(),
+    sb.from('manual_participations')
+      .select('count')
+      .eq('student_id', studentId)
+      .eq('trimester', current)
+      .eq('school_year', schoolYear),
+  ]);
+  for (const r of [boundaryRes, configRes, manualRes]) {
+    if (r.error) throw new Error(r.error.message);
+  }
+  const start: string = boundaryRes.data?.started_at ?? new Date(0).toISOString();
+
+  const events = await fetchPaged<{ type: string }>((from, to) =>
+    sb.from('events')
+      .select('type')
+      .eq('student_id', studentId)
+      .gte('timestamp', start)
+      .order('timestamp', { ascending: false })
+      .range(from, to),
+  );
+  const count = (t: string) => events.filter((e) => e.type === t).length;
+  const manual = (manualRes.data ?? []).reduce((s: number, m: { count: number | null }) => s + (m.count ?? 0), 0);
+  const participations = count('participation') + manual;
+  const malus = count('bavardage');
+  const absences = count('absence');
+
+  const config = configRes.data;
+  const target = config?.target_participations || 15;
+  const sessionsExpected = config?.total_sessions_expected || 60;
+  const malusPenalty = config?.bavardage_penalty ?? false;
+  const baseGrade = toNumber(config?.base_grade);
+  const adjustedTarget = Math.max(1, target - absences * (target / sessionsExpected));
+
+  const raw = baseGrade !== null && baseGrade > 0
+    ? baseGrade + (malusPenalty ? participations - malus : participations)
+    : ((malusPenalty ? Math.max(0, participations - malus) : participations) / adjustedTarget) * 20;
+
+  return {
+    grade: Math.min(20, Math.max(0, raw)),
+    trimester: current,
+    archived: false,
+    baseGrade: baseGrade !== null && baseGrade > 0 ? baseGrade : null,
+    participations,
+    malus,
+    malusPenalty,
+    absences,
+    adjustedTarget,
+  };
+}
+
 export function formatGrade(v: number | null, decimals = 1): string {
   if (v === null || !Number.isFinite(v)) return '—';
   return v.toFixed(decimals).replace('.', ',');
