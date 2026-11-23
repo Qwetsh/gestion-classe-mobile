@@ -62,7 +62,8 @@ interface SessionState {
     type: EventType,
     subtype?: SortieSubtype | null,
     note?: string | null,
-    photoPath?: string | null
+    photoPath?: string | null,
+    tpGroupId?: string | null
   ) => Promise<Event | null>;
   removeAbsence: (studentId: string) => Promise<boolean>;
   markReturn: (studentId: string) => Promise<boolean>;
@@ -281,7 +282,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     type: EventType,
     subtype?: SortieSubtype | null,
     note?: string | null,
-    photoPath?: string | null
+    photoPath?: string | null,
+    tpGroupId?: string | null
   ) => {
     const { activeSession, _pendingEventKeys } = get();
     if (!activeSession) {
@@ -309,7 +311,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         type,
         subtype,
         note,
-        photoPath
+        photoPath,
+        tpGroupId
       );
 
       // Update local state and clean up pending key

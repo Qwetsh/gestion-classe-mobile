@@ -7,7 +7,19 @@ import {
   SessionGroupMember,
   GroupGrade,
   GroupSessionStatus,
+  GroupSessionPhoto,
 } from '../../types';
+
+/**
+ * Une ligne supprimée en local doit aussi l'être sur le serveur : sans cela le pull la
+ * ressusciterait (il insère toute ligne serveur absente du téléphone).
+ */
+async function queueRemoteDeletion(table: string, recordId: string): Promise<void> {
+  await executeSql(
+    `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+    [Crypto.randomUUID(), table, recordId, new Date().toISOString()]
+  );
+}
 
 // ============================================
 // Database Row Types (snake_case from SQLite)
@@ -40,6 +52,24 @@ interface SessionGroupRow {
   session_id: string;
   name: string;
   conduct_malus: number;
+  position_x: number | null;
+  position_y: number | null;
+  comment: string | null;
+  display_order: number | null;
+  synced_at: string | null;
+}
+
+interface GroupSessionPhotoRow {
+  id: string;
+  session_id: string;
+  group_id: string | null;
+  file_path: string;
+  local_uri: string | null;
+  caption: string | null;
+  author: string;
+  student_id: string | null;
+  created_at: string;
+  uploaded: number;
   synced_at: string | null;
 }
 
@@ -94,6 +124,26 @@ function rowToSessionGroup(row: SessionGroupRow): SessionGroup {
     sessionId: row.session_id,
     name: row.name,
     conductMalus: row.conduct_malus,
+    positionX: row.position_x ?? null,
+    positionY: row.position_y ?? null,
+    comment: row.comment ?? null,
+    displayOrder: row.display_order ?? 0,
+    syncedAt: row.synced_at,
+  };
+}
+
+function rowToGroupSessionPhoto(row: GroupSessionPhotoRow): GroupSessionPhoto {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    groupId: row.group_id,
+    filePath: row.file_path,
+    localUri: row.local_uri,
+    caption: row.caption ?? '',
+    author: row.author === 'student' ? 'student' : 'teacher',
+    studentId: row.student_id,
+    createdAt: row.created_at,
+    uploaded: row.uploaded === 1,
     syncedAt: row.synced_at,
   };
 }
@@ -236,6 +286,16 @@ export async function updateGroupSessionStatus(
 }
 
 /**
+ * Rattache la séance de groupe à un modèle de TP (et prend son nom).
+ */
+export async function updateGroupSessionTemplate(id: string, templateId: string | null, name: string): Promise<void> {
+  await executeSql(
+    `UPDATE group_sessions SET template_id = ?, name = ?, synced_at = NULL WHERE id = ?`,
+    [templateId, name.trim(), id]
+  );
+}
+
+/**
  * Update group session name
  */
 export async function updateGroupSessionName(id: string, name: string): Promise<void> {
@@ -318,6 +378,7 @@ export async function updateGradingCriteria(
  */
 export async function deleteGradingCriteria(id: string): Promise<void> {
   await executeSql(`DELETE FROM grading_criteria WHERE id = ?`, [id]);
+  await queueRemoteDeletion('grading_criteria', id);
 }
 
 /**
@@ -342,14 +403,24 @@ export async function reorderCriteria(
  */
 export async function createSessionGroup(
   sessionId: string,
-  name: string
+  name: string,
+  displayOrder?: number,
+  position?: { x: number; y: number } | null,
 ): Promise<SessionGroup> {
   const id = Crypto.randomUUID();
+  let order = displayOrder;
+  if (order === undefined) {
+    const row = await queryFirst<{ next: number | null }>(
+      `SELECT MAX(display_order) + 1 AS next FROM session_groups WHERE session_id = ?`,
+      [sessionId]
+    );
+    order = row?.next ?? 0;
+  }
 
   await executeSql(
-    `INSERT INTO session_groups (id, session_id, name, conduct_malus)
-     VALUES (?, ?, ?, 0)`,
-    [id, sessionId, name.trim()]
+    `INSERT INTO session_groups (id, session_id, name, conduct_malus, display_order, position_x, position_y)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [id, sessionId, name.trim(), order, position?.x ?? null, position?.y ?? null]
   );
 
   return {
@@ -357,8 +428,29 @@ export async function createSessionGroup(
     sessionId,
     name: name.trim(),
     conductMalus: 0,
+    positionX: position?.x ?? null,
+    positionY: position?.y ?? null,
+    comment: null,
+    displayOrder: order,
     syncedAt: null,
   };
+}
+
+/** Position de l'îlot (0..1 sur les deux axes), null = rangement automatique. */
+export async function updateSessionGroupPosition(id: string, x: number | null, y: number | null): Promise<void> {
+  const clamp = (v: number | null) => (v === null ? null : Math.min(1, Math.max(0, v)));
+  await executeSql(
+    `UPDATE session_groups SET position_x = ?, position_y = ?, synced_at = NULL WHERE id = ?`,
+    [clamp(x), clamp(y), id]
+  );
+}
+
+export async function updateSessionGroupComment(id: string, comment: string): Promise<void> {
+  const trimmed = comment.trim();
+  await executeSql(
+    `UPDATE session_groups SET comment = ?, synced_at = NULL WHERE id = ?`,
+    [trimmed.length > 0 ? trimmed : null, id]
+  );
 }
 
 /**
@@ -366,7 +458,7 @@ export async function createSessionGroup(
  */
 export async function getGroupsBySessionId(sessionId: string): Promise<SessionGroup[]> {
   const rows = await queryAll<SessionGroupRow>(
-    `SELECT * FROM session_groups WHERE session_id = ? ORDER BY name`,
+    `SELECT * FROM session_groups WHERE session_id = ? ORDER BY display_order, name`,
     [sessionId]
   );
   return rows.map(rowToSessionGroup);
@@ -421,7 +513,9 @@ export async function setGroupMalus(id: string, malus: number): Promise<void> {
  * Delete a session group
  */
 export async function deleteSessionGroup(id: string): Promise<void> {
+  // Membres et notes partent en cascade, des deux côtés (clés étrangères ON DELETE CASCADE)
   await executeSql(`DELETE FROM session_groups WHERE id = ?`, [id]);
+  await queueRemoteDeletion('session_groups', id);
 }
 
 // ============================================
@@ -523,17 +617,59 @@ export async function getPreviousGroupsForClass(classId: string): Promise<{ name
  * Remove a student from a group
  */
 export async function removeGroupMember(groupId: string, studentId: string): Promise<void> {
+  const rows = await queryAll<{ id: string }>(
+    `SELECT id FROM session_group_members WHERE group_id = ? AND student_id = ?`,
+    [groupId, studentId]
+  );
   await executeSql(
     `DELETE FROM session_group_members WHERE group_id = ? AND student_id = ?`,
     [groupId, studentId]
   );
+  for (const r of rows) await queueRemoteDeletion('session_group_members', r.id);
 }
 
 /**
  * Clear all members from a group
  */
 export async function clearGroupMembers(groupId: string): Promise<void> {
+  const rows = await queryAll<{ id: string }>(
+    `SELECT id FROM session_group_members WHERE group_id = ?`,
+    [groupId]
+  );
   await executeSql(`DELETE FROM session_group_members WHERE group_id = ?`, [groupId]);
+  for (const r of rows) await queueRemoteDeletion('session_group_members', r.id);
+}
+
+/**
+ * Place un élève dans un groupe d'une séance. S'il est déjà dans un autre groupe de la même
+ * séance, sa ligne de membre est DÉPLACÉE (même id) : l'upsert la déplace aussi sur le
+ * serveur, où le déclencheur du carnet lui donne la note de son nouveau groupe.
+ * Retourne l'id du groupe quitté (ou null).
+ */
+export async function moveStudentToGroup(
+  sessionId: string,
+  studentId: string,
+  toGroupId: string
+): Promise<string | null> {
+  const existing = await queryFirst<{ id: string; group_id: string }>(
+    `SELECT m.id, m.group_id FROM session_group_members m
+     JOIN session_groups g ON g.id = m.group_id
+     WHERE g.session_id = ? AND m.student_id = ?`,
+    [sessionId, studentId]
+  );
+  if (existing) {
+    if (existing.group_id === toGroupId) return null;
+    await executeSql(
+      `UPDATE session_group_members SET group_id = ?, synced_at = NULL WHERE id = ?`,
+      [toGroupId, existing.id]
+    );
+    return existing.group_id;
+  }
+  await executeSql(
+    `INSERT INTO session_group_members (id, group_id, student_id) VALUES (?, ?, ?)`,
+    [Crypto.randomUUID(), toGroupId, studentId]
+  );
+  return null;
 }
 
 // ============================================
@@ -772,4 +908,123 @@ export async function markGroupGradesSynced(ids: string[]): Promise<void> {
     `UPDATE group_grades SET synced_at = ? WHERE id IN (${placeholders})`,
     [now, ...ids]
   );
+}
+
+// ============================================
+// Photos de TP (par groupe ou pour toute la classe)
+// ============================================
+
+export async function createGroupSessionPhoto(photo: {
+  id: string;
+  sessionId: string;
+  groupId: string | null;
+  filePath: string;
+  localUri: string;
+  caption?: string;
+}): Promise<GroupSessionPhoto> {
+  const now = new Date().toISOString();
+  await executeSql(
+    `INSERT INTO group_session_photos (id, session_id, group_id, file_path, local_uri, caption, author, created_at, uploaded)
+     VALUES (?, ?, ?, ?, ?, ?, 'teacher', ?, 0)`,
+    [photo.id, photo.sessionId, photo.groupId, photo.filePath, photo.localUri, photo.caption?.trim() ?? '', now]
+  );
+  return {
+    id: photo.id,
+    sessionId: photo.sessionId,
+    groupId: photo.groupId,
+    filePath: photo.filePath,
+    localUri: photo.localUri,
+    caption: photo.caption?.trim() ?? '',
+    author: 'teacher',
+    studentId: null,
+    createdAt: now,
+    uploaded: false,
+    syncedAt: null,
+  };
+}
+
+export async function getPhotosBySessionId(sessionId: string): Promise<GroupSessionPhoto[]> {
+  const rows = await queryAll<GroupSessionPhotoRow>(
+    `SELECT * FROM group_session_photos WHERE session_id = ? ORDER BY created_at`,
+    [sessionId]
+  );
+  return rows.map(rowToGroupSessionPhoto);
+}
+
+export async function updateGroupSessionPhotoGroup(id: string, groupId: string | null): Promise<void> {
+  await executeSql(
+    `UPDATE group_session_photos SET group_id = ?, synced_at = NULL WHERE id = ?`,
+    [groupId, id]
+  );
+}
+
+export async function deleteGroupSessionPhoto(id: string): Promise<GroupSessionPhoto | null> {
+  const row = await queryFirst<GroupSessionPhotoRow>(`SELECT * FROM group_session_photos WHERE id = ?`, [id]);
+  if (!row) return null;
+  await executeSql(`DELETE FROM group_session_photos WHERE id = ?`, [id]);
+  await queueRemoteDeletion('group_session_photos', id);
+  return rowToGroupSessionPhoto(row);
+}
+
+/** Photos dont le fichier n'est pas encore dans Storage. */
+export async function getPhotosAwaitingUpload(): Promise<GroupSessionPhoto[]> {
+  const rows = await queryAll<GroupSessionPhotoRow>(
+    `SELECT * FROM group_session_photos WHERE uploaded = 0 AND local_uri IS NOT NULL ORDER BY created_at`
+  );
+  return rows.map(rowToGroupSessionPhoto);
+}
+
+export async function markPhotoUploaded(id: string): Promise<void> {
+  await executeSql(`UPDATE group_session_photos SET uploaded = 1, synced_at = NULL WHERE id = ?`, [id]);
+}
+
+// ============================================
+// Lancement d'un TP : suggestion et reprise
+// ============================================
+
+/**
+ * TP probablement prévu aujourd'hui pour cette classe : le modèle utilisé le plus récemment
+ * (15 derniers jours) dans une AUTRE classe, que cette classe n'a pas encore fait. Un même TP
+ * tourne d'ordinaire dans toutes les classes d'un niveau la même semaine.
+ */
+export async function suggestTemplateForClass(userId: string, classId: string): Promise<string | null> {
+  const since = new Date(Date.now() - 15 * 24 * 3600 * 1000).toISOString();
+  const row = await queryFirst<{ template_id: string }>(
+    `SELECT gs.template_id FROM group_sessions gs
+     WHERE gs.user_id = ? AND gs.class_id <> ? AND gs.template_id IS NOT NULL AND gs.created_at >= ?
+       AND gs.template_id NOT IN (
+         SELECT template_id FROM group_sessions WHERE class_id = ? AND template_id IS NOT NULL
+       )
+     ORDER BY gs.created_at DESC LIMIT 1`,
+    [userId, classId, since, classId]
+  );
+  return row?.template_id ?? null;
+}
+
+/** Groupes (et positions) du dernier TP de la classe, pour « Reprendre le dernier TP ». */
+export async function getLastTpGroupsForClass(
+  classId: string,
+  excludeSessionId: string | null
+): Promise<Array<{ name: string; memberIds: string[]; positionX: number | null; positionY: number | null }> | null> {
+  const session = await queryFirst<{ id: string }>(
+    `SELECT gs.id FROM group_sessions gs
+     WHERE gs.class_id = ? AND gs.id <> ? AND EXISTS (SELECT 1 FROM session_groups g WHERE g.session_id = gs.id)
+     ORDER BY gs.created_at DESC LIMIT 1`,
+    [classId, excludeSessionId ?? '']
+  );
+  if (!session) return null;
+  const groups = await queryAll<SessionGroupRow>(
+    `SELECT * FROM session_groups WHERE session_id = ? ORDER BY display_order, name`,
+    [session.id]
+  );
+  const out = [];
+  for (const g of groups) {
+    out.push({
+      name: g.name,
+      memberIds: await getGroupMemberIds(g.id),
+      positionX: g.position_x ?? null,
+      positionY: g.position_y ?? null,
+    });
+  }
+  return out.length > 0 ? out : null;
 }

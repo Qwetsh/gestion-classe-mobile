@@ -169,7 +169,31 @@ export interface SessionGroup {
   id: string;
   sessionId: string;
   name: string;
-  conductMalus: number; // Negative value (e.g., -1, -2)
+  conductMalus: number; // Stocké en positif, retiré du total
+  /** Position de l'îlot sur le fond libre (0..1), null = rangement automatique */
+  positionX: number | null;
+  positionY: number | null;
+  /** Commentaire au groupe (vu par le groupe une fois le TP corrigé) */
+  comment: string | null;
+  /** Ordre d'affichage, donne aussi la couleur de l'îlot */
+  displayOrder: number;
+  syncedAt: string | null;
+}
+
+/** Photo prise pendant un TP : pour un groupe, ou pour toute la classe (groupId null). */
+export interface GroupSessionPhoto {
+  id: string;
+  sessionId: string;
+  groupId: string | null;
+  /** Chemin dans le bucket student-photos ({user}/tp/{séance}/{id}.jpg) */
+  filePath: string;
+  /** Fichier gardé sur le téléphone tant que l'envoi n'est pas fait */
+  localUri: string | null;
+  caption: string;
+  author: 'teacher' | 'student';
+  studentId: string | null;
+  createdAt: string;
+  uploaded: boolean;
   syncedAt: string | null;
 }
 

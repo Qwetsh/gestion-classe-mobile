@@ -26,7 +26,7 @@ function canReachServer(): boolean {
 
 /** Forme de l'événement telle qu'attendue par la table Supabase `events`. */
 export function toRemoteEvent(e: Event) {
-  return {
+  const remote: Record<string, unknown> = {
     id: e.id,
     session_id: e.session_id,
     student_id: e.student_id,
@@ -36,6 +36,10 @@ export function toRemoteEvent(e: Event) {
     photo_path: e.photo_path,
     timestamp: e.timestamp,
   };
+  // Colonne de la migration 087 : envoyée seulement quand elle sert, pour qu'un serveur
+  // pas encore migré continue d'accepter les événements ordinaires.
+  if (e.tp_group_id) remote.tp_group_id = e.tp_group_id;
+  return remote;
 }
 
 /**

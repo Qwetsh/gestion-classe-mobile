@@ -792,6 +792,55 @@ async function runMigrations(fromVersion: number): Promise<void> {
       throw error;
     }
   }
+
+  // Migration 18 -> 19: TP en groupes (miroir de la migration Supabase 087)
+  //  - session_groups : position de l'îlot (0..1), commentaire, ordre d'affichage
+  //  - events.tp_group_id : point donné au groupe entier
+  //  - tp_templates : niveau / séquence / activité (filtrer les TP par niveau de classe)
+  //  - group_session_photos : photos par groupe, avec file d'envoi (local_uri, uploaded)
+  if (fromVersion < 19) {
+    console.log('[Database] Applying migration: TP groups (v19)');
+    const addColumn = async (table: string, column: string, ddl: string) => {
+      if (!(await columnExists(table, column))) {
+        await db.runAsync(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      }
+    };
+    await db.execAsync('BEGIN TRANSACTION');
+    try {
+      await addColumn('session_groups', 'position_x', 'position_x REAL');
+      await addColumn('session_groups', 'position_y', 'position_y REAL');
+      await addColumn('session_groups', 'comment', 'comment TEXT');
+      await addColumn('session_groups', 'display_order', 'display_order INTEGER NOT NULL DEFAULT 0');
+      await addColumn('events', 'tp_group_id', 'tp_group_id TEXT');
+      await addColumn('tp_templates', 'level', 'level TEXT');
+      await addColumn('tp_templates', 'chapter', 'chapter TEXT');
+      await addColumn('tp_templates', 'activity', 'activity TEXT');
+      await db.runAsync(`
+        CREATE TABLE IF NOT EXISTS group_session_photos (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          group_id TEXT,
+          file_path TEXT NOT NULL,
+          local_uri TEXT,
+          caption TEXT NOT NULL DEFAULT '',
+          author TEXT NOT NULL DEFAULT 'teacher',
+          student_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          uploaded INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT,
+          FOREIGN KEY (session_id) REFERENCES group_sessions(id) ON DELETE CASCADE
+        )
+      `);
+      await db.runAsync('CREATE INDEX IF NOT EXISTS idx_gsp_session ON group_session_photos (session_id)');
+      await db.runAsync('UPDATE schema_version SET version = ?', [19]);
+      await db.execAsync('COMMIT');
+      console.log('[Database] Migration v19 complete');
+    } catch (error) {
+      await db.execAsync('ROLLBACK');
+      console.error('[Database] Migration v19 failed, rolled back:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -805,6 +854,7 @@ export async function resetDatabase(): Promise<void> {
 
   // Drop all tables (in dependency order)
   const tables = [
+    'group_session_photos',
     'student_tag_assignments',
     'student_tags',
     'pending_deletions',
@@ -863,6 +913,7 @@ export async function getDatabaseStats(): Promise<Record<string, number>> {
     'session_groups',
     'session_group_members',
     'group_grades',
+    'group_session_photos',
     'tp_templates',
     'tp_template_criteria',
     'stamp_categories',

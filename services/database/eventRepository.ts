@@ -13,6 +13,8 @@ export interface Event {
   subtype: SortieSubtype | null;
   note: string | null;
   photo_path: string | null;
+  /** Point donné à tout un groupe de TP (session_groups.id), sinon null */
+  tp_group_id?: string | null;
   timestamp: string;
   synced_at: string | null;
 }
@@ -26,15 +28,16 @@ export async function createEvent(
   type: EventType,
   subtype?: SortieSubtype | null,
   note?: string | null,
-  photoPath?: string | null
+  photoPath?: string | null,
+  tpGroupId?: string | null
 ): Promise<Event> {
   const id = Crypto.randomUUID();
   const now = new Date().toISOString();
 
   await executeSql(
-    `INSERT INTO events (id, session_id, student_id, type, subtype, note, photo_path, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, sessionId, studentId, type, subtype || null, note || null, photoPath || null, now]
+    `INSERT INTO events (id, session_id, student_id, type, subtype, note, photo_path, tp_group_id, timestamp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, sessionId, studentId, type, subtype || null, note || null, photoPath || null, tpGroupId || null, now]
   );
 
   console.log('[eventRepository] Created event:', type, 'for student:', studentId);
@@ -47,6 +50,7 @@ export async function createEvent(
     subtype: subtype || null,
     note: note || null,
     photo_path: photoPath || null,
+    tp_group_id: tpGroupId || null,
     timestamp: now,
     synced_at: null,
   };

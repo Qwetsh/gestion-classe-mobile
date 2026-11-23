@@ -208,6 +208,19 @@ export {
   markSessionGroupsSynced,
   markGroupMembersSynced,
   markGroupGradesSynced,
+  // TP en groupes (v19)
+  updateGroupSessionTemplate,
+  updateSessionGroupPosition,
+  updateSessionGroupComment,
+  moveStudentToGroup,
+  createGroupSessionPhoto,
+  getPhotosBySessionId,
+  updateGroupSessionPhotoGroup,
+  deleteGroupSessionPhoto,
+  getPhotosAwaitingUpload,
+  markPhotoUploaded,
+  suggestTemplateForClass,
+  getLastTpGroupsForClass,
 } from './groupSessionRepository';
 
 // TP Templates (modèles de TP)
@@ -225,6 +238,7 @@ export {
   updateTpTemplateCriteria,
   deleteTpTemplateCriteria,
   replaceTpTemplateCriteria,
+  overwriteTpTemplateCriteria,
   type TpTemplate,
   type TpTemplateCriteria,
   type TpTemplateWithCriteria,

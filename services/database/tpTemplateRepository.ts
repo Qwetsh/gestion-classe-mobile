@@ -11,6 +11,34 @@ export interface TpTemplate {
   name: string;
   createdAt: string;
   syncedAt: string | null;
+  /** Rangement de « Mes TP » (web) : niveau (« 3e »), séquence, numéro d'activité */
+  level: string | null;
+  chapter: string | null;
+  activity: string | null;
+}
+
+interface TpTemplateRow {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+  synced_at: string | null;
+  level: string | null;
+  chapter: string | null;
+  activity: string | null;
+}
+
+function rowToTpTemplate(row: TpTemplateRow): TpTemplate {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    createdAt: row.created_at,
+    syncedAt: row.synced_at,
+    level: row.level ?? null,
+    chapter: row.chapter ?? null,
+    activity: row.activity ?? null,
+  };
 }
 
 export interface TpTemplateCriteria {
@@ -52,6 +80,9 @@ export async function createTpTemplate(
     name,
     createdAt,
     syncedAt: null,
+    level: null,
+    chapter: null,
+    activity: null,
   };
 }
 
@@ -59,55 +90,29 @@ export async function createTpTemplate(
  * Get all TP templates for a user
  */
 export async function getTpTemplatesByUserId(userId: string): Promise<TpTemplate[]> {
-  const rows = await queryAll<{
-    id: string;
-    user_id: string;
-    name: string;
-    created_at: string;
-    synced_at: string | null;
-  }>(
-    `SELECT id, user_id, name, created_at, synced_at
+  const rows = await queryAll<TpTemplateRow>(
+    `SELECT id, user_id, name, created_at, synced_at, level, chapter, activity
      FROM tp_templates
      WHERE user_id = ?
      ORDER BY name ASC`,
     [userId]
   );
 
-  return rows.map((row) => ({
-    id: row.id,
-    userId: row.user_id,
-    name: row.name,
-    createdAt: row.created_at,
-    syncedAt: row.synced_at,
-  }));
+  return rows.map(rowToTpTemplate);
 }
 
 /**
  * Get a TP template by ID
  */
 export async function getTpTemplateById(templateId: string): Promise<TpTemplate | null> {
-  const row = await queryFirst<{
-    id: string;
-    user_id: string;
-    name: string;
-    created_at: string;
-    synced_at: string | null;
-  }>(
-    `SELECT id, user_id, name, created_at, synced_at
+  const row = await queryFirst<TpTemplateRow>(
+    `SELECT id, user_id, name, created_at, synced_at, level, chapter, activity
      FROM tp_templates
      WHERE id = ?`,
     [templateId]
   );
 
-  if (!row) return null;
-
-  return {
-    id: row.id,
-    userId: row.user_id,
-    name: row.name,
-    createdAt: row.created_at,
-    syncedAt: row.synced_at,
-  };
+  return row ? rowToTpTemplate(row) : null;
 }
 
 /**
@@ -279,4 +284,36 @@ export async function replaceTpTemplateCriteria(
 
   // Create new
   return createTpTemplateCriteriaBatch(templateId, criteria);
+}
+
+/**
+ * Recopie le barème d'une séance dans le modèle (« Mettre aussi à jour ce barème dans Mes TP »).
+ * Les critères sont mis à jour EN PLACE (mêmes id) : remplacer les lignes laisserait les
+ * anciennes sur le serveur, où la synchro ne fait qu'ajouter. Les critères en trop sont
+ * supprimés avec une suppression en attente pour le serveur.
+ */
+export async function overwriteTpTemplateCriteria(
+  templateId: string,
+  criteria: Array<{ label: string; maxPoints: number }>
+): Promise<void> {
+  const existing = await getTpTemplateCriteria(templateId);
+  for (let i = 0; i < criteria.length; i++) {
+    const c = criteria[i];
+    const current = existing[i];
+    if (current) {
+      await executeSql(
+        `UPDATE tp_template_criteria SET label = ?, max_points = ?, display_order = ?, synced_at = NULL WHERE id = ?`,
+        [c.label.trim(), c.maxPoints, i, current.id]
+      );
+    } else {
+      await createTpTemplateCriteria(templateId, c.label.trim(), c.maxPoints, i);
+    }
+  }
+  for (const extra of existing.slice(criteria.length)) {
+    await executeSql(`DELETE FROM tp_template_criteria WHERE id = ?`, [extra.id]);
+    await executeSql(
+      `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+      [Crypto.randomUUID(), 'tp_template_criteria', extra.id, new Date().toISOString()]
+    );
+  }
 }

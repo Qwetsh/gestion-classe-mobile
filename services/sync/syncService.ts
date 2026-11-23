@@ -12,6 +12,8 @@ import {
   type Event,
 } from '../database';
 import { flushPendingDeletions, toRemoteEvent } from './liveSync';
+import { getPhotosAwaitingUpload, markPhotoUploaded } from '../database/groupSessionRepository';
+import { uploadTpPhotoFile } from '../photos/tpPhotos';
 
 // Verrou : jamais deux synchros (pull ou push) en parallele. Sans lui, une ligne poussee et marquee
 // synchronisee entre la lecture serveur et la lecture locale d'un pull concurrent etait prise pour
@@ -47,6 +49,7 @@ export interface SyncResult {
   stampsSync: number;
   bonusSelectionsSync: number;
   deletionsSync?: number;
+  groupPhotosSync?: number;
   // Groupes de classe (demi-groupes) — pas les groupes de TP ci-dessus
   classGroupsSync?: number;
   classGroupMembersSync?: number;
@@ -76,6 +79,7 @@ export async function getUnsyncedCount(): Promise<number> {
       (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM group_session_photos WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM tp_templates WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM stamp_categories WHERE synced_at IS NULL) +
@@ -148,6 +152,7 @@ async function syncAllUnlocked(userId: string): Promise<SyncResult> {
       { name: 'Groupes', run: async () => { result.sessionGroupsSync = await syncSessionGroups(); } },
       { name: 'Membres de groupe', run: async () => { result.groupMembersSync = await syncGroupMembers(); } },
       { name: 'Notes de groupe', run: async () => { result.groupGradesSync = await syncGroupGrades(); } },
+      { name: 'Photos de TP', run: async () => { result.groupPhotosSync = await syncGroupSessionPhotos(); } },
       { name: 'Modeles de TP', run: async () => { result.tpTemplatesSync = await syncTpTemplates(userId); } },
       { name: 'Criteres de TP', run: async () => { result.tpTemplateCriteriaSync = await syncTpTemplateCriteria(); } },
       { name: 'Categories de tampons', run: async () => { result.stampCategoriesSync = await syncStampCategories(userId); } },
@@ -885,7 +890,10 @@ async function syncEvents(): Promise<number> {
 async function syncGroupSessions(): Promise<number> {
   if (!supabase) return 0;
 
-  // Only sync completed sessions to avoid showing incomplete data on the web
+  // Séances actives ET terminées : pendant le TP, groupes, photos et notes doivent pouvoir
+  // atteindre le serveur (fiche du TP, espace élève). Le carnet, lui, ne bouge qu'à la fin
+  // (le déclencheur sync_group_session_assessment ne regarde que status = 'completed').
+  // Un brouillon (configuration pas encore validée) reste sur le téléphone.
   const unsynced = await queryAll<{
     id: string;
     user_id: string;
@@ -896,7 +904,7 @@ async function syncGroupSessions(): Promise<number> {
     completed_at: string | null;
     linked_session_id: string | null;
     template_id: string | null;
-  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id FROM group_sessions WHERE synced_at IS NULL AND status = 'completed'`);
+  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id FROM group_sessions WHERE synced_at IS NULL AND status IN ('active', 'completed')`);
 
   if (unsynced.length === 0) return 0;
 
@@ -1001,7 +1009,11 @@ async function syncSessionGroups(): Promise<number> {
     session_id: string;
     name: string;
     conduct_malus: number;
-  }>(`SELECT id, session_id, name, conduct_malus FROM session_groups WHERE synced_at IS NULL`);
+    position_x: number | null;
+    position_y: number | null;
+    comment: string | null;
+    display_order: number | null;
+  }>(`SELECT id, session_id, name, conduct_malus, position_x, position_y, comment, display_order FROM session_groups WHERE synced_at IS NULL`);
 
   if (unsynced.length === 0) return 0;
 
@@ -1020,6 +1032,10 @@ async function syncSessionGroups(): Promise<number> {
       session_id: g.session_id,
       name: g.name,
       conduct_malus: g.conduct_malus,
+      position_x: g.position_x,
+      position_y: g.position_y,
+      comment: g.comment,
+      display_order: g.display_order ?? 0,
     }));
 
   if (toSync.length === 0) return 0;
@@ -1159,6 +1175,96 @@ async function syncGroupGrades(): Promise<number> {
   );
 
   return toSync.length;
+}
+
+/**
+ * Photos de TP : d'abord les fichiers (Storage), puis les lignes group_session_photos dont la
+ * séance (et le groupe) est déjà sur le serveur.
+ */
+async function syncGroupSessionPhotos(): Promise<number> {
+  if (!supabase) return 0;
+
+  for (const photo of await getPhotosAwaitingUpload()) {
+    if (photo.localUri && (await uploadTpPhotoFile(photo.localUri, photo.filePath))) {
+      await markPhotoUploaded(photo.id);
+    }
+  }
+
+  const unsynced = await queryAll<{
+    id: string;
+    session_id: string;
+    group_id: string | null;
+    file_path: string;
+    caption: string | null;
+    author: string;
+    student_id: string | null;
+    created_at: string;
+  }>(`SELECT id, session_id, group_id, file_path, caption, author, student_id, created_at
+      FROM group_session_photos WHERE synced_at IS NULL AND uploaded = 1`);
+  if (unsynced.length === 0) return 0;
+
+  const sessionIds = [...new Set(unsynced.map(p => p.session_id))];
+  const { data: serverSessions } = await supabase.from('group_sessions').select('id').in('id', sessionIds);
+  const serverSessionIds = new Set((serverSessions || []).map(r => r.id));
+  const groupIds = [...new Set(unsynced.map(p => p.group_id).filter((g): g is string => !!g))];
+  const serverGroupIds = new Set<string>();
+  if (groupIds.length > 0) {
+    const { data: serverGroups } = await supabase.from('session_groups').select('id').in('id', groupIds);
+    for (const r of serverGroups || []) serverGroupIds.add(r.id);
+  }
+
+  const toSync = unsynced
+    .filter(p => serverSessionIds.has(p.session_id) && (!p.group_id || serverGroupIds.has(p.group_id)))
+    .map(p => ({
+      id: p.id,
+      session_id: p.session_id,
+      group_id: p.group_id,
+      file_path: p.file_path,
+      caption: p.caption ?? '',
+      author: p.author,
+      student_id: p.student_id,
+      created_at: p.created_at,
+    }));
+  if (toSync.length === 0) return 0;
+
+  const { error } = await supabase.from('group_session_photos').upsert(toSync, { onConflict: 'id' });
+  if (error) {
+    console.error('[syncService] Group photos sync error:', error);
+    throw new Error(`Group photos: ${error.message}`);
+  }
+  const now = new Date().toISOString();
+  const ids = toSync.map(p => p.id);
+  await executeSql(
+    `UPDATE group_session_photos SET synced_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+    [now, ...ids]
+  );
+  return toSync.length;
+}
+
+/**
+ * Envoi immédiat des tables d'un TP en cours (groupes, membres, notes, photos), sans la
+ * synchro complète. Appelé avec un anti-rebond après chaque modification. Ne lève jamais.
+ */
+export function pushGroupSessionNow(): Promise<void> {
+  return withSyncLock(async () => {
+    if (!isSupabaseConfigured || !supabase) return;
+    const steps = [
+      flushPendingDeletions,
+      syncGroupSessions,
+      syncGradingCriteria,
+      syncSessionGroups,
+      syncGroupMembers,
+      syncGroupGrades,
+      syncGroupSessionPhotos,
+    ];
+    for (const step of steps) {
+      try {
+        await step();
+      } catch (err) {
+        if (__DEV__) console.warn('[syncService] pushGroupSessionNow step failed:', err);
+      }
+    }
+  });
 }
 
 /**
@@ -2522,7 +2628,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     // 7. Pull TP templates from Supabase
     const { data: serverTpTemplates, error: tpTemplatesError } = await supabase
       .from('tp_templates')
-      .select('id, name, created_at')
+      .select('id, name, created_at, level, chapter, activity')
       .eq('user_id', userId);
 
     if (tpTemplatesError) {
@@ -2530,15 +2636,23 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       result.errors.push(`TP Templates: ${tpTemplatesError.message}`);
     } else if (serverTpTemplates && serverTpTemplates.length > 0) {
       for (const template of serverTpTemplates) {
-        const existing = await queryAll<{ id: string }>(
-          `SELECT id FROM tp_templates WHERE id = ?`,
+        const existing = await queryAll<{ id: string; synced_at: string | null }>(
+          `SELECT id, synced_at FROM tp_templates WHERE id = ?`,
           [template.id]
         );
 
+        if (existing.length > 0 && existing[0].synced_at) {
+          // Pas de modification locale en attente : le serveur (« Mes TP ») fait foi
+          await executeSql(
+            `UPDATE tp_templates SET name = ?, level = ?, chapter = ?, activity = ?, synced_at = ? WHERE id = ?`,
+            [template.name, template.level ?? null, template.chapter ?? null, template.activity ?? null, now, template.id]
+          );
+        }
+
         if (existing.length === 0) {
           await executeSql(
-            `INSERT INTO tp_templates (id, user_id, name, created_at, synced_at) VALUES (?, ?, ?, ?, ?)`,
-            [template.id, userId, template.name, template.created_at, now]
+            `INSERT INTO tp_templates (id, user_id, name, created_at, level, chapter, activity, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [template.id, userId, template.name, template.created_at, template.level ?? null, template.chapter ?? null, template.activity ?? null, now]
           );
           result.tpTemplates++;
           if (__DEV__) {
@@ -2559,10 +2673,17 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         result.errors.push(`TP Criteria: ${criteriaError.message}`);
       } else if (serverCriteria && serverCriteria.length > 0) {
         for (const crit of serverCriteria) {
-          const existing = await queryAll<{ id: string }>(
-            `SELECT id FROM tp_template_criteria WHERE id = ?`,
+          const existing = await queryAll<{ id: string; synced_at: string | null }>(
+            `SELECT id, synced_at FROM tp_template_criteria WHERE id = ?`,
             [crit.id]
           );
+
+          if (existing.length > 0 && existing[0].synced_at) {
+            await executeSql(
+              `UPDATE tp_template_criteria SET label = ?, max_points = ?, display_order = ?, synced_at = ? WHERE id = ?`,
+              [crit.label, crit.max_points, crit.display_order, now, crit.id]
+            );
+          }
 
           if (existing.length === 0) {
             await executeSql(
@@ -2576,6 +2697,9 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         }
       }
     }
+
+    // Lignes supprimées sur le téléphone, pas encore sur le serveur : ne pas les ressusciter
+    const pendingGroupDeletes = await getPendingDeletedIds(['session_groups', 'session_group_members', 'grading_criteria', 'group_session_photos']);
 
     // 9. Pull group sessions from Supabase
     const { data: serverGroupSessions, error: groupSessionsError } = await supabase
@@ -2610,12 +2734,13 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         .from('grading_criteria')
         .select('id, session_id, label, max_points, display_order')
         .in('session_id', gsIds);
+      const serverCriteriaKept = (serverCriteriaGS || []).filter(c => !pendingGroupDeletes.has(c.id));
 
       if (criteriaGSError) {
         console.error('[syncService] Pull grading criteria error:', criteriaGSError);
         result.errors.push(`Grading Criteria: ${criteriaGSError.message}`);
-      } else if (serverCriteriaGS && serverCriteriaGS.length > 0) {
-        for (const crit of serverCriteriaGS) {
+      } else if (serverCriteriaKept.length > 0) {
+        for (const crit of serverCriteriaKept) {
           const existing = await queryAll<{ id: string }>(
             `SELECT id FROM grading_criteria WHERE id = ?`,
             [crit.id]
@@ -2635,7 +2760,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       // 11. Pull session groups
       const { data: serverGroups, error: groupsError } = await supabase
         .from('session_groups')
-        .select('id, session_id, name, conduct_malus')
+        .select('id, session_id, name, conduct_malus, position_x, position_y, comment, display_order')
         .in('session_id', gsIds);
 
       if (groupsError) {
@@ -2643,14 +2768,15 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         result.errors.push(`Session Groups: ${groupsError.message}`);
       } else if (serverGroups && serverGroups.length > 0) {
         for (const grp of serverGroups) {
+          if (pendingGroupDeletes.has(grp.id)) continue;
           const existing = await queryAll<{ id: string }>(
             `SELECT id FROM session_groups WHERE id = ?`,
             [grp.id]
           );
           if (existing.length === 0) {
             await executeSql(
-              `INSERT INTO session_groups (id, session_id, name, conduct_malus, synced_at) VALUES (?, ?, ?, ?, ?)`,
-              [grp.id, grp.session_id, grp.name, grp.conduct_malus, now]
+              `INSERT INTO session_groups (id, session_id, name, conduct_malus, position_x, position_y, comment, display_order, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [grp.id, grp.session_id, grp.name ?? '', grp.conduct_malus, grp.position_x ?? null, grp.position_y ?? null, grp.comment ?? null, grp.display_order ?? 0, now]
             );
             if (__DEV__) {
               console.log('[syncService] Pulled session group:', grp.name);
@@ -2670,6 +2796,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
           result.errors.push(`Group Members: ${membersError.message}`);
         } else if (serverMembers && serverMembers.length > 0) {
           for (const mem of serverMembers) {
+            if (pendingGroupDeletes.has(mem.id) || pendingGroupDeletes.has(mem.group_id)) continue;
             const existing = await queryAll<{ id: string }>(
               `SELECT id FROM session_group_members WHERE id = ?`,
               [mem.id]
@@ -2697,6 +2824,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
           result.errors.push(`Group Grades: ${gradesError.message}`);
         } else if (serverGrades && serverGrades.length > 0) {
           for (const grade of serverGrades) {
+            if (pendingGroupDeletes.has(grade.group_id) || pendingGroupDeletes.has(grade.criteria_id)) continue;
             const existing = await queryAll<{ id: string }>(
               `SELECT id FROM group_grades WHERE id = ?`,
               [grade.id]

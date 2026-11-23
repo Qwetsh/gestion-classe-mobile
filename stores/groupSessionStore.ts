@@ -6,6 +6,7 @@ import {
   GroupGrade,
   Student,
   GroupSessionStatus,
+  GroupSessionPhoto,
 } from '../types';
 import {
   createGroupSession,
@@ -39,7 +40,33 @@ import {
   getTpTemplatesWithCriteria,
   getTpTemplateWithCriteria,
   type TpTemplateWithCriteria,
+  // TP en groupes (v19)
+  updateGroupSessionTemplate,
+  updateSessionGroupPosition,
+  updateSessionGroupComment,
+  moveStudentToGroup,
+  removeGroupMember,
+  createGroupSessionPhoto,
+  getPhotosBySessionId,
+  updateGroupSessionPhotoGroup,
+  deleteGroupSessionPhoto,
+  overwriteTpTemplateCriteria,
 } from '../services/database';
+import { pushGroupSessionNow } from '../services/sync/syncService';
+import { autoLayout, groupScore } from '../utils/tpGroups';
+import { deleteLocalTpPhoto, deleteRemoteTpPhoto } from '../services/photos/tpPhotos';
+
+// Envoi en direct (anti-rebond) des tables d'un TP en cours : un geste = une modification,
+// on regroupe les gestes rapprochés en un seul envoi.
+let pushTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePush(status: GroupSessionStatus | undefined) {
+  if (status === 'draft' || status === undefined) return;
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    void pushGroupSessionNow();
+  }, 1500);
+}
 
 // ============================================
 // Derniere config de groupes par classe ("Reprendre", maquette 10c)
@@ -91,6 +118,15 @@ export interface ActiveSessionState {
   criteria: GradingCriteria[];
   groups: SessionGroupWithDetails[];
   maxPossibleScore: number;
+  /** Photos du TP (par groupe ou pour toute la classe) */
+  photos: GroupSessionPhoto[];
+}
+
+export interface DraftGroup {
+  name: string;
+  memberIds: string[];
+  positionX?: number | null;
+  positionY?: number | null;
 }
 
 interface GroupSessionState {
@@ -153,6 +189,22 @@ interface GroupSessionState {
   // Group creation helpers
   copyGroupsFromPreviousSession: (classId: string) => Promise<boolean>;
   createRandomGroups: (studentIds: string[], studentsPerGroup: number) => Promise<void>;
+
+  // TP en groupes (lot 1)
+  setTemplate: (templateId: string | null, name: string) => Promise<void>;
+  /** Remplace les critères de la séance (barème réglé avant de lancer le TP). */
+  replaceCriteria: (criteria: Array<{ label: string; maxPoints: number }>, updateTemplateId?: string | null) => Promise<void>;
+  /** Crée les groupes formés (positions auto quand absentes). */
+  createGroupsFromDraft: (drafts: DraftGroup[]) => Promise<void>;
+  moveStudent: (studentId: string, toGroupId: string) => Promise<void>;
+  removeStudent: (studentId: string) => Promise<void>;
+  setGroupPosition: (groupId: string, x: number, y: number) => Promise<void>;
+  setGroupComment: (groupId: string, comment: string) => Promise<void>;
+  addPhoto: (photo: { id: string; groupId: string | null; filePath: string; localUri: string; caption?: string }) => Promise<void>;
+  movePhoto: (photoId: string, groupId: string | null) => Promise<void>;
+  deletePhoto: (photoId: string) => Promise<void>;
+  /** Envoi en direct après une modification faite hors du store (ex. événements de groupe). */
+  requestPush: () => void;
 }
 
 // ============================================
@@ -163,10 +215,11 @@ async function loadFullSessionState(sessionId: string): Promise<ActiveSessionSta
   const session = await getGroupSessionById(sessionId);
   if (!session) return null;
 
-  const [criteria, groups, maxScore] = await Promise.all([
+  const [criteria, groups, maxScore, photos] = await Promise.all([
     getCriteriaBySessionId(sessionId),
     getGroupsBySessionId(sessionId),
     calculateMaxScore(sessionId),
+    getPhotosBySessionId(sessionId),
   ]);
 
   // Load details for each group
@@ -191,7 +244,12 @@ async function loadFullSessionState(sessionId: string): Promise<ActiveSessionSta
     criteria,
     groups: groupsWithDetails,
     maxPossibleScore: maxScore,
+    photos,
   };
+}
+
+function rescore(g: SessionGroupWithDetails): SessionGroupWithDetails {
+  return { ...g, totalScore: groupScore(g.grades.map((gr) => gr.pointsAwarded), g.conductMalus) };
 }
 
 // ============================================
@@ -248,6 +306,7 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
           criteria: [],
           groups: [],
           maxPossibleScore: 0,
+          photos: [],
         },
         sessions: [session, ...get().sessions],
         isLoading: false,
@@ -307,6 +366,7 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
           session: { ...activeSession.session, status: 'active' },
         },
       });
+      schedulePush('active');
     } catch (error) {
       console.error('[groupSessionStore] Start error:', error);
     }
@@ -578,6 +638,7 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
 
     try {
       await applyGroupMalus(groupId, amount);
+      schedulePush(activeSession.session.status);
 
       set({
         activeSession: {
@@ -634,6 +695,7 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
 
     try {
       const grade = await setGroupGrade(groupId, criteriaId, points);
+      schedulePush(activeSession.session.status);
 
       set({
         activeSession: {
@@ -847,5 +909,167 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     } catch (error) {
       console.error('[groupSessionStore] Random groups error:', error);
     }
+  },
+
+  // ============================================
+  // TP en groupes (lot 1)
+  // ============================================
+
+
+  setTemplate: async (templateId, name) => {
+    const a = get().activeSession;
+    if (!a) return;
+    await updateGroupSessionTemplate(a.session.id, templateId, name);
+    set({
+      activeSession: { ...a, session: { ...a.session, templateId, name: name.trim() } },
+    });
+  },
+
+  replaceCriteria: async (criteria, updateTemplateId) => {
+    const a = get().activeSession;
+    if (!a) return;
+    for (const c of a.criteria) await deleteGradingCriteria(c.id);
+    const created: GradingCriteria[] = [];
+    for (let i = 0; i < criteria.length; i++) {
+      created.push(await createGradingCriteria(a.session.id, criteria[i].label, criteria[i].maxPoints, i));
+    }
+    if (updateTemplateId) await overwriteTpTemplateCriteria(updateTemplateId, criteria);
+    const current = get().activeSession ?? a;
+    set({
+      activeSession: {
+        ...current,
+        criteria: created,
+        maxPossibleScore: created.reduce((s, c) => s + c.maxPoints, 0),
+        groups: current.groups.map((g) => rescore({ ...g, grades: [] })),
+      },
+    });
+    schedulePush(current.session.status);
+  },
+
+  createGroupsFromDraft: async (drafts) => {
+    const a = get().activeSession;
+    if (!a) return;
+    const layout = autoLayout(drafts.length);
+    const startOrder = a.groups.reduce((m, g) => Math.max(m, g.displayOrder + 1), 0);
+    const added: SessionGroupWithDetails[] = [];
+    for (let i = 0; i < drafts.length; i++) {
+      const d = drafts[i];
+      const hasPos = d.positionX != null && d.positionY != null;
+      const group = await createSessionGroup(
+        a.session.id,
+        d.name,
+        startOrder + i,
+        hasPos ? { x: d.positionX as number, y: d.positionY as number } : layout[i]
+      );
+      for (const studentId of d.memberIds) await moveStudentToGroup(a.session.id, studentId, group.id);
+      added.push({ ...group, memberIds: [...d.memberIds], grades: [], totalScore: 0 });
+    }
+    const current = get().activeSession ?? a;
+    const movedIds = new Set(drafts.flatMap((d) => d.memberIds));
+    set({
+      activeSession: {
+        ...current,
+        groups: [
+          ...current.groups.map((g) => ({ ...g, memberIds: g.memberIds.filter((id) => !movedIds.has(id)) })),
+          ...added,
+        ],
+      },
+    });
+    schedulePush(current.session.status);
+  },
+
+  moveStudent: async (studentId, toGroupId) => {
+    const a = get().activeSession;
+    if (!a) return;
+    await moveStudentToGroup(a.session.id, studentId, toGroupId);
+    set({
+      activeSession: {
+        ...a,
+        groups: a.groups.map((g) => {
+          const without = g.memberIds.filter((id) => id !== studentId);
+          return g.id === toGroupId ? { ...g, memberIds: [...without, studentId] } : { ...g, memberIds: without };
+        }),
+      },
+    });
+    schedulePush(a.session.status);
+  },
+
+  removeStudent: async (studentId) => {
+    const a = get().activeSession;
+    if (!a) return;
+    const group = a.groups.find((g) => g.memberIds.includes(studentId));
+    if (!group) return;
+    await removeGroupMember(group.id, studentId);
+    set({
+      activeSession: {
+        ...a,
+        groups: a.groups.map((g) => (g.id === group.id ? { ...g, memberIds: g.memberIds.filter((id) => id !== studentId) } : g)),
+      },
+    });
+    schedulePush(a.session.status);
+  },
+
+  setGroupPosition: async (groupId, x, y) => {
+    const a = get().activeSession;
+    if (!a) return;
+    await updateSessionGroupPosition(groupId, x, y);
+    set({
+      activeSession: {
+        ...a,
+        groups: a.groups.map((g) => (g.id === groupId ? { ...g, positionX: x, positionY: y } : g)),
+      },
+    });
+    schedulePush(a.session.status);
+  },
+
+  setGroupComment: async (groupId, comment) => {
+    const a = get().activeSession;
+    if (!a) return;
+    await updateSessionGroupComment(groupId, comment);
+    const trimmed = comment.trim();
+    set({
+      activeSession: {
+        ...a,
+        groups: a.groups.map((g) => (g.id === groupId ? { ...g, comment: trimmed.length > 0 ? trimmed : null } : g)),
+      },
+    });
+    schedulePush(a.session.status);
+  },
+
+  addPhoto: async (photo) => {
+    const a = get().activeSession;
+    if (!a) return;
+    const created = await createGroupSessionPhoto({ ...photo, sessionId: a.session.id });
+    const current = get().activeSession ?? a;
+    set({ activeSession: { ...current, photos: [...current.photos, created] } });
+    schedulePush(current.session.status);
+  },
+
+  movePhoto: async (photoId, groupId) => {
+    const a = get().activeSession;
+    if (!a) return;
+    await updateGroupSessionPhotoGroup(photoId, groupId);
+    set({
+      activeSession: { ...a, photos: a.photos.map((p) => (p.id === photoId ? { ...p, groupId } : p)) },
+    });
+    schedulePush(a.session.status);
+  },
+
+  deletePhoto: async (photoId) => {
+    const a = get().activeSession;
+    if (!a) return;
+    const removed = await deleteGroupSessionPhoto(photoId);
+    set({
+      activeSession: { ...a, photos: a.photos.filter((p) => p.id !== photoId) },
+    });
+    if (removed) {
+      await deleteLocalTpPhoto(removed.localUri);
+      if (removed.uploaded) void deleteRemoteTpPhoto(removed.filePath);
+    }
+    schedulePush(a.session.status);
+  },
+
+  requestPush: () => {
+    schedulePush(get().activeSession?.session.status);
   },
 }));
