@@ -904,7 +904,12 @@ async function syncGroupSessions(): Promise<number> {
     completed_at: string | null;
     linked_session_id: string | null;
     template_id: string | null;
-  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id FROM group_sessions WHERE synced_at IS NULL AND status IN ('active', 'completed')`);
+  }>(`SELECT id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id FROM group_sessions gs WHERE synced_at IS NULL AND (
+    status = 'completed'
+    -- Actif : seulement si sa séance est encore en cours. Un vieux TP resté « actif » sur un
+    -- téléphone d'avant cette version ne part pas sur le serveur comme s'il se déroulait.
+    OR (status = 'active' AND EXISTS (SELECT 1 FROM sessions se WHERE se.id = gs.linked_session_id AND se.ended_at IS NULL))
+  )`);
 
   if (unsynced.length === 0) return 0;
 
@@ -930,13 +935,7 @@ async function syncGroupSessions(): Promise<number> {
   }
 
   // Mark as synced
-  const now = new Date().toISOString();
-  const ids = unsynced.map(gs => gs.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE group_sessions SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
+  await markSyncedIfUnchanged('group_sessions', unsynced, ['status', 'name', 'template_id', 'completed_at']);
 
   return unsynced.length;
 }
@@ -987,13 +986,7 @@ async function syncGradingCriteria(): Promise<number> {
   }
 
   // Mark as synced
-  const now = new Date().toISOString();
-  const ids = toSync.map(c => c.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE grading_criteria SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
+  await markSyncedIfUnchanged('grading_criteria', unsynced.filter(r => toSync.some(t => t.id === r.id)), ['label', 'max_points', 'display_order']);
 
   return toSync.length;
 }
@@ -1050,13 +1043,7 @@ async function syncSessionGroups(): Promise<number> {
   }
 
   // Mark as synced
-  const now = new Date().toISOString();
-  const ids = toSync.map(g => g.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE session_groups SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
+  await markSyncedIfUnchanged('session_groups', unsynced.filter(r => toSync.some(t => t.id === r.id)), ['name', 'conduct_malus', 'position_x', 'position_y', 'comment', 'display_order']);
 
   return toSync.length;
 }
@@ -1103,13 +1090,7 @@ async function syncGroupMembers(): Promise<number> {
   }
 
   // Mark as synced
-  const now = new Date().toISOString();
-  const ids = toSync.map(m => m.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE session_group_members SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
+  await markSyncedIfUnchanged('session_group_members', unsynced.filter(r => toSync.some(t => t.id === r.id)), ['group_id', 'student_id']);
 
   return toSync.length;
 }
@@ -1166,15 +1147,30 @@ async function syncGroupGrades(): Promise<number> {
   }
 
   // Mark as synced
-  const now = new Date().toISOString();
-  const ids = toSync.map(gr => gr.id);
-  const placeholders = ids.map(() => '?').join(',');
-  await executeSql(
-    `UPDATE group_grades SET synced_at = ? WHERE id IN (${placeholders})`,
-    [now, ...ids]
-  );
+  await markSyncedIfUnchanged('group_grades', unsynced.filter(r => toSync.some(t => t.id === r.id)), ['group_id', 'criteria_id', 'points_awarded']);
 
   return toSync.length;
+}
+
+/**
+ * Marque envoyées les lignes encore identiques à ce qui vient de partir. Pendant un TP, une
+ * note peut changer entre la lecture et la fin de l'envoi : marquer par id la déclarerait
+ * envoyée avec une valeur que le serveur n'a jamais reçue. Une ligne qui a bougé garde
+ * synced_at NULL et repart au prochain envoi.
+ */
+async function markSyncedIfUnchanged(
+  table: string,
+  rows: Array<Record<string, unknown> & { id: string }>,
+  cols: string[]
+): Promise<void> {
+  if (rows.length === 0) return;
+  const now = new Date().toISOString();
+  await executeTransaction(
+    rows.map((r) => ({
+      sql: `UPDATE ${table} SET synced_at = ? WHERE id = ? AND synced_at IS NULL${cols.map((c) => ` AND ${c} IS ?`).join('')}`,
+      params: [now, r.id, ...cols.map((c) => (r[c] ?? null) as string | number | null)],
+    }))
+  );
 }
 
 /**
@@ -1232,11 +1228,10 @@ async function syncGroupSessionPhotos(): Promise<number> {
     console.error('[syncService] Group photos sync error:', error);
     throw new Error(`Group photos: ${error.message}`);
   }
-  const now = new Date().toISOString();
-  const ids = toSync.map(p => p.id);
-  await executeSql(
-    `UPDATE group_session_photos SET synced_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
-    [now, ...ids]
+  await markSyncedIfUnchanged(
+    'group_session_photos',
+    unsynced.filter(r => toSync.some(t => t.id === r.id)).map(r => ({ ...r, uploaded: 1 })),
+    ['group_id', 'caption', 'uploaded']
   );
   return toSync.length;
 }
@@ -1250,6 +1245,8 @@ export function pushGroupSessionNow(): Promise<void> {
     if (!isSupabaseConfigured || !supabase) return;
     const steps = [
       flushPendingDeletions,
+      // La séance liée doit être sur le serveur avant sa séance de groupe (clé étrangère)
+      syncSessions,
       syncGroupSessions,
       syncGradingCriteria,
       syncSessionGroups,

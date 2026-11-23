@@ -176,7 +176,7 @@ export function GroupSheet({
         </View>
         <View style={styles.photos}>
           {photos.map((p) => (
-            <TpPhotoThumb key={p.id} photo={p} size={72} label={photoLabel(p)} onPress={() => onPhotoPress(p)} />
+            <TpPhotoThumb key={p.id} photo={p} size={72} label={photoLabel(p)} onPress={go(() => onPhotoPress(p))} />
           ))}
           <Pressable style={styles.addPhoto} onPress={go(onTakePhoto)} accessibilityLabel={`Prendre une photo pour ${group.name}`}>
             <Camera size={26} color={theme.colors.primary} />

@@ -195,7 +195,7 @@ interface GroupSessionState {
   /** Remplace les critères de la séance (barème réglé avant de lancer le TP). */
   replaceCriteria: (criteria: Array<{ label: string; maxPoints: number }>, updateTemplateId?: string | null) => Promise<void>;
   /** Crée les groupes formés (positions auto quand absentes). */
-  createGroupsFromDraft: (drafts: DraftGroup[]) => Promise<void>;
+  createGroupsFromDraft: (drafts: DraftGroup[]) => Promise<string[]>;
   moveStudent: (studentId: string, toGroupId: string) => Promise<void>;
   removeStudent: (studentId: string) => Promise<void>;
   setGroupPosition: (groupId: string, x: number, y: number) => Promise<void>;
@@ -596,13 +596,15 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
 
     try {
       await deleteSessionGroup(groupId);
-
+      const cur = get().activeSession ?? activeSession;
       set({
         activeSession: {
-          ...activeSession,
-          groups: activeSession.groups.filter((g) => g.id !== groupId),
+          ...cur,
+          groups: cur.groups.filter((g) => g.id !== groupId),
+          photos: cur.photos.map((ph) => (ph.groupId === groupId ? { ...ph, groupId: null } : ph)),
         },
       });
+      schedulePush(cur.session.status);
     } catch (error) {
       console.error('[groupSessionStore] Remove group error:', error);
     }
@@ -639,19 +641,12 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     try {
       await applyGroupMalus(groupId, amount);
       schedulePush(activeSession.session.status);
-
+      // État relu APRÈS l'écriture : deux gestes rapprochés ne s'effacent pas à l'écran
+      const cur = get().activeSession ?? activeSession;
       set({
         activeSession: {
-          ...activeSession,
-          groups: activeSession.groups.map((g) => {
-            if (g.id !== groupId) return g;
-            const newMalus = g.conductMalus + amount;
-            return {
-              ...g,
-              conductMalus: newMalus,
-              totalScore: g.grades.reduce((sum, grade) => sum + grade.pointsAwarded, 0) - newMalus,
-            };
-          }),
+          ...cur,
+          groups: cur.groups.map((g) => (g.id === groupId ? rescore({ ...g, conductMalus: g.conductMalus + amount }) : g)),
         },
       });
     } catch (error) {
@@ -696,30 +691,14 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     try {
       const grade = await setGroupGrade(groupId, criteriaId, points);
       schedulePush(activeSession.session.status);
-
+      const cur = get().activeSession ?? activeSession;
       set({
         activeSession: {
-          ...activeSession,
-          groups: activeSession.groups.map((g) => {
+          ...cur,
+          groups: cur.groups.map((g) => {
             if (g.id !== groupId) return g;
-
-            // Update or add grade
-            const existingIndex = g.grades.findIndex((gr) => gr.criteriaId === criteriaId);
-            let newGrades: GroupGrade[];
-            if (existingIndex >= 0) {
-              newGrades = [...g.grades];
-              newGrades[existingIndex] = grade;
-            } else {
-              newGrades = [...g.grades, grade];
-            }
-
-            const newScore = newGrades.reduce((sum, gr) => sum + gr.pointsAwarded, 0) - g.conductMalus;
-
-            return {
-              ...g,
-              grades: newGrades,
-              totalScore: newScore,
-            };
+            const others = g.grades.filter((gr) => gr.criteriaId !== criteriaId);
+            return rescore({ ...g, grades: [...others, grade] });
           }),
         },
       });
@@ -920,8 +899,9 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     const a = get().activeSession;
     if (!a) return;
     await updateGroupSessionTemplate(a.session.id, templateId, name);
+    const cur = get().activeSession ?? a;
     set({
-      activeSession: { ...a, session: { ...a.session, templateId, name: name.trim() } },
+      activeSession: { ...cur, session: { ...cur.session, templateId, name: name.trim() } },
     });
   },
 
@@ -948,8 +928,9 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
 
   createGroupsFromDraft: async (drafts) => {
     const a = get().activeSession;
-    if (!a) return;
-    const layout = autoLayout(drafts.length);
+    if (!a) return [];
+    const existing = a.groups.length;
+    const layout = autoLayout(existing + drafts.length).slice(existing);
     const startOrder = a.groups.reduce((m, g) => Math.max(m, g.displayOrder + 1), 0);
     const added: SessionGroupWithDetails[] = [];
     for (let i = 0; i < drafts.length; i++) {
@@ -976,16 +957,18 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
       },
     });
     schedulePush(current.session.status);
+    return added.map((g) => g.id);
   },
 
   moveStudent: async (studentId, toGroupId) => {
     const a = get().activeSession;
     if (!a) return;
     await moveStudentToGroup(a.session.id, studentId, toGroupId);
+    const cur = get().activeSession ?? a;
     set({
       activeSession: {
-        ...a,
-        groups: a.groups.map((g) => {
+        ...cur,
+        groups: cur.groups.map((g) => {
           const without = g.memberIds.filter((id) => id !== studentId);
           return g.id === toGroupId ? { ...g, memberIds: [...without, studentId] } : { ...g, memberIds: without };
         }),
@@ -1000,10 +983,11 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     const group = a.groups.find((g) => g.memberIds.includes(studentId));
     if (!group) return;
     await removeGroupMember(group.id, studentId);
+    const cur = get().activeSession ?? a;
     set({
       activeSession: {
-        ...a,
-        groups: a.groups.map((g) => (g.id === group.id ? { ...g, memberIds: g.memberIds.filter((id) => id !== studentId) } : g)),
+        ...cur,
+        groups: cur.groups.map((g) => (g.id === group.id ? { ...g, memberIds: g.memberIds.filter((id) => id !== studentId) } : g)),
       },
     });
     schedulePush(a.session.status);
@@ -1013,10 +997,11 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     const a = get().activeSession;
     if (!a) return;
     await updateSessionGroupPosition(groupId, x, y);
+    const cur = get().activeSession ?? a;
     set({
       activeSession: {
-        ...a,
-        groups: a.groups.map((g) => (g.id === groupId ? { ...g, positionX: x, positionY: y } : g)),
+        ...cur,
+        groups: cur.groups.map((g) => (g.id === groupId ? { ...g, positionX: x, positionY: y } : g)),
       },
     });
     schedulePush(a.session.status);
@@ -1027,10 +1012,11 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     if (!a) return;
     await updateSessionGroupComment(groupId, comment);
     const trimmed = comment.trim();
+    const cur = get().activeSession ?? a;
     set({
       activeSession: {
-        ...a,
-        groups: a.groups.map((g) => (g.id === groupId ? { ...g, comment: trimmed.length > 0 ? trimmed : null } : g)),
+        ...cur,
+        groups: cur.groups.map((g) => (g.id === groupId ? { ...g, comment: trimmed.length > 0 ? trimmed : null } : g)),
       },
     });
     schedulePush(a.session.status);
@@ -1049,8 +1035,9 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     const a = get().activeSession;
     if (!a) return;
     await updateGroupSessionPhotoGroup(photoId, groupId);
+    const cur = get().activeSession ?? a;
     set({
-      activeSession: { ...a, photos: a.photos.map((p) => (p.id === photoId ? { ...p, groupId } : p)) },
+      activeSession: { ...cur, photos: cur.photos.map((p) => (p.id === photoId ? { ...p, groupId } : p)) },
     });
     schedulePush(a.session.status);
   },
@@ -1059,8 +1046,9 @@ export const useGroupSessionStore = create<GroupSessionState>((set, get) => ({
     const a = get().activeSession;
     if (!a) return;
     const removed = await deleteGroupSessionPhoto(photoId);
+    const cur = get().activeSession ?? a;
     set({
-      activeSession: { ...a, photos: a.photos.filter((p) => p.id !== photoId) },
+      activeSession: { ...cur, photos: cur.photos.filter((p) => p.id !== photoId) },
     });
     if (removed) {
       await deleteLocalTpPhoto(removed.localUri);

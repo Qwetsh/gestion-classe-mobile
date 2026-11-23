@@ -513,7 +513,13 @@ export async function setGroupMalus(id: string, malus: number): Promise<void> {
  * Delete a session group
  */
 export async function deleteSessionGroup(id: string): Promise<void> {
-  // Membres et notes partent en cascade, des deux côtés (clés étrangères ON DELETE CASCADE)
+  // Membres et notes partent en cascade, des deux côtés (clés étrangères ON DELETE CASCADE).
+  // Les photos du groupe deviennent des photos de la classe (le serveur fait de même :
+  // ON DELETE SET NULL), sinon elles attendraient pour toujours un groupe disparu.
+  await executeSql(
+    `UPDATE group_session_photos SET group_id = NULL, synced_at = NULL WHERE group_id = ?`,
+    [id]
+  );
   await executeSql(`DELETE FROM session_groups WHERE id = ?`, [id]);
   await queueRemoteDeletion('session_groups', id);
 }

@@ -26,7 +26,7 @@ interface Props {
   previewUri?: string | null;
   /** Bouton du bas : « Toute la classe (photo de référence) » ou « Retirer du groupe » */
   extraLabel?: string;
-  onExtra?: () => void;
+  onExtra?: (caption: string) => void;
   withCaption?: boolean;
   onPick: (groupId: string, caption: string) => void;
   onClose: () => void;
@@ -69,7 +69,7 @@ export function GroupChooserSheet({
           })}
         </View>
         {extraLabel && onExtra && (
-          <Pressable style={({ pressed }) => [styles.extra, pressed && styles.pressed]} onPress={onExtra}>
+          <Pressable style={({ pressed }) => [styles.extra, pressed && styles.pressed]} onPress={() => onExtra(caption)}>
             <Text style={styles.extraText}>{extraLabel}</Text>
           </Pressable>
         )}

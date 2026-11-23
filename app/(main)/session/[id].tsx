@@ -75,6 +75,8 @@ import { GroupFormer, type FormerGroup, type FormerPlan } from '../../../compone
 import { GroupIslandsCanvas, type IslandGroup } from '../../../components/tp/GroupIslandsCanvas';
 import { GroupSheet } from '../../../components/tp/GroupSheet';
 import { GroupChooserSheet } from '../../../components/tp/GroupChooserSheet';
+import { TpPhotoThumb } from '../../../components/tp/TpPhotoThumb';
+import { BottomSheet } from '../../../components/session/BottomSheet';
 import type { GroupSessionPhoto } from '../../../types';
 import {
   takeTpPhoto,
@@ -254,6 +256,7 @@ function NativeSessionScreen() {
   const [photoToMove, setPhotoToMove] = useState<GroupSessionPhoto | null>(null);
   const [studentToMove, setStudentToMove] = useState<string | null>(null);
   const [radialGroupName, setRadialGroupName] = useState<string | null>(null);
+  const [showClassPhotos, setShowClassPhotos] = useState(false);
   const selectedGroupRef = useRef<string | null>(null);
   const groupTapRef = useRef<string | null>(null);
 
@@ -1070,10 +1073,28 @@ function NativeSessionScreen() {
     if (!user?.id || !activeSession) return;
     setShowTpLaunch(false);
     const store = useGroupSessionStore.getState();
-    const current = store.activeSession;
+    let current = store.activeSession;
+    // Le store est partagé avec d'autres écrans : la base fait foi pour savoir si cette
+    // séance a déjà sa séance de groupe (en créer une deuxième abandonnerait la première).
     if (!current || current.session.linkedSessionId !== activeSession.id) {
-      await store.createSession(user.id, activeSession.class_id, result.name, activeSession.id, result.templateId);
+      const existing = await getGroupSessionByLinkedSessionId(activeSession.id);
+      if (existing) {
+        await store.loadSession(existing.id);
+        current = useGroupSessionStore.getState().activeSession;
+      }
+    }
+    if (!current || current.session.linkedSessionId !== activeSession.id) {
+      const created = await store.createSession(user.id, activeSession.class_id, result.name, activeSession.id, result.templateId);
+      if (!created) {
+        Alert.alert('TP', "Le TP n'a pas pu être créé. Réessayez.");
+        return;
+      }
     } else {
+      if (current.groups.length > 0) {
+        // Groupes déjà formés : on ne touche pas au barème déjà noté, on affiche le TP
+        setViewMode('groups');
+        return;
+      }
       await store.setTemplate(result.templateId, result.name);
     }
     await useGroupSessionStore.getState().replaceCriteria(result.criteria, result.updateTemplate ? result.templateId : null);
@@ -1142,9 +1163,9 @@ function NativeSessionScreen() {
 
     // Modification d'une composition existante : nouveaux groupes, déplacements, retraits
     const newOnes = formed.filter((g) => !g.id && g.memberIds.length > 0);
-    if (newOnes.length > 0) {
-      await store.createGroupsFromDraft(newOnes.map((g) => ({ name: g.name, memberIds: g.memberIds })));
-    }
+    const createdIds = newOnes.length > 0
+      ? await store.createGroupsFromDraft(newOnes.map((g) => ({ name: g.name, memberIds: g.memberIds })))
+      : [];
     for (const g of formed.filter((x) => x.id)) {
       const before = useGroupSessionStore.getState().activeSession?.groups.find((x) => x.id === g.id)?.memberIds ?? [];
       for (const studentId of g.memberIds) {
@@ -1157,8 +1178,8 @@ function NativeSessionScreen() {
         if (!placed.has(studentId)) await useGroupSessionStore.getState().removeStudent(studentId);
       }
     }
-    const keptIds = new Set(formed.map((g) => g.id).filter(Boolean));
-    const removed = (useGroupSessionStore.getState().activeSession?.groups ?? []).filter((g) => !keptIds.has(g.id) && !newOnes.some((n) => n.name === g.name));
+    const keptIds = new Set<string>([...formed.map((g) => g.id).filter((x): x is string => !!x), ...createdIds]);
+    const removed = (useGroupSessionStore.getState().activeSession?.groups ?? []).filter((g) => !keptIds.has(g.id));
     for (const g of removed) await useGroupSessionStore.getState().removeGroup(g.id);
   }, [formerMode]);
 
@@ -1273,7 +1294,7 @@ function NativeSessionScreen() {
   const handlePhotoPress = useCallback((photo: GroupSessionPhoto) => {
     Alert.alert('Photo du TP', photo.caption || undefined, [
       { text: 'Fermer', style: 'cancel' },
-      { text: 'Changer de groupe', onPress: () => { setSheetGroupId(null); setPhotoToMove(photo); } },
+      { text: 'Changer de groupe', onPress: () => { setSheetGroupId(null); setShowClassPhotos(false); setPhotoToMove(photo); } },
       {
         text: 'Supprimer',
         style: 'destructive',
@@ -1285,19 +1306,23 @@ function NativeSessionScreen() {
     ]);
   }, []);
 
-  // Points donnés à tout un groupe : un geste = autant d'événements que de présents,
-  // regroupés par seconde pour compter les gestes
+  // Points donnés à tout un groupe : un geste crée un événement par élève présent. Le nombre
+  // de gestes est donc le plus grand nombre d'événements de groupe reçus par un même élève.
   const groupGestures = useMemo(() => {
-    const out: Record<string, { plus: number; minus: number }> = {};
-    const seen = new Set<string>();
+    const perStudent: Record<string, { plus: number; minus: number }> = {};
     for (const e of events) {
       if (!e.tp_group_id || (e.type !== 'participation' && e.type !== 'bavardage')) continue;
-      const key = `${e.tp_group_id}|${e.type}|${e.timestamp.slice(0, 19)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const entry = (out[e.tp_group_id] ??= { plus: 0, minus: 0 });
+      const key = `${e.tp_group_id}|${e.student_id}`;
+      const entry = (perStudent[key] ??= { plus: 0, minus: 0 });
       if (e.type === 'participation') entry.plus++;
       else entry.minus++;
+    }
+    const out: Record<string, { plus: number; minus: number }> = {};
+    for (const [key, counts] of Object.entries(perStudent)) {
+      const groupId = key.split('|')[0];
+      const g = (out[groupId] ??= { plus: 0, minus: 0 });
+      g.plus = Math.max(g.plus, counts.plus);
+      g.minus = Math.max(g.minus, counts.minus);
     }
     return out;
   }, [events]);
@@ -1375,7 +1400,7 @@ function NativeSessionScreen() {
         <View style={styles.groupsEmpty}>
           <Text style={styles.groupsEmptyTitle}>Pas encore de groupes</Text>
           <Text style={styles.groupsEmptyText}>Choisissez le TP, son barème, puis formez les groupes.</Text>
-          <Pressable style={styles.groupsEmptyBtn} onPress={openTpLaunch}>
+          <Pressable style={styles.groupsEmptyBtn} onPress={handleSwitchToGroups}>
             <Text style={styles.groupsEmptyBtnText}>Lancer un TP</Text>
           </Pressable>
         </View>
@@ -2125,11 +2150,20 @@ function NativeSessionScreen() {
                   <Text style={styles.toolbarButtonText}>Supprimer</Text>
                 </Pressable>
               </View>
-              <Text style={styles.hint} numberOfLines={1}>
-                {movingIslands
-                  ? 'Glissez les groupes, puis « Fini »'
-                  : `${linkedGroupSession.session.name} · appui long : élève ou groupe · tap sur un groupe : sa fiche`}
-              </Text>
+              <View style={styles.tpHintRow}>
+                <Text style={[styles.hint, styles.flexShrink]} numberOfLines={1}>
+                  {movingIslands
+                    ? 'Glissez les groupes, puis « Fini »'
+                    : `${linkedGroupSession.session.name} · appui long : élève ou groupe · tap : fiche`}
+                </Text>
+                {linkedGroupSession.photos.some((ph) => ph.groupId === null) && (
+                  <Pressable onPress={() => setShowClassPhotos(true)} hitSlop={8}>
+                    <Text style={styles.classPhotosLink}>
+                      Photos de la classe ({linkedGroupSession.photos.filter((ph) => ph.groupId === null).length})
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
             </>
           )
         )}
@@ -2692,7 +2726,7 @@ function NativeSessionScreen() {
         groups={chooserGroups}
         previewUri={photoDraft?.localUri ?? null}
         extraLabel="Toute la classe (photo de référence)"
-        onExtra={() => { void savePhotoDraft(null, ''); }}
+        onExtra={(caption) => { void savePhotoDraft(null, caption); }}
         withCaption
         onPick={(groupId, caption) => { void savePhotoDraft(groupId, caption); }}
         onClose={() => {
@@ -2701,6 +2735,17 @@ function NativeSessionScreen() {
           if (draft) void deleteLocalTpPhoto(draft.localUri);
         }}
       />
+
+      {/* TP en groupes : photos rangées pour toute la classe */}
+      <BottomSheet visible={showClassPhotos} onClose={() => setShowClassPhotos(false)}>
+        <Text style={styles.classPhotosTitle}>Photos de la classe</Text>
+        <Text style={styles.classPhotosText}>Visibles par tous les groupes. Toucher une photo pour la ranger dans un groupe ou la supprimer.</Text>
+        <View style={styles.classPhotosGrid}>
+          {(linkedGroupSession?.photos ?? []).filter((ph) => ph.groupId === null).map((ph) => (
+            <TpPhotoThumb key={ph.id} photo={ph} size={96} onPress={() => handlePhotoPress(ph)} />
+          ))}
+        </View>
+      </BottomSheet>
 
       {/* TP en groupes : changer une photo de groupe */}
       <GroupChooserSheet
@@ -3666,6 +3711,12 @@ const styles = StyleSheet.create({
   placePrimary: { flex: 1, height: 48, borderRadius: 12, backgroundColor: theme.colors.action, alignItems: 'center', justifyContent: 'center' },
   placePrimaryText: { ...theme.typography.bodyMedium, fontFamily: theme.fonts.bodySemibold, color: '#FFFFFF' },
   toolbarButtonOn: { backgroundColor: theme.colors.primarySoft },
+  tpHintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 12 },
+  flexShrink: { flexShrink: 1 },
+  classPhotosLink: { ...theme.typography.labelSmall, color: theme.colors.primary },
+  classPhotosTitle: { ...theme.typography.h3, fontFamily: theme.fonts.bodyBold, color: theme.colors.text },
+  classPhotosText: { ...theme.typography.caption, color: theme.colors.textSecondary, marginTop: 4, marginBottom: 12 },
+  classPhotosGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   viewModeToggle: {
     flex: 1,
     flexDirection: 'row',
