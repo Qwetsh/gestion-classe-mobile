@@ -4,7 +4,8 @@
  *
  * - Sans groupe choisi : toucher des élèves les sélectionne, puis « Créer G3 avec n élèves ».
  * - Groupe choisi (toucher sa pastille) : toucher un élève l'ajoute à ce groupe ou l'en retire.
- * - Un absent peut entrer dans un groupe (il verra documents et photos, sans note ni points).
+ * - Un absent peut entrer dans un groupe : il garde la note du groupe et voit documents et photos
+ *   (règle de Thomas, 23/11/2026) ; seuls les points d'implication de groupe vont aux présents.
  *
  * Rien n'est écrit en base ici : onDone reçoit la composition complète.
  */
@@ -392,7 +393,7 @@ export function GroupFormer({ visible, stepLabel, students, plan, initialGroups,
           <Text style={styles.help}>
             {active
               ? `Toucher un élève pour l'ajouter à ${active.name} ou l'en retirer.`
-              : 'Toucher les élèves à mettre ensemble. Un absent peut entrer dans un groupe : il verra les documents et les photos, sans note ni points.'}
+              : "Toucher les élèves à mettre ensemble. Un absent peut entrer dans un groupe : il aura la note du groupe et verra les documents et les photos, sans les points d'implication."}
           </Text>
         </ScrollView>
 
