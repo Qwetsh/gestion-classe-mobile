@@ -27,7 +27,11 @@ import {
   Shuffle,
   Trash2,
   Monitor,
+  Camera,
+  Users,
+  Move,
 } from 'lucide-react-native';
+import * as Crypto from 'expo-crypto';
 import {
   useAuthStore,
   useClassStore,
@@ -40,7 +44,6 @@ import {
   useStampStore,
   useSettingsStore,
   StudentWithMapping,
-  type ActiveSessionState,
 } from '../../../stores';
 import {
   MENU_ITEMS,
@@ -61,11 +64,25 @@ import { TagEditorSheet } from '../../../components/session/TagEditorSheet';
 import { useStudentTagStore } from '../../../stores/studentTagStore';
 import * as Haptics from 'expo-haptics';
 import { triggerActionSignature, triggerErrorFeedback, triggerLightFeedback } from '../../../utils/haptics';
-import { getGroupSessionByLinkedSessionId } from '../../../services/database';
-import { SessionGroupView } from '../../../components/groups/SessionGroupView';
-import { GroupGradingOverlay } from '../../../components/groups/GroupGradingOverlay';
-import { GroupConfigSheet } from '../../../components/groups/GroupConfigSheet';
-import type { SessionGroupWithDetails } from '../../../stores/groupSessionStore';
+import {
+  getGroupSessionByLinkedSessionId,
+  suggestTemplateForClass,
+  getLastTpGroupsForClass,
+  type TpTemplateWithCriteria,
+} from '../../../services/database';
+import { TpLaunchSheet, type TpLaunchResult } from '../../../components/tp/TpLaunchSheet';
+import { GroupFormer, type FormerGroup, type FormerPlan } from '../../../components/tp/GroupFormer';
+import { GroupIslandsCanvas, type IslandGroup } from '../../../components/tp/GroupIslandsCanvas';
+import { GroupSheet } from '../../../components/tp/GroupSheet';
+import { GroupChooserSheet } from '../../../components/tp/GroupChooserSheet';
+import type { GroupSessionPhoto } from '../../../types';
+import {
+  takeTpPhoto,
+  storeTpPhotoLocally,
+  buildTpPhotoPath,
+  deleteLocalTpPhoto,
+} from '../../../services/photos/tpPhotos';
+import { groupPointRecipients, groupScore, isGroupFullyGraded } from '../../../utils/tpGroups';
 import { theme } from '../../../constants/theme';
 import { AccommodationBadges } from '../../../components/AccommodationBadges';
 import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
@@ -193,6 +210,7 @@ function NativeSessionScreen() {
   const { loadPlan, currentPlan } = usePlanStore();
   const {
     activeSession,
+    events,
     eventCountsByStudent,
     activeSorties,
     endCurrentSession,
@@ -222,20 +240,36 @@ function NativeSessionScreen() {
 
   // View mode toggle (plan de classe vs groupes)
   const [viewMode, setViewMode] = useState<'plan' | 'groups'>('plan');
-  const [linkedGroupSession, setLinkedGroupSession] = useState<ActiveSessionState | null>(null);
   const [isLoadingGroups, setIsLoadingGroups] = useState(false);
   const [hasLoadedGroups, setHasLoadedGroups] = useState(false);
-  const [gradingGroup, setGradingGroup] = useState<SessionGroupWithDetails | null>(null);
-  const [showGroupConfig, setShowGroupConfig] = useState(false);
+  // TP en groupes : lancement (TP + barème), formation, placement des îlots, fiche d'un groupe
+  const [tpTemplates, setTpTemplates] = useState<TpTemplateWithCriteria[]>([]);
+  const [suggestedTpId, setSuggestedTpId] = useState<string | null>(null);
+  const [showTpLaunch, setShowTpLaunch] = useState(false);
+  const [formerMode, setFormerMode] = useState<null | 'create' | 'edit'>(null);
+  const [placingGroups, setPlacingGroups] = useState(false);
+  const [movingIslands, setMovingIslands] = useState(false);
+  const [sheetGroupId, setSheetGroupId] = useState<string | null>(null);
+  const [photoDraft, setPhotoDraft] = useState<{ id: string; localUri: string } | null>(null);
+  const [photoToMove, setPhotoToMove] = useState<GroupSessionPhoto | null>(null);
+  const [studentToMove, setStudentToMove] = useState<string | null>(null);
+  const [radialGroupName, setRadialGroupName] = useState<string | null>(null);
+  const selectedGroupRef = useRef<string | null>(null);
+  const groupTapRef = useRef<string | null>(null);
+
+  // Séance de groupe liée à CETTE séance (le store peut garder celle d'une autre)
+  const groupStoreSession = useGroupSessionStore((st) => st.activeSession);
 
   // Reset group state when navigating to a different session
   useEffect(() => {
     setViewMode('plan');
-    setLinkedGroupSession(null);
     setIsLoadingGroups(false);
     setHasLoadedGroups(false);
-    setGradingGroup(null);
-    setShowGroupConfig(false);
+    setShowTpLaunch(false);
+    setFormerMode(null);
+    setPlacingGroups(false);
+    setMovingIslands(false);
+    setSheetGroupId(null);
   }, [id]);
 
   const [isInitializing, setIsInitializing] = useState(true);
@@ -280,6 +314,8 @@ function NativeSessionScreen() {
     visible: boolean;
     message: string;
     eventId: string | null;
+    /** Point donné à tout un groupe : un événement par élève, annulés ensemble */
+    eventIds?: string[];
     variant: 'success' | 'error';
   }>({ visible: false, message: '', eventId: null, variant: 'success' });
 
@@ -487,16 +523,16 @@ function NativeSessionScreen() {
   }, []);
 
   const handleUndoLastEvent = useCallback(async () => {
-    const eventId = undoBanner.eventId;
+    const ids = undoBanner.eventIds ?? (undoBanner.eventId ? [undoBanner.eventId] : []);
     setUndoBanner({ visible: false, message: '', eventId: null, variant: 'success' });
-    if (!eventId) return;
+    if (ids.length === 0) return;
     try {
-      await deleteEventNow(eventId);
+      for (const eventId of ids) await deleteEventNow(eventId);
       await loadSessionEvents();
     } catch (error) {
       if (__DEV__) console.error('[Session] Undo failed:', error);
     }
-  }, [undoBanner.eventId, loadSessionEvents]);
+  }, [undoBanner.eventId, undoBanner.eventIds, loadSessionEvents]);
 
   const dismissUndoBanner = useCallback(() => {
     setUndoBanner((prev) => ({ ...prev, visible: false }));
@@ -549,6 +585,20 @@ function NativeSessionScreen() {
 
   // Handle selection from radial menu
   const handleRadialSelection = useCallback(async (selection: RadialMenuSelection) => {
+    // Menu ouvert sur l'en-tête d'un îlot : le geste vaut pour tout le groupe
+    const groupTarget = selectedGroupRef.current;
+    if (groupTarget) {
+      selectedGroupRef.current = null;
+      setRadialGroupName(null);
+      const target = selection.parentId || selection.itemId;
+      if (target === 'participation' || target === 'bavardage') {
+        await handleGroupPointRef.current(groupTarget, target);
+      } else {
+        triggerErrorFeedback();
+        setUndoBanner({ visible: true, message: 'Pour tout un groupe : implication ou malus', eventId: null, variant: 'error' });
+      }
+      return;
+    }
     if (!selectedStudent) return;
 
     const itemId = selection.parentId || selection.itemId;
@@ -673,8 +723,11 @@ function NativeSessionScreen() {
 
   // Handle touch start on a student cell
   const handleTouchStart = (student: StudentWithMapping, pageX: number, pageY: number) => {
-    if (viewMode !== 'plan') return;
+    if (viewMode === 'groups' && movingIslands) return;
     clearLongPressTimer();
+    selectedGroupRef.current = null;
+    groupTapRef.current = null;
+    setRadialGroupName(null);
 
     // Check if student is absent - show cancel dialog instead of radial menu
     if (isStudentAbsent(student.id)) {
@@ -773,6 +826,17 @@ function NativeSessionScreen() {
     const containerPos = toContainerCoords(pageX, pageY);
     lastTouchRef.current = { x: containerPos.x, y: containerPos.y };
 
+    // En-tête d'un îlot : un glissement avant l'ouverture n'est ni un tap ni un appui long
+    if (groupTapRef.current && !menuOpenRef.current) {
+      const gdx = containerPos.x - flickStartRef.current.x;
+      const gdy = containerPos.y - flickStartRef.current.y;
+      if (Math.sqrt(gdx * gdx + gdy * gdy) > TOUCH_MOVE_THRESHOLD) {
+        groupTapRef.current = null;
+        clearLongPressTimer();
+      }
+      return;
+    }
+
     // If moved too far before menu opened
     if (!menuOpenRef.current && showProgress) {
       const dx = containerPos.x - flickStartRef.current.x;
@@ -810,6 +874,14 @@ function NativeSessionScreen() {
   };
 
   const handleTouchEnd = () => {
+    // Tap court sur l'en-tête d'un îlot : la fiche du groupe
+    const tappedGroup = groupTapRef.current;
+    groupTapRef.current = null;
+    if (tappedGroup && !menuOpenRef.current) {
+      clearLongPressTimer();
+      setSheetGroupId(tappedGroup);
+      return;
+    }
     clearLongPressTimer();
 
     if (menuOpenRef.current) {
@@ -913,9 +985,18 @@ function NativeSessionScreen() {
   }, [students]);
 
   const handleEndSession = () => {
+    // TP en cours : rappeler les groupes pas encore notés (la notation peut se finir sur l'ordinateur)
+    const ungraded = linkedGroupSession && linkedGroupSession.session.status === 'active'
+      ? linkedGroupSession.groups.filter((g) => !isGroupFullyGraded(
+          linkedGroupSession.criteria.map((c) => c.id),
+          g.grades.map((gr) => gr.criteriaId)
+        ) && g.memberIds.length > 0)
+      : [];
     Alert.alert(
       'Terminer la seance',
-      'Voulez-vous vraiment terminer cette seance ?',
+      ungraded.length > 0
+        ? `TP : ${ungraded.map((g) => g.name).join(', ')} pas encore ${ungraded.length > 1 ? 'notés' : 'noté'}. Vous pourrez finir la notation sur l'ordinateur (Évaluations). Terminer quand même ?`
+        : 'Voulez-vous vraiment terminer cette seance ?',
       [
         { text: 'Non', style: 'cancel' },
         {
@@ -923,7 +1004,7 @@ function NativeSessionScreen() {
           style: 'destructive',
           onPress: async () => {
             // Complete linked group session first (so grades get synced)
-            if (linkedGroupSession) {
+            if (linkedGroupSession && linkedGroupSession.session.status !== 'draft') {
               try {
                 await useGroupSessionStore.getState().completeSession();
               } catch (err) {
@@ -938,82 +1019,391 @@ function NativeSessionScreen() {
     );
   };
 
+  // ======================================================================
+  // TP en groupes
+  // ======================================================================
+
+  const linkedGroupSession = groupStoreSession && activeSession && groupStoreSession.session.linkedSessionId === activeSession.id
+    ? groupStoreSession
+    : null;
+
+  const openTpLaunch = useCallback(async () => {
+    if (!user?.id || !activeSession) return;
+    const [templates, suggested] = await Promise.all([
+      useGroupSessionStore.getState().loadTpTemplates(user.id),
+      suggestTemplateForClass(user.id, activeSession.class_id).catch(() => null),
+    ]);
+    setTpTemplates(templates);
+    setSuggestedTpId(suggested);
+    setShowTpLaunch(true);
+  }, [user?.id, activeSession]);
+
   const handleSwitchToGroups = useCallback(async () => {
-    setViewMode('groups');
-    if (!hasLoadedGroups && activeSession?.id) {
+    if (!activeSession?.id) return;
+    let current = useGroupSessionStore.getState().activeSession;
+    if (!hasLoadedGroups || !current || current.session.linkedSessionId !== activeSession.id) {
       setIsLoadingGroups(true);
       try {
         const gs = await getGroupSessionByLinkedSessionId(activeSession.id);
-        if (gs) {
-          await useGroupSessionStore.getState().loadSession(gs.id);
-          const loaded = useGroupSessionStore.getState().activeSession;
-          // Only use if it actually matches this session
-          if (loaded && loaded.session.id === gs.id) {
-            setLinkedGroupSession({
-              ...loaded,
-              groups: loaded.groups.map(g => ({ ...g, grades: [...g.grades] })),
-            });
-          }
-        } else {
-          // No linked group session — ensure clean state
-          setLinkedGroupSession(null);
-        }
+        if (gs) await useGroupSessionStore.getState().loadSession(gs.id);
       } catch (err) {
         console.error('[Session] Failed to load linked groups:', err);
-        setLinkedGroupSession(null);
       } finally {
         setIsLoadingGroups(false);
         setHasLoadedGroups(true);
       }
+      current = useGroupSessionStore.getState().activeSession;
     }
-  }, [activeSession?.id, hasLoadedGroups]);
+    if (current && current.session.linkedSessionId === activeSession.id && current.groups.length > 0) {
+      setViewMode('groups');
+      if (current.session.status === 'draft') {
+        setPlacingGroups(true);
+        setMovingIslands(true);
+      }
+      return;
+    }
+    // Pas encore de groupes pour cette séance : on lance le TP sans quitter l'écran
+    await openTpLaunch();
+  }, [activeSession?.id, hasLoadedGroups, openTpLaunch]);
 
-  // Refresh linked group session data from store (after grading changes)
-  // Deep copy groups to ensure React detects changes in grades/malus
-  const refreshLinkedGroupSession = useCallback(() => {
-    const current = useGroupSessionStore.getState().activeSession;
-    if (current) {
-      setLinkedGroupSession({
-        ...current,
-        groups: current.groups.map(g => ({ ...g, grades: [...g.grades] })),
+  const handleTpLaunchConfirm = useCallback(async (result: TpLaunchResult) => {
+    if (!user?.id || !activeSession) return;
+    setShowTpLaunch(false);
+    const store = useGroupSessionStore.getState();
+    const current = store.activeSession;
+    if (!current || current.session.linkedSessionId !== activeSession.id) {
+      await store.createSession(user.id, activeSession.class_id, result.name, activeSession.id, result.templateId);
+    } else {
+      await store.setTemplate(result.templateId, result.name);
+    }
+    await useGroupSessionStore.getState().replaceCriteria(result.criteria, result.updateTemplate ? result.templateId : null);
+    setFormerMode('create');
+  }, [user?.id, activeSession]);
+
+  const formerStudents = useMemo(
+    () => students.map((st) => ({
+      id: st.id,
+      label: cellLabelById[st.id] ?? getDisplayName(st).split(' ')[0],
+      absent: isStudentAbsent(st.id),
+    })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [students, cellLabelById, eventCountsByStudent]
+  );
+
+  const formerPlan = useMemo<FormerPlan | null>(() => {
+    if (!currentRoom || !currentPlan || !currentRoom.grid_rows || !currentRoom.grid_cols) return null;
+    let disabled: string[] = [];
+    try {
+      disabled = currentRoom.disabled_cells ? JSON.parse(currentRoom.disabled_cells) : [];
+    } catch {
+      disabled = [];
+    }
+    const off = new Set(disabled);
+    return {
+      rows: currentRoom.grid_rows,
+      cols: currentRoom.grid_cols,
+      isDisabled: (r: number, c: number) => off.has(`${r},${c}`),
+      studentAt: (r: number, c: number) => getStudentAtPosition(currentPlan.positions, r, c),
+    };
+  }, [currentRoom, currentPlan]);
+
+  const formerInitialGroups = useMemo<FormerGroup[]>(
+    () => formerMode === 'edit' && linkedGroupSession
+      ? linkedGroupSession.groups.map((g) => ({
+          key: g.id, id: g.id, name: g.name, memberIds: [...g.memberIds], displayOrder: g.displayOrder,
+          positionX: g.positionX, positionY: g.positionY,
+        }))
+      : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [formerMode]
+  );
+
+  const loadLastGroups = useCallback(async () => {
+    if (!activeSession) return null;
+    return getLastTpGroupsForClass(activeSession.class_id, linkedGroupSession?.session.id ?? null);
+  }, [activeSession, linkedGroupSession?.session.id]);
+
+  const handleFormerDone = useCallback(async (formed: FormerGroup[]) => {
+    const store = useGroupSessionStore.getState();
+    const current = store.activeSession;
+    if (!current) return;
+    const mode = formerMode;
+    setFormerMode(null);
+
+    if (mode === 'create') {
+      await store.createGroupsFromDraft(formed.map((g) => ({
+        name: g.name, memberIds: g.memberIds, positionX: g.positionX ?? null, positionY: g.positionY ?? null,
+      })));
+      setViewMode('groups');
+      setPlacingGroups(true);
+      setMovingIslands(true);
+      return;
+    }
+
+    // Modification d'une composition existante : nouveaux groupes, déplacements, retraits
+    const newOnes = formed.filter((g) => !g.id && g.memberIds.length > 0);
+    if (newOnes.length > 0) {
+      await store.createGroupsFromDraft(newOnes.map((g) => ({ name: g.name, memberIds: g.memberIds })));
+    }
+    for (const g of formed.filter((x) => x.id)) {
+      const before = useGroupSessionStore.getState().activeSession?.groups.find((x) => x.id === g.id)?.memberIds ?? [];
+      for (const studentId of g.memberIds) {
+        if (!before.includes(studentId)) await useGroupSessionStore.getState().moveStudent(studentId, g.id!);
+      }
+    }
+    const placed = new Set(formed.flatMap((g) => g.memberIds));
+    for (const g of useGroupSessionStore.getState().activeSession?.groups ?? []) {
+      for (const studentId of g.memberIds) {
+        if (!placed.has(studentId)) await useGroupSessionStore.getState().removeStudent(studentId);
+      }
+    }
+    const keptIds = new Set(formed.map((g) => g.id).filter(Boolean));
+    const removed = (useGroupSessionStore.getState().activeSession?.groups ?? []).filter((g) => !keptIds.has(g.id) && !newOnes.some((n) => n.name === g.name));
+    for (const g of removed) await useGroupSessionStore.getState().removeGroup(g.id);
+  }, [formerMode]);
+
+  const handleFormerBack = useCallback(() => {
+    const mode = formerMode;
+    setFormerMode(null);
+    // Retour à l'étape barème quand le TP n'a pas encore de groupes
+    if (mode === 'create') setShowTpLaunch(true);
+  }, [formerMode]);
+
+  const handleStartTp = useCallback(async () => {
+    await useGroupSessionStore.getState().startSession();
+    setPlacingGroups(false);
+    setMovingIslands(false);
+  }, []);
+
+  // Points pour tout un groupe : un événement par membre présent et dans la salle
+  const handleGroupPoint = useCallback(async (groupId: string, type: 'participation' | 'bavardage') => {
+    const gs = useGroupSessionStore.getState().activeSession;
+    const g = gs?.groups.find((x) => x.id === groupId);
+    if (!g) return;
+    const recipients = groupPointRecipients(g.memberIds, isStudentAbsent, isStudentOut);
+    if (recipients.length === 0) {
+      triggerErrorFeedback();
+      setUndoBanner({ visible: true, message: `${g.name} : personne de présent`, eventId: null, variant: 'error' });
+      return;
+    }
+    const ids: string[] = [];
+    for (const studentId of recipients) {
+      const ev = await addEvent(studentId, type === 'participation' ? EVENT_TYPES.PARTICIPATION : EVENT_TYPES.BAVARDAGE, null, `Groupe ${g.name}`, null, g.id);
+      if (ev) ids.push(ev.id);
+    }
+    if (ids.length === 0) {
+      triggerErrorFeedback();
+      return;
+    }
+    triggerActionSignature(type, distinctHaptics);
+    setUndoBanner({
+      visible: true,
+      message: `${g.name} · ${ACTION_LABELS[type] || type} (${ids.length} élève${ids.length > 1 ? 's' : ''})`,
+      eventId: null,
+      eventIds: ids,
+      variant: 'success',
+    });
+  }, [isStudentAbsent, isStudentOut, addEvent, distinctHaptics]);
+  const handleGroupPointRef = useRef(handleGroupPoint);
+  handleGroupPointRef.current = handleGroupPoint;
+
+  // Appui long sur l'en-tête d'un îlot : menu radial pour tout le groupe ; tap court : sa fiche
+  const handleGroupTouchStart = (groupId: string, pageX: number, pageY: number) => {
+    if (movingIslands) return;
+    clearLongPressTimer();
+    const containerPos = toContainerCoords(pageX, pageY);
+    currentStudentRef.current = null;
+    groupTapRef.current = groupId;
+    lastTouchRef.current = containerPos;
+    flickStartRef.current = containerPos;
+    flickHandledRef.current = true;
+    setTouchPos(containerPos);
+    setShowProgress(true);
+    Animated.timing(progressAnim, { toValue: 1, duration: LONG_PRESS_DURATION, useNativeDriver: true }).start();
+    longPressTimerRef.current = setTimeout(() => {
+      if (!isMountedRef.current) return;
+      groupTapRef.current = null;
+      setShowProgress(false);
+      const g = useGroupSessionStore.getState().activeSession?.groups.find((x) => x.id === groupId);
+      selectedGroupRef.current = groupId;
+      setRadialGroupName(g ? `Groupe ${g.name}` : 'Groupe');
+      setSelectedStudent(null);
+      menuOpenRef.current = true;
+      openMenu(containerPos.x, containerPos.y, containerBoundsRef.current);
+    }, LONG_PRESS_DURATION);
+  };
+
+  // Photo rapide : on photographie d'abord, on choisit le groupe ensuite
+  const handleTakeTpPhoto = useCallback(async (groupId?: string | null) => {
+    const gs = useGroupSessionStore.getState().activeSession;
+    if (!gs || !user?.id) return;
+    const uri = await takeTpPhoto();
+    if (!uri) return;
+    const photoId = Crypto.randomUUID();
+    let localUri: string;
+    try {
+      localUri = await storeTpPhotoLocally(uri, photoId);
+    } catch (err) {
+      console.error('[Session] TP photo store failed:', err);
+      Alert.alert('Photo', "La photo n'a pas pu être enregistrée sur le téléphone.");
+      return;
+    }
+    if (groupId !== undefined) {
+      await useGroupSessionStore.getState().addPhoto({
+        id: photoId, groupId, localUri, filePath: buildTpPhotoPath(user.id, gs.session.id, photoId),
       });
+      triggerLightFeedback();
+      return;
     }
+    setPhotoDraft({ id: photoId, localUri });
+  }, [user?.id]);
+
+  const savePhotoDraft = useCallback(async (groupId: string | null, caption: string) => {
+    const draft = photoDraft;
+    const gs = useGroupSessionStore.getState().activeSession;
+    setPhotoDraft(null);
+    if (!draft || !gs || !user?.id) return;
+    await useGroupSessionStore.getState().addPhoto({
+      id: draft.id, groupId, localUri: draft.localUri, caption,
+      filePath: buildTpPhotoPath(user.id, gs.session.id, draft.id),
+    });
+    triggerLightFeedback();
+  }, [photoDraft, user?.id]);
+
+  const handlePhotoPress = useCallback((photo: GroupSessionPhoto) => {
+    Alert.alert('Photo du TP', photo.caption || undefined, [
+      { text: 'Fermer', style: 'cancel' },
+      { text: 'Changer de groupe', onPress: () => { setSheetGroupId(null); setPhotoToMove(photo); } },
+      {
+        text: 'Supprimer',
+        style: 'destructive',
+        onPress: () => Alert.alert('Supprimer cette photo ?', 'Elle disparaîtra aussi pour les élèves.', [
+          { text: 'Annuler', style: 'cancel' },
+          { text: 'Supprimer', style: 'destructive', onPress: () => { void useGroupSessionStore.getState().deletePhoto(photo.id); } },
+        ]),
+      },
+    ]);
   }, []);
 
-  const handleGroupPress = useCallback((group: SessionGroupWithDetails) => {
-    setGradingGroup(group);
-  }, []);
-
-  const handleGradeChange = useCallback(async (groupId: string, criteriaId: string, points: number) => {
-    await useGroupSessionStore.getState().setGrade(groupId, criteriaId, points);
-    refreshLinkedGroupSession();
-  }, [refreshLinkedGroupSession]);
-
-  const handleMalusChange = useCallback(async (groupId: string, delta: number) => {
-    await useGroupSessionStore.getState().applyMalus(groupId, delta);
-    refreshLinkedGroupSession();
-  }, [refreshLinkedGroupSession]);
-
-  const handleCloseGrading = useCallback(() => {
-    setGradingGroup(null);
-  }, []);
-
-  const handleOpenGroupConfig = useCallback(() => {
-    setShowGroupConfig(true);
-  }, []);
-
-  const handleGroupConfigComplete = useCallback(() => {
-    setShowGroupConfig(false);
-    // Reload linked group session data with deep copy
-    const current = useGroupSessionStore.getState().activeSession;
-    if (current) {
-      setLinkedGroupSession({
-        ...current,
-        groups: current.groups.map(g => ({ ...g, grades: [...g.grades] })),
-      });
-      setHasLoadedGroups(true);
+  // Points donnés à tout un groupe : un geste = autant d'événements que de présents,
+  // regroupés par seconde pour compter les gestes
+  const groupGestures = useMemo(() => {
+    const out: Record<string, { plus: number; minus: number }> = {};
+    const seen = new Set<string>();
+    for (const e of events) {
+      if (!e.tp_group_id || (e.type !== 'participation' && e.type !== 'bavardage')) continue;
+      const key = `${e.tp_group_id}|${e.type}|${e.timestamp.slice(0, 19)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const entry = (out[e.tp_group_id] ??= { plus: 0, minus: 0 });
+      if (e.type === 'participation') entry.plus++;
+      else entry.minus++;
     }
-  }, []);
+    return out;
+  }, [events]);
+
+  // Îlots : pastilles d'en-tête (points de groupe, note, photos, état de la notation)
+  const islandGroups = useMemo<IslandGroup[]>(() => {
+    if (!linkedGroupSession) return [];
+    const criteriaIds = linkedGroupSession.criteria.map((c) => c.id);
+    const gestures = (groupId: string, type: 'participation' | 'bavardage') =>
+      (type === 'participation' ? groupGestures[groupId]?.plus : groupGestures[groupId]?.minus) ?? 0;
+    const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1).replace('.', ','));
+    return linkedGroupSession.groups.map((g) => {
+      const plus = gestures(g.id, 'participation');
+      const minus = gestures(g.id, 'bavardage');
+      const photos = linkedGroupSession.photos.filter((ph) => ph.groupId === g.id).length;
+      const graded = g.grades.length;
+      const pills: string[] = [];
+      if (plus > 0) pills.push(`+${plus}`);
+      if (minus > 0) pills.push(`−${minus}`);
+      if (photos > 0) pills.push(`${photos} photo${photos > 1 ? 's' : ''}`);
+      if (isGroupFullyGraded(criteriaIds, g.grades.map((gr) => gr.criteriaId))) {
+        pills.push(`${fmt(groupScore(g.grades.map((gr) => gr.pointsAwarded), g.conductMalus))} / ${fmt(linkedGroupSession.maxPossibleScore)}`);
+      } else if (!placingGroups) {
+        pills.push(graded > 0 ? 'En cours' : 'À noter');
+      }
+      return {
+        id: g.id, name: g.name, displayOrder: g.displayOrder, positionX: g.positionX, positionY: g.positionY,
+        memberIds: g.memberIds, pills,
+      };
+    });
+  }, [linkedGroupSession, groupGestures, placingGroups]);
+
+  const islandStateOf = useCallback((studentId: string) => ({
+    absent: isStudentAbsent(studentId),
+    out: isStudentOut(studentId),
+    plus: eventCountsByStudent[studentId]?.participation ?? 0,
+    minus: eventCountsByStudent[studentId]?.bavardage ?? 0,
+  }), [isStudentAbsent, isStudentOut, eventCountsByStudent]);
+
+  const labelOf = useCallback(
+    (studentId: string) => {
+      const st = students.find((x) => x.id === studentId);
+      return cellLabelById[studentId] ?? (st ? getDisplayName(st).split(' ')[0] : '?');
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [students, cellLabelById]
+  );
+
+  const sheetGroup = linkedGroupSession?.groups.find((g) => g.id === sheetGroupId) ?? null;
+  const chooserGroups = useMemo(
+    () => (linkedGroupSession?.groups ?? []).map((g) => ({
+      id: g.id, name: g.name, displayOrder: g.displayOrder,
+      subtitle: g.memberIds.slice(0, 2).map((m) => labelOf(m)).join(', ') + (g.memberIds.length > 2 ? '…' : ''),
+    })),
+    [linkedGroupSession?.groups, labelOf]
+  );
+
+  const stepSheet = useCallback((delta: number) => {
+    const groups = linkedGroupSession?.groups ?? [];
+    if (groups.length === 0 || !sheetGroupId) return;
+    const i = groups.findIndex((g) => g.id === sheetGroupId);
+    setSheetGroupId(groups[(i + delta + groups.length) % groups.length].id);
+  }, [linkedGroupSession?.groups, sheetGroupId]);
+
+  const renderGroups = () => {
+    if (isLoadingGroups) {
+      return (
+        <View style={styles.groupsEmpty}>
+          <ActivityIndicator color={theme.colors.primary} />
+        </View>
+      );
+    }
+    if (!linkedGroupSession || linkedGroupSession.groups.length === 0) {
+      return (
+        <View style={styles.groupsEmpty}>
+          <Text style={styles.groupsEmptyTitle}>Pas encore de groupes</Text>
+          <Text style={styles.groupsEmptyText}>Choisissez le TP, son barème, puis formez les groupes.</Text>
+          <Pressable style={styles.groupsEmptyBtn} onPress={openTpLaunch}>
+            <Text style={styles.groupsEmptyBtnText}>Lancer un TP</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    return (
+      <GroupIslandsCanvas
+        groups={islandGroups}
+        labelOf={labelOf}
+        stateOf={islandStateOf}
+        editing={movingIslands}
+        selectedStudentId={selectedStudent?.id ?? null}
+        onMoveGroup={(groupId, x, y) => { void useGroupSessionStore.getState().setGroupPosition(groupId, x, y); }}
+        onStudentTouchStart={(studentId, x, y) => {
+          const st = students.find((s2) => s2.id === studentId);
+          if (st) handleTouchStart(st, x, y);
+        }}
+        onHeaderTouchStart={handleGroupTouchStart}
+        onTouchMove={handleTouchMoveEvent}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={() => {
+          groupTapRef.current = null;
+          clearLongPressTimer();
+          if (menuOpenRef.current) closeMenu();
+        }}
+      />
+    );
+  };
 
   const handleCancelSession = () => {
     Alert.alert(
@@ -1030,7 +1420,7 @@ function NativeSessionScreen() {
               await cancelCurrentSession();
               // Clear group session store if it was loaded
               if (linkedGroupSession) {
-                useGroupSessionStore.setState({ activeSession: null });
+                useGroupSessionStore.getState().clearActiveSession();
               }
               router.replace('/(main)/');
             } catch (error) {
@@ -1690,20 +2080,62 @@ function NativeSessionScreen() {
           </>
         )}
 
+        {viewMode === 'groups' && linkedGroupSession && linkedGroupSession.groups.length > 0 && (
+          placingGroups ? (
+            <View style={styles.placeBar}>
+              <Text style={styles.placeTitle}>{linkedGroupSession.session.name}</Text>
+              <Text style={styles.placeText}>Étape 4 sur 4 : glissez chaque groupe là où il s'est installé. Vous pourrez les déplacer à tout moment.</Text>
+              <View style={styles.placeActions}>
+                <Pressable style={styles.placeSecondary} onPress={() => setFormerMode('edit')}>
+                  <Text style={styles.placeSecondaryText}>Modifier les groupes</Text>
+                </Pressable>
+                <Pressable style={styles.placePrimary} onPress={handleStartTp}>
+                  <Text style={styles.placePrimaryText}>Commencer le TP</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <>
+              <View style={styles.toolbar}>
+                <Pressable style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]} onPress={() => handleTakeTpPhoto()}>
+                  <Camera size={17} color={theme.colors.primary} strokeWidth={1.8} />
+                  <Text style={[styles.toolbarButtonText, { color: theme.colors.primary }]}>Photo</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]} onPress={() => setFormerMode('edit')}>
+                  <Users size={17} color={theme.colors.text} strokeWidth={1.8} />
+                  <Text style={styles.toolbarButtonText}>Groupes</Text>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.toolbarButton, movingIslands && styles.toolbarButtonOn, pressed && styles.toolbarButtonPressed]}
+                  onPress={() => setMovingIslands((v) => !v)}
+                >
+                  <Move size={17} color={movingIslands ? theme.colors.primary : theme.colors.text} strokeWidth={1.8} />
+                  <Text style={[styles.toolbarButtonText, movingIslands && { color: theme.colors.primary }]}>{movingIslands ? 'Fini' : 'Déplacer'}</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]} onPress={handleRandomStudent}>
+                  <Shuffle size={17} color={theme.colors.text} strokeWidth={1.8} />
+                  <Text style={styles.toolbarButtonText}>Aléatoire</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]} onPress={handleOpenRemarque}>
+                  <MessageSquare size={17} color={theme.colors.text} strokeWidth={1.8} />
+                  <Text style={styles.toolbarButtonText}>Remarque</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.toolbarButton, pressed && styles.toolbarButtonPressed]} onPress={handleOpenDeleteModal}>
+                  <Trash2 size={17} color={theme.colors.text} strokeWidth={1.8} />
+                  <Text style={styles.toolbarButtonText}>Supprimer</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.hint} numberOfLines={1}>
+                {movingIslands
+                  ? 'Glissez les groupes, puis « Fini »'
+                  : `${linkedGroupSession.session.name} · appui long : élève ou groupe · tap sur un groupe : sa fiche`}
+              </Text>
+            </>
+          )
+        )}
+
         <View style={styles.gridArea}>
-          {viewMode === 'plan' ? renderGrid() : (
-            <SessionGroupView
-              groups={linkedGroupSession?.groups ?? []}
-              criteria={linkedGroupSession?.criteria ?? []}
-              maxPossibleScore={linkedGroupSession?.maxPossibleScore ?? 0}
-              students={students}
-              isLoading={isLoadingGroups}
-              isEmpty={hasLoadedGroups && !linkedGroupSession}
-              tpName={linkedGroupSession?.session.name ?? null}
-              onGroupPress={linkedGroupSession ? handleGroupPress : undefined}
-              onConfigureGroups={handleOpenGroupConfig}
-            />
-          )}
+          {viewMode === 'plan' ? renderGrid() : renderGroups()}
         </View>
 
         {/* Étiquette sous le doigt pendant le glisser */}
@@ -1737,7 +2169,7 @@ function NativeSessionScreen() {
           submenuScale={submenuScale}
           submenuOpacity={submenuOpacity}
           bonusFillProgress={bonusFillProgress}
-          studentName={selectedStudent ? getDisplayName(selectedStudent) : null}
+          studentName={radialGroupName ?? (selectedStudent ? getDisplayName(selectedStudent) : null)}
           bounds={containerBoundsRef.current.width > 0 ? containerBoundsRef.current : undefined}
         />
       </View>
@@ -1747,7 +2179,7 @@ function NativeSessionScreen() {
         visible={undoBanner.visible}
         message={undoBanner.message}
         variant={undoBanner.variant}
-        canUndo={!!undoBanner.eventId}
+        canUndo={!!undoBanner.eventId || (undoBanner.eventIds?.length ?? 0) > 0}
         onUndo={handleUndoLastEvent}
         onDismiss={dismissUndoBanner}
       />
@@ -2208,31 +2640,90 @@ function NativeSessionScreen() {
         </View>
       </Modal>
 
-      {/* Group Configuration Sheet */}
-      {activeSession && user && (
-        <GroupConfigSheet
-          visible={showGroupConfig}
-          userId={user.id}
-          classId={activeSession.class_id}
-          sessionId={activeSession.id}
-          students={students}
-          onComplete={handleGroupConfigComplete}
-          onClose={() => setShowGroupConfig(false)}
-        />
-      )}
+      {/* TP en groupes : lancement (TP + barème) */}
+      <TpLaunchSheet
+        visible={showTpLaunch}
+        className={currentClass?.name ?? null}
+        templates={tpTemplates}
+        suggestedId={suggestedTpId}
+        onClose={() => setShowTpLaunch(false)}
+        onConfirm={handleTpLaunchConfirm}
+      />
 
-      {/* Group Grading Overlay */}
-      <GroupGradingOverlay
-        visible={gradingGroup !== null}
-        group={gradingGroup ? (linkedGroupSession?.groups.find(g => g.id === gradingGroup.id) ?? gradingGroup) : null}
-        groups={linkedGroupSession?.groups ?? []}
+      {/* TP en groupes : former / modifier les groupes */}
+      <GroupFormer
+        visible={formerMode !== null}
+        stepLabel={formerMode === 'create' ? `Étape 3 sur 4 · ${linkedGroupSession?.session.name ?? 'TP'}` : linkedGroupSession?.session.name ?? null}
+        students={formerStudents}
+        plan={formerPlan}
+        initialGroups={formerInitialGroups}
+        doneLabel={formerMode === 'create' ? 'Placer les groupes' : 'Enregistrer'}
+        loadLastGroups={formerMode === 'create' ? loadLastGroups : undefined}
+        onBack={handleFormerBack}
+        onDone={handleFormerDone}
+      />
+
+      {/* TP en groupes : fiche d'un groupe */}
+      <GroupSheet
+        visible={sheetGroup !== null}
+        group={sheetGroup}
         criteria={linkedGroupSession?.criteria ?? []}
-        maxPossibleScore={linkedGroupSession?.maxPossibleScore ?? 0}
-        students={students}
-        onGradeChange={handleGradeChange}
-        onMalusChange={handleMalusChange}
-        onSelectGroup={(g) => setGradingGroup(g)}
-        onClose={handleCloseGrading}
+        maxScore={linkedGroupSession?.maxPossibleScore ?? 0}
+        members={(sheetGroup?.memberIds ?? []).map((m) => ({ id: m, label: labelOf(m), absent: isStudentAbsent(m), out: isStudentOut(m) }))}
+        photos={(linkedGroupSession?.photos ?? []).filter((ph) => ph.groupId === sheetGroupId)}
+        photoLabel={(ph) => (ph.author === 'student' && ph.studentId ? labelOf(ph.studentId) : 'Vous')}
+        groupPoints={(sheetGroupId && groupGestures[sheetGroupId]) || { plus: 0, minus: 0 }}
+        onGroupPoint={(type) => { if (sheetGroupId) void handleGroupPoint(sheetGroupId, type); }}
+        onGrade={(criteriaId, points) => { if (sheetGroupId) void useGroupSessionStore.getState().setGrade(sheetGroupId, criteriaId, points); }}
+        onMalus={(delta) => { if (sheetGroupId) void useGroupSessionStore.getState().applyMalus(sheetGroupId, delta); }}
+        onComment={(text) => { if (sheetGroupId) void useGroupSessionStore.getState().setGroupComment(sheetGroupId, text); }}
+        onTakePhoto={() => { if (sheetGroupId) void handleTakeTpPhoto(sheetGroupId); }}
+        onPhotoPress={handlePhotoPress}
+        onMemberPress={(studentId) => { setSheetGroupId(null); setStudentToMove(studentId); }}
+        onPrev={() => stepSheet(-1)}
+        onNext={() => stepSheet(1)}
+        onClose={() => setSheetGroupId(null)}
+      />
+
+      {/* TP en groupes : ranger une photo prise depuis la barre d'outils */}
+      <GroupChooserSheet
+        visible={photoDraft !== null}
+        title="Pour quel groupe ?"
+        groups={chooserGroups}
+        previewUri={photoDraft?.localUri ?? null}
+        extraLabel="Toute la classe (photo de référence)"
+        onExtra={() => { void savePhotoDraft(null, ''); }}
+        withCaption
+        onPick={(groupId, caption) => { void savePhotoDraft(groupId, caption); }}
+        onClose={() => {
+          const draft = photoDraft;
+          setPhotoDraft(null);
+          if (draft) void deleteLocalTpPhoto(draft.localUri);
+        }}
+      />
+
+      {/* TP en groupes : changer une photo de groupe */}
+      <GroupChooserSheet
+        visible={photoToMove !== null}
+        title="Ranger la photo dans…"
+        groups={chooserGroups}
+        disabledId={photoToMove?.groupId ?? null}
+        extraLabel="Toute la classe (photo de référence)"
+        onExtra={() => { const ph = photoToMove; setPhotoToMove(null); if (ph) void useGroupSessionStore.getState().movePhoto(ph.id, null); }}
+        onPick={(groupId) => { const ph = photoToMove; setPhotoToMove(null); if (ph) void useGroupSessionStore.getState().movePhoto(ph.id, groupId); }}
+        onClose={() => setPhotoToMove(null)}
+      />
+
+      {/* TP en groupes : déplacer un élève (il prend les notes de son nouveau groupe) */}
+      <GroupChooserSheet
+        visible={studentToMove !== null}
+        title={studentToMove ? `Déplacer ${labelOf(studentToMove)} vers…` : ''}
+        groups={chooserGroups}
+        disabledId={linkedGroupSession?.groups.find((g) => studentToMove && g.memberIds.includes(studentToMove))?.id ?? null}
+        extraLabel="Retirer du groupe"
+        onExtra={() => { const sid = studentToMove; setStudentToMove(null); if (sid) void useGroupSessionStore.getState().removeStudent(sid); }}
+        onPick={(groupId) => { const sid = studentToMove; setStudentToMove(null); if (sid) void useGroupSessionStore.getState().moveStudent(sid, groupId); }}
+        onClose={() => setStudentToMove(null)}
       />
 
       {/* Stamp Category Selector Modal (double-tap) */}
@@ -3155,6 +3646,26 @@ const styles = StyleSheet.create({
   },
 
   // View mode toggle (track #EDEEF2 radius 10, actif = carte blanche)
+  groupsEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24 },
+  groupsEmptyTitle: { ...theme.typography.h3, color: theme.colors.text },
+  groupsEmptyText: { ...theme.typography.bodySmall, color: theme.colors.textSecondary, textAlign: 'center' },
+  groupsEmptyBtn: { marginTop: 8, height: 48, paddingHorizontal: 20, borderRadius: 14, backgroundColor: theme.colors.primary, justifyContent: 'center' },
+  groupsEmptyBtnText: { ...theme.typography.bodyMedium, fontFamily: theme.fonts.bodySemibold, color: '#FFFFFF' },
+  placeBar: {
+    marginHorizontal: 12, marginBottom: 6, padding: 12, gap: 8, borderRadius: 14,
+    backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border,
+  },
+  placeTitle: { ...theme.typography.label, color: theme.colors.primary },
+  placeText: { ...theme.typography.caption, color: theme.colors.textSecondary, lineHeight: 17 },
+  placeActions: { flexDirection: 'row', gap: 8 },
+  placeSecondary: {
+    height: 48, paddingHorizontal: 12, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.borderStrong,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  placeSecondaryText: { ...theme.typography.label, color: theme.colors.text },
+  placePrimary: { flex: 1, height: 48, borderRadius: 12, backgroundColor: theme.colors.action, alignItems: 'center', justifyContent: 'center' },
+  placePrimaryText: { ...theme.typography.bodyMedium, fontFamily: theme.fonts.bodySemibold, color: '#FFFFFF' },
+  toolbarButtonOn: { backgroundColor: theme.colors.primarySoft },
   viewModeToggle: {
     flex: 1,
     flexDirection: 'row',
