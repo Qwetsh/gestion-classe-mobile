@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,9 +16,14 @@ import {
   useClassStore,
   useRoomStore,
   useSessionStore,
+  useClassGroupStore,
 } from '../../../stores';
 import { theme } from '../../../constants/theme';
+import { classGroupColor } from '../../../constants/classGroupColors';
 import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
+import { getLastGroupSessionForClass } from '../../../services/database';
+import { fetchLessonGroupFor } from '../../../services/lessonGroup';
+import { nextGroupForClass } from '../../../utils/sessionRoster';
 import { Class, Room } from '../../../types';
 
 export default function StartSessionScreen() {
@@ -30,6 +35,13 @@ export default function StartSessionScreen() {
   const [selectedClass, setSelectedClass] = useState<Class | null>(null);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [topic, setTopic] = useState('');
+  // Groupe de classe (demi-groupe) : null = classe entière. Proposé d'après l'emploi du temps,
+  // sinon en alternance ; un tap de l'enseignant l'emporte toujours sur la proposition.
+  const { groupsByClass, membersByClass, loadForClass: loadClassGroups } = useClassGroupStore();
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [groupHint, setGroupHint] = useState<string | null>(null);
+  const groupTouchedRef = useRef(false);
+  const groupRequestRef = useRef(0);
   // Instant de référence pour la note de cours (figé à l'ouverture de l'écran)
   const [startedAt, setStartedAt] = useState(() => new Date());
 
@@ -39,6 +51,9 @@ export default function StartSessionScreen() {
       setSelectedClass(null);
       setSelectedRoom(null);
       setTopic('');
+      setSelectedGroupId(null);
+      setGroupHint(null);
+      groupTouchedRef.current = false;
       setStartedAt(new Date());
       if (user?.id) {
         loadClasses(user.id);
@@ -48,11 +63,66 @@ export default function StartSessionScreen() {
     }, [user?.id, loadClasses, loadRooms, loadActiveSession])
   );
 
+  const selectedClassId = selectedClass?.id ?? null;
+  const classGroups = selectedClassId ? groupsByClass[selectedClassId] ?? [] : [];
+  const classMembers = selectedClassId ? membersByClass[selectedClassId] ?? [] : [];
+  const hasGroups = classGroups.length > 0;
+  const selectedGroup = classGroups.find((g) => g.id === selectedGroupId) ?? null;
+
+  // À chaque classe choisie : groupes, puis proposition (alternance, puis emploi du temps en ligne)
+  useEffect(() => {
+    const request = ++groupRequestRef.current;
+    const isCurrent = () => groupRequestRef.current === request;
+    groupTouchedRef.current = false;
+    setSelectedGroupId(null);
+    setGroupHint(null);
+    if (!selectedClassId) return;
+
+    (async () => {
+      await loadClassGroups(selectedClassId);
+      const groups = useClassGroupStore.getState().groupsByClass[selectedClassId] ?? [];
+      if (!isCurrent() || groups.length === 0) return;
+
+      const last = await getLastGroupSessionForClass(selectedClassId).catch(() => null);
+      const alternated = nextGroupForClass(groups, last?.group_id ?? null);
+      if (!isCurrent() || groupTouchedRef.current) return;
+      if (alternated) {
+        setSelectedGroupId(alternated);
+        setGroupHint('Proposé en alternance avec la dernière séance en groupe');
+      }
+
+      const lesson = await fetchLessonGroupFor(
+        selectedClassId,
+        startedAt,
+        groups.map((g) => g.id)
+      );
+      if (!lesson || !isCurrent() || groupTouchedRef.current) return;
+      setSelectedGroupId(lesson.groupId);
+      setGroupHint(`D'après l'emploi du temps (${lesson.label})`);
+    })();
+  }, [selectedClassId, startedAt, loadClassGroups]);
+
+  const chooseGroup = (groupId: string | null) => {
+    groupTouchedRef.current = true;
+    setSelectedGroupId(groupId);
+    setGroupHint(null);
+  };
+
+  // Numéros des étapes : l'étape Groupe n'existe que si la classe a des groupes
+  const roomStep = hasGroups ? 3 : 2;
+  const topicStep = roomStep + 1;
+
   const handleStartSession = async () => {
     if (!user?.id || !selectedClass || !selectedRoom) return;
 
     try {
-      const session = await startSession(user.id, selectedClass.id, selectedRoom.id, topic || null);
+      const session = await startSession(
+        user.id,
+        selectedClass.id,
+        selectedRoom.id,
+        topic || null,
+        hasGroups ? selectedGroupId : null
+      );
       router.replace(`/(main)/session/${session.id}`);
     } catch (error) {
       console.error('Failed to start session:', error);
@@ -119,12 +189,80 @@ export default function StartSessionScreen() {
             </View>
           )}
           {/* Note écrite depuis l'accueil web pour le cours qui commence */}
-          {selectedClass && <LessonNoteBanner classId={selectedClass.id} at={startedAt} compact />}
+          {selectedClass && (
+            <LessonNoteBanner
+              classId={selectedClass.id}
+              at={startedAt}
+              groupId={hasGroups ? selectedGroupId : null}
+              compact
+            />
+          )}
         </View>
 
-        {/* 2 · Choisir une salle */}
+        {/* 2 · Groupe (seulement si la classe a des groupes de classe) */}
+        {hasGroups && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>2 · GROUPE</Text>
+            <View style={styles.groupChipsRow}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.groupChip,
+                  selectedGroupId === null && styles.groupChipSelected,
+                  pressed && selectedGroupId !== null && styles.groupChipPressed,
+                ]}
+                onPress={() => chooseGroup(null)}
+              >
+                <Text
+                  style={[
+                    styles.groupChipText,
+                    selectedGroupId === null && styles.groupChipTextSelected,
+                  ]}
+                >
+                  Classe entière
+                </Text>
+              </Pressable>
+              {classGroups.map((g, index) => {
+                const isSelected = selectedGroupId === g.id;
+                const color = classGroupColor(g.color, index);
+                const count = classMembers.filter((m) => m.group_id === g.id).length;
+                return (
+                  <Pressable
+                    key={g.id}
+                    style={({ pressed }) => [
+                      styles.groupChip,
+                      isSelected && { backgroundColor: color.main, borderColor: color.main },
+                      pressed && !isSelected && styles.groupChipPressed,
+                    ]}
+                    onPress={() => chooseGroup(g.id)}
+                  >
+                    <View
+                      style={[
+                        styles.groupDot,
+                        { backgroundColor: isSelected ? theme.colors.textInverse : color.main },
+                      ]}
+                    />
+                    <Text
+                      style={[styles.groupChipText, isSelected && styles.groupChipTextSelected]}
+                      numberOfLines={1}
+                    >
+                      {g.name}
+                    </Text>
+                    <Text
+                      style={[styles.groupChipCount, isSelected && styles.groupChipTextSelected]}
+                    >
+                      {count}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {groupHint && <Text style={styles.groupHint}>{groupHint}</Text>}
+          </View>
+        )}
+
+        {/* Choisir une salle */}
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>2 · CHOISIR UNE SALLE</Text>
+          <Text style={styles.sectionLabel}>{roomStep} · CHOISIR UNE SALLE</Text>
           {roomsLoading ? (
             <View style={styles.loadingSection}>
               <ActivityIndicator color={theme.colors.primary} />
@@ -176,7 +314,7 @@ export default function StartSessionScreen() {
         {/* 3 · Theme */}
         <View style={styles.section}>
           <View style={styles.sectionLabelRow}>
-            <Text style={styles.sectionLabel}>3 · THÈME DE LA SÉANCE</Text>
+            <Text style={styles.sectionLabel}>{topicStep} · THÈME DE LA SÉANCE</Text>
             <Text style={styles.optionalBadge}>Optionnel</Text>
           </View>
           <View style={styles.topicInputContainer}>
@@ -201,7 +339,9 @@ export default function StartSessionScreen() {
       <View style={styles.footer}>
         {selectedClass && selectedRoom && (
           <Text style={styles.selectionSummary}>
-            {selectedClass.name} · {selectedRoom.name}
+            {[selectedClass.name, hasGroups ? selectedGroup?.name ?? 'Classe entière' : null, selectedRoom.name]
+              .filter(Boolean)
+              .join(' · ')}
           </Text>
         )}
         <Pressable
@@ -347,6 +487,55 @@ const styles = StyleSheet.create({
   },
   classTileTextSelected: {
     color: theme.colors.textInverse,
+  },
+
+  // Groupes en pastilles
+  groupChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  groupChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.full,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+  },
+  groupChipPressed: {
+    backgroundColor: theme.colors.surfaceHover,
+  },
+  groupChipSelected: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  groupDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  groupChipText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 15,
+    color: theme.colors.text,
+  },
+  groupChipCount: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    color: theme.colors.textTertiary,
+  },
+  groupChipTextSelected: {
+    color: theme.colors.textInverse,
+  },
+  groupHint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12.5,
+    color: theme.colors.textTertiary,
+    marginTop: theme.spacing.sm,
   },
 
   // Salles en liste

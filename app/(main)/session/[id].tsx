@@ -43,8 +43,11 @@ import {
   useGroupSessionStore,
   useStampStore,
   useSettingsStore,
+  useClassGroupStore,
   StudentWithMapping,
 } from '../../../stores';
+import { resolveSessionRoster } from '../../../utils/sessionRoster';
+import { classGroupColor } from '../../../constants/classGroupColors';
 import {
   MENU_ITEMS,
   FLICK_PAUSE_DURATION,
@@ -65,6 +68,7 @@ import { useStudentTagStore } from '../../../stores/studentTagStore';
 import * as Haptics from 'expo-haptics';
 import { triggerActionSignature, triggerErrorFeedback, triggerLightFeedback } from '../../../utils/haptics';
 import {
+  getGroupPlan,
   getGroupSessionByLinkedSessionId,
   suggestTemplateForClass,
   getLastTpGroupsForClass,
@@ -210,6 +214,9 @@ function NativeSessionScreen() {
   const { studentsByClass, loadStudentsForClass } = useStudentStore();
   const { loadRoomById, currentRoom } = useRoomStore();
   const { loadPlan, currentPlan } = usePlanStore();
+  // Groupe de classe (demi-groupe) de la séance : roster et plan du groupe
+  const { groupsByClass, membersByClass, loadForClass: loadClassGroups } = useClassGroupStore();
+  const [groupPlanPositions, setGroupPlanPositions] = useState<Record<string, string> | null>(null);
   const {
     activeSession,
     events,
@@ -432,9 +439,41 @@ function NativeSessionScreen() {
     }
   }, [timerTick]); // Include timerTick to trigger re-renders
 
-  const students: StudentWithMapping[] = activeSession?.class_id
-    ? studentsByClass[activeSession.class_id] || []
-    : [];
+  // Groupe de la séance : null = classe entière. Un groupe supprimé depuis (absent des groupes
+  // chargés de la classe) retombe sur la classe entière, comme côté serveur (ON DELETE SET NULL).
+  const sessionClassId = activeSession?.class_id ?? null;
+  const loadedClassGroups = sessionClassId ? groupsByClass[sessionClassId] : undefined;
+  const sessionGroup = activeSession?.group_id
+    ? loadedClassGroups?.find((g) => g.id === activeSession.group_id) ?? null
+    : null;
+  const sessionGroupId =
+    activeSession?.group_id && (loadedClassGroups === undefined || sessionGroup)
+      ? activeSession.group_id
+      : null;
+  const sessionGroupColor = sessionGroup
+    ? classGroupColor(sessionGroup.color, Math.max(0, loadedClassGroups?.indexOf(sessionGroup) ?? 0))
+    : null;
+  const sessionClassMembers = sessionClassId ? membersByClass[sessionClassId] : undefined;
+
+  // Roster : élèves du groupe (ou de la classe) et plan filtré. Il alimente la grille ET toutes
+  // les listes (présents, tirage au sort, non évalués, formation des groupes de TP...).
+  const roster = useMemo(() => {
+    const classStudents: StudentWithMapping[] = sessionClassId
+      ? studentsByClass[sessionClassId] || []
+      : [];
+    const memberIds = sessionGroupId
+      ? (sessionClassMembers ?? []).filter((m) => m.group_id === sessionGroupId).map((m) => m.student_id)
+      : null;
+    return resolveSessionRoster({
+      classStudents,
+      groupId: sessionGroupId,
+      memberIds,
+      groupPlanPositions,
+      classPlanPositions: currentPlan?.positions ?? null,
+    });
+  }, [sessionClassId, studentsByClass, sessionGroupId, sessionClassMembers, groupPlanPositions, currentPlan]);
+
+  const students: StudentWithMapping[] = roster.students;
 
   // Check if a student is absent
   const isStudentAbsent = useCallback((studentId: string): boolean => {
@@ -921,6 +960,12 @@ function NativeSessionScreen() {
           loadRoomById(activeSession.room_id),
           loadStudentsForClass(activeSession.class_id),
           loadPlan(activeSession.class_id, activeSession.room_id),
+          loadClassGroups(activeSession.class_id),
+          activeSession.group_id
+            ? getGroupPlan(activeSession.class_id, activeSession.room_id, activeSession.group_id).then(
+                (plan) => setGroupPlanPositions(plan?.positions ?? null)
+              )
+            : Promise.resolve(setGroupPlanPositions(null)),
         ]);
         // Load oral evaluations for the class
         if (user?.id) {
@@ -1124,9 +1169,9 @@ function NativeSessionScreen() {
       rows: currentRoom.grid_rows,
       cols: currentRoom.grid_cols,
       isDisabled: (r: number, c: number) => off.has(`${r},${c}`),
-      studentAt: (r: number, c: number) => getStudentAtPosition(currentPlan.positions, r, c),
+      studentAt: (r: number, c: number) => getStudentAtPosition(roster.positions, r, c),
     };
-  }, [currentRoom, currentPlan]);
+  }, [currentRoom, currentPlan, roster.positions]);
 
   const formerInitialGroups = useMemo<FormerGroup[]>(
     () => formerMode === 'edit' && linkedGroupSession
@@ -1736,8 +1781,8 @@ function NativeSessionScreen() {
       disabledCells = [];
     }
 
-    return { grid_rows, grid_cols, cellSize, gap, disabledCells, positions: currentPlan.positions };
-  }, [currentRoom, currentPlan, compactGrid]);
+    return { grid_rows, grid_cols, cellSize, gap, disabledCells, positions: roster.positions };
+  }, [currentRoom, currentPlan, compactGrid, roster.positions]);
 
   // ---- Étiquettes : glisser-déposer sur un élève ----
   const showTagToast = useCallback((msg: string) => {
@@ -1972,11 +2017,21 @@ function NativeSessionScreen() {
         </Pressable>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle} numberOfLines={1}>
-            {currentClass?.name || 'Séance'}{currentRoom ? ` · ${currentRoom.name}` : ''}
+            {currentClass?.name || 'Séance'}
+            {sessionGroup ? ` · ${sessionGroup.name}` : ''}
+            {currentRoom ? ` · ${currentRoom.name}` : ''}
           </Text>
           <View style={styles.chronoRow}>
             <View style={styles.chronoDot} />
             <Text style={styles.chronoText}>{elapsedSessionMin} min</Text>
+            {sessionGroup && sessionGroupColor && (
+              <View style={[styles.groupBadge, { backgroundColor: sessionGroupColor.soft }]}>
+                <View style={[styles.groupBadgeDot, { backgroundColor: sessionGroupColor.main }]} />
+                <Text style={[styles.groupBadgeText, { color: sessionGroupColor.main }]}>
+                  {students.length} élèves
+                </Text>
+              </View>
+            )}
           </View>
         </View>
         <Pressable
@@ -2946,6 +3001,24 @@ const styles = StyleSheet.create({
   headerCenter: {
     flex: 1,
     alignItems: 'center',
+  },
+  groupBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+    borderRadius: 999,
+  },
+  groupBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  groupBadgeText: {
+    fontSize: 11.5,
+    fontWeight: '600',
   },
   headerTitle: {
     fontFamily: theme.fonts.bodyBold,

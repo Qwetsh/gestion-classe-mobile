@@ -50,7 +50,14 @@ interface SessionState {
   _pendingEventKeys: Set<string>;
 
   // Actions
-  startSession: (userId: string, classId: string, roomId: string, topic?: string | null) => Promise<Session>;
+  /** groupId : groupe de classe (demi-groupe) de la séance ; null/absent = classe entière */
+  startSession: (
+    userId: string,
+    classId: string,
+    roomId: string,
+    topic?: string | null,
+    groupId?: string | null
+  ) => Promise<Session>;
   endCurrentSession: () => Promise<void>;
   cancelCurrentSession: () => Promise<void>;
   loadActiveSession: (userId: string) => Promise<void>;
@@ -87,10 +94,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   error: null,
   _pendingEventKeys: new Set<string>(),
 
-  startSession: async (userId: string, classId: string, roomId: string, topic?: string | null) => {
+  startSession: async (userId, classId, roomId, topic, groupId) => {
     set({ isLoading: true, error: null });
     try {
-      const session = await createSession(userId, classId, roomId, topic);
+      const session = await createSession(userId, classId, roomId, topic, groupId ?? null);
       set({
         activeSession: session,
         isSessionActive: true,
@@ -99,7 +106,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSorties: {},
         isLoading: false,
       });
-      console.log('[sessionStore] Session started:', session.id, 'topic:', topic);
+      console.log('[sessionStore] Session started:', session.id, 'topic:', topic, 'group:', groupId ?? null);
       return session;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to start session';

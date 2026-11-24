@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useClassStore, useRoomStore, useHistoryStore, useStudentStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
-import { type Event, type EventType } from '../../../services/database';
+import { type Event, type EventType, getClassGroupById } from '../../../services/database';
 import { exportSessionPdf } from '../../../services/pdfExport';
 
 // Event type display config
@@ -78,6 +78,7 @@ export default function SessionDetailScreen() {
   } = useHistoryStore();
 
   const [isExporting, setIsExporting] = useState(false);
+  const [groupName, setGroupName] = useState<string | null>(null);
 
   // Load session detail on mount
   useEffect(() => {
@@ -92,6 +93,12 @@ export default function SessionDetailScreen() {
       loadClassById(selectedSession.class_id);
       loadRoomById(selectedSession.room_id);
       loadStudentsForClass(selectedSession.class_id);
+    }
+    setGroupName(null);
+    if (selectedSession?.group_id) {
+      getClassGroupById(selectedSession.group_id)
+        .then((g) => setGroupName(g?.name ?? null))
+        .catch(() => setGroupName(null));
     }
   }, [selectedSession?.id]);
 
@@ -217,7 +224,7 @@ export default function SessionDetailScreen() {
     );
   }
 
-  const className = classMap.get(selectedSession.class_id) || 'Classe inconnue';
+  const className = `${classMap.get(selectedSession.class_id) || 'Classe inconnue'}${groupName ? ` · ${groupName}` : ''}`;
   const roomName = roomMap.get(selectedSession.room_id) || 'Salle inconnue';
   const duration = formatDuration(selectedSession.started_at, selectedSession.ended_at);
   const dateStr = formatDate(selectedSession.started_at);

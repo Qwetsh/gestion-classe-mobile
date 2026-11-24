@@ -16,7 +16,12 @@ import { router } from 'expo-router';
 import { ChevronRight, Clock, Search, X } from 'lucide-react-native';
 import { useAuthStore, useClassStore, useRoomStore, useHistoryStore, useSyncStore } from '../../../stores';
 import { theme } from '../../../constants/theme';
-import { type Session, deleteSession, getGroupSessionByLinkedSessionId } from '../../../services/database';
+import {
+  type Session,
+  deleteSession,
+  getGroupSessionByLinkedSessionId,
+  getClassGroupsByUserId,
+} from '../../../services/database';
 
 // Helper to format duration
 function formatDuration(startedAt: string, endedAt: string | null): string {
@@ -148,6 +153,15 @@ export default function HistoryScreen() {
     return map;
   }, [rooms]);
 
+  // Groupes de classe (demi-groupes) : nom affiché à côté de la classe
+  const [groupMap, setGroupMap] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!user?.id) return;
+    getClassGroupsByUserId(user.id)
+      .then((groups) => setGroupMap(new Map(groups.map((g) => [g.id, g.name]))))
+      .catch(() => setGroupMap(new Map()));
+  }, [user?.id]);
+
   // Filter sessions by search query
   const filteredSessions = useMemo(() => {
     if (!searchQuery.trim()) return sessions;
@@ -248,7 +262,8 @@ export default function HistoryScreen() {
   };
 
   const renderSessionItem = ({ item }: { item: Session }) => {
-    const className = classMap.get(item.class_id) || 'Classe inconnue';
+    const groupName = item.group_id ? groupMap.get(item.group_id) : undefined;
+    const className = `${classMap.get(item.class_id) || 'Classe inconnue'}${groupName ? ` · ${groupName}` : ''}`;
     const roomName = roomMap.get(item.room_id) || 'Salle inconnue';
     const duration = formatDuration(item.started_at, item.ended_at);
     const timeStr = formatTime(item.started_at);

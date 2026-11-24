@@ -1,4 +1,4 @@
-import { getRoomById, getPlan, getGroupPlan } from '../database';
+import { getRoomById, getPlan, getGroupPlan, getMemberIds } from '../database';
 import { supabase, isSupabaseConfigured } from '../supabase';
 import { normalizePositions, type Positions } from './outboxLogic';
 
@@ -44,13 +44,20 @@ export async function buildPlacementFromLocalPlan(
   const room = await getRoomById(roomId);
   if (!room) return null;
   const groupPlan = groupId ? await getGroupPlan(classId, roomId, groupId) : null;
-  const plan = groupPlan ?? (await getPlan(classId, roomId));
+  const hasGroupPlan = !!groupPlan && Object.keys(groupPlan.positions ?? {}).length > 0;
+  const plan = hasGroupPlan ? groupPlan : await getPlan(classId, roomId);
+  let positions = normalizePositions(plan?.positions);
+  if (groupId) {
+    // Demi-groupe : les élèves de l'autre groupe ne sont pas dans la salle (même règle que la séance)
+    const members = new Set(await getMemberIds(groupId));
+    positions = Object.fromEntries(Object.entries(positions).filter(([, sid]) => members.has(sid)));
+  }
   return {
     roomId,
     roomName: room.name,
     gridRows: room.grid_rows,
     gridCols: room.grid_cols,
-    positions: normalizePositions(plan?.positions),
+    positions,
     disabledCells: parseCells(room.disabled_cells),
     source: 'local',
   };
