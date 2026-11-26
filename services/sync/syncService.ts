@@ -1,5 +1,6 @@
 import * as Crypto from 'expo-crypto';
 import { supabase, isSupabaseConfigured } from '../supabase';
+import { selectAll, selectAllIn } from './fetchAll';
 import { queryAll, queryFirst, executeSql, executeTransaction } from '../database/client';
 import { firstFreeSlot, CARD_SLOTS } from '../../utils/stampSlots';
 import {
@@ -352,24 +353,24 @@ async function syncPlans(userId: string): Promise<number> {
   const roomIds = [...new Set(unsynced.map(p => p.room_id))];
 
   // Single query to verify all classes exist on server
-  const { data: existingClasses } = await supabase
+  const { data: existingClasses } = await selectAllIn(classIds, (ids) => supabase!
     .from('classes')
     .select('id')
-    .in('id', classIds);
+    .in('id', ids));
   const serverClassIds = new Set((existingClasses || []).map(c => c.id));
 
   // Single query to verify all rooms exist on server
-  const { data: existingRooms } = await supabase
+  const { data: existingRooms } = await selectAllIn(roomIds, (ids) => supabase!
     .from('rooms')
     .select('id')
-    .in('id', roomIds);
+    .in('id', ids));
   const serverRoomIds = new Set((existingRooms || []).map(r => r.id));
 
   // Single query to get existing plans on server
-  const { data: existingPlans } = await supabase
+  const { data: existingPlans } = await selectAllIn(classIds, (ids) => supabase!
     .from('class_room_plans')
     .select('id, class_id, room_id')
-    .in('class_id', classIds);
+    .in('class_id', ids));
 
   // Build lookup map: "class_id:room_id" -> server plan id
   const serverPlanMap = new Map<string, string>();
@@ -696,8 +697,14 @@ async function syncClassGroups(): Promise<number> {
   if (unsynced.length === 0) return 0;
 
   const classIds = [...new Set(unsynced.map(g => g.class_id))];
-  const { data: existingClasses } = await supabase.from('classes').select('id').in('id', classIds);
-  const serverClassIds = new Set((existingClasses || []).map(c => c.id));
+  const { data: existingClasses, error: classesCheckError } = await selectAllIn(classIds, (ids) => supabase!.from('classes').select('id').in('id', ids));
+  // Sans réponse du serveur, on ne sait pas quelles classes existent : ne rien supprimer en local
+  // (une coupure réseau faisait passer toutes les classes pour absentes, et les groupes pas encore
+  // envoyés étaient effacés du téléphone).
+  if (classesCheckError || existingClasses === null) {
+    throw new Error(`Class groups: ${classesCheckError?.message ?? 'lecture des classes impossible'}`);
+  }
+  const serverClassIds = new Set(existingClasses.map(c => c.id));
 
   const toPush = unsynced.filter(g => serverClassIds.has(g.class_id));
   for (const g of unsynced) {
@@ -744,8 +751,8 @@ async function syncClassGroupMembers(): Promise<number> {
   const groupIds = [...new Set(unsynced.map(m => m.group_id))];
   const studentIds = [...new Set(unsynced.map(m => m.student_id))];
   const [{ data: serverGroups }, { data: serverStudents }] = await Promise.all([
-    supabase.from('class_groups').select('id').in('id', groupIds),
-    supabase.from('students').select('id').in('id', studentIds),
+    selectAllIn(groupIds, (ids) => supabase!.from('class_groups').select('id').in('id', ids)),
+    selectAllIn(studentIds, (ids) => supabase!.from('students').select('id').in('id', ids)),
   ]);
   const okGroups = new Set((serverGroups || []).map(g => g.id));
   const okStudents = new Set((serverStudents || []).map(s => s.id));
@@ -797,8 +804,8 @@ async function syncClassGroupPlans(userId: string): Promise<number> {
   const groupIds = [...new Set(unsynced.map(p => p.group_id))];
   const roomIds = [...new Set(unsynced.map(p => p.room_id))];
   const [{ data: serverGroups }, { data: serverRooms }] = await Promise.all([
-    supabase.from('class_groups').select('id').in('id', groupIds),
-    supabase.from('rooms').select('id').in('id', roomIds),
+    selectAllIn(groupIds, (ids) => supabase!.from('class_groups').select('id').in('id', ids)),
+    selectAllIn(roomIds, (ids) => supabase!.from('rooms').select('id').in('id', ids)),
   ]);
   const okGroups = new Set((serverGroups || []).map(g => g.id));
   const okRooms = new Set((serverRooms || []).map(r => r.id));
@@ -958,10 +965,10 @@ async function syncGradingCriteria(): Promise<number> {
 
   // Filter out criteria whose session hasn't been synced yet
   const sessionIds = [...new Set(unsynced.map(c => c.session_id))];
-  const { data: syncedSessions } = await supabase
+  const { data: syncedSessions } = await selectAllIn(sessionIds, (ids) => supabase!
     .from('group_sessions')
     .select('id')
-    .in('id', sessionIds);
+    .in('id', ids));
   const serverSessionIds = new Set((syncedSessions || []).map(s => s.id));
 
   const toSync = unsynced
@@ -1012,10 +1019,10 @@ async function syncSessionGroups(): Promise<number> {
 
   // Filter out groups whose session hasn't been synced yet
   const sessionIds = [...new Set(unsynced.map(g => g.session_id))];
-  const { data: syncedSessions } = await supabase
+  const { data: syncedSessions } = await selectAllIn(sessionIds, (ids) => supabase!
     .from('group_sessions')
     .select('id')
-    .in('id', sessionIds);
+    .in('id', ids));
   const serverSessionIds = new Set((syncedSessions || []).map(s => s.id));
 
   const toSync = unsynced
@@ -1064,10 +1071,10 @@ async function syncGroupMembers(): Promise<number> {
 
   // Filter out members whose group hasn't been synced yet
   const groupIds = [...new Set(unsynced.map(m => m.group_id))];
-  const { data: syncedGroups } = await supabase
+  const { data: syncedGroups } = await selectAllIn(groupIds, (ids) => supabase!
     .from('session_groups')
     .select('id')
-    .in('id', groupIds);
+    .in('id', ids));
   const serverGroupIds = new Set((syncedGroups || []).map(g => g.id));
 
   const toSync = unsynced
@@ -1112,18 +1119,18 @@ async function syncGroupGrades(): Promise<number> {
 
   // Filter out grades whose group hasn't been synced yet
   const groupIds = [...new Set(unsynced.map(gr => gr.group_id))];
-  const { data: syncedGroups } = await supabase
+  const { data: syncedGroups } = await selectAllIn(groupIds, (ids) => supabase!
     .from('session_groups')
     .select('id')
-    .in('id', groupIds);
+    .in('id', ids));
   const serverGroupIds = new Set((syncedGroups || []).map(g => g.id));
 
   // Also filter by criteria synced
   const criteriaIds = [...new Set(unsynced.map(gr => gr.criteria_id))];
-  const { data: syncedCriteria } = await supabase
+  const { data: syncedCriteria } = await selectAllIn(criteriaIds, (ids) => supabase!
     .from('grading_criteria')
     .select('id')
-    .in('id', criteriaIds);
+    .in('id', ids));
   const serverCriteriaIds = new Set((syncedCriteria || []).map(c => c.id));
 
   const toSync = unsynced
@@ -1200,12 +1207,12 @@ async function syncGroupSessionPhotos(): Promise<number> {
   if (unsynced.length === 0) return 0;
 
   const sessionIds = [...new Set(unsynced.map(p => p.session_id))];
-  const { data: serverSessions } = await supabase.from('group_sessions').select('id').in('id', sessionIds);
+  const { data: serverSessions } = await selectAllIn(sessionIds, (ids) => supabase!.from('group_sessions').select('id').in('id', ids));
   const serverSessionIds = new Set((serverSessions || []).map(r => r.id));
   const groupIds = [...new Set(unsynced.map(p => p.group_id).filter((g): g is string => !!g))];
   const serverGroupIds = new Set<string>();
   if (groupIds.length > 0) {
-    const { data: serverGroups } = await supabase.from('session_groups').select('id').in('id', groupIds);
+    const { data: serverGroups } = await selectAllIn(groupIds, (ids) => supabase!.from('session_groups').select('id').in('id', ids));
     for (const r of serverGroups || []) serverGroupIds.add(r.id);
   }
 
@@ -1324,10 +1331,10 @@ async function syncTpTemplateCriteria(): Promise<number> {
 
   // Filter out criteria whose template hasn't been synced yet
   const templateIds = [...new Set(unsynced.map(c => c.template_id))];
-  const { data: syncedTemplates } = await supabase
+  const { data: syncedTemplates } = await selectAllIn(templateIds, (ids) => supabase!
     .from('tp_templates')
     .select('id')
-    .in('id', templateIds);
+    .in('id', ids));
   const serverTemplateIds = new Set((syncedTemplates || []).map(t => t.id));
 
   const toSync = unsynced
@@ -1485,11 +1492,11 @@ async function syncStampCards(userId: string): Promise<number> {
   // Le serveur peut deja avoir une carte (eleve, numero) creee par le web ou l'espace eleve avec un
   // autre UUID : on adopte la sienne (remapping local, pas de DELETE donc pas de cascade).
   const studentIds = [...new Set(unsynced.map(c => c.student_id))];
-  const { data: serverCards } = await supabase
+  const { data: serverCards } = await selectAllIn(studentIds, (ids) => supabase!
     .from('stamp_cards')
     .select('id, student_id, card_number')
-    .in('student_id', studentIds)
-    .eq('user_id', userId);
+    .in('student_id', ids)
+    .eq('user_id', userId));
   const serverCardMap = new Map<string, string>();
   for (const sc of (serverCards || [])) serverCardMap.set(`${sc.student_id}|${sc.card_number}`, sc.id);
 
@@ -1550,7 +1557,7 @@ async function syncStamps(userId: string): Promise<number> {
   // Seuls les tampons dont la carte est deja sur le serveur peuvent partir (FK). Les autres ne sont
   // plus ecartes en silence : ils comptent comme des erreurs, visibles dans le resultat de synchro.
   const cardIds = [...new Set(unsynced.map(s => s.card_id))];
-  const { data: syncedCards, error: cardsErr } = await supabase.from('stamp_cards').select('id').in('id', cardIds).eq('user_id', userId);
+  const { data: syncedCards, error: cardsErr } = await selectAllIn(cardIds, (ids) => supabase!.from('stamp_cards').select('id').in('id', ids).eq('user_id', userId));
   if (cardsErr) throw new Error(`Tampons : verification des cartes impossible (${cardsErr.message})`);
   const serverCardIds = new Set((syncedCards || []).map(c => c.id));
 
@@ -1564,11 +1571,11 @@ async function syncStamps(userId: string): Promise<number> {
     // Emplacements occupes sur le serveur (web et mobile peuvent tamponner le meme eleve).
     // On garde l'id de chaque occupant : un tampon deja arrive sur le serveur (timeout apres
     // ecriture) ne doit pas entrer en collision avec lui-meme et se retrouver decale d'une case.
-    const { data: serverStamps } = await supabase
+    const { data: serverStamps } = await selectAllIn([...serverCardIds], (ids) => supabase!
       .from('stamps')
       .select('id, card_id, slot_number')
-      .in('card_id', [...serverCardIds])
-      .eq('user_id', userId);
+      .in('card_id', ids)
+      .eq('user_id', userId));
 
     const occupiedBy = new Map<string, string>(); // "card_id|slot" -> stamp id
     for (const ss of (serverStamps || [])) occupiedBy.set(`${ss.card_id}|${ss.slot_number}`, ss.id);
@@ -1776,10 +1783,10 @@ interface StampPullResult {
 async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<string>, result: StampPullResult): Promise<void> {
   if (!supabase) return;
   // 14. Pull stamp_categories
-  const { data: serverStampCategories, error: stampCatError } = await supabase
+  const { data: serverStampCategories, error: stampCatError } = await selectAll(() => supabase!
     .from('stamp_categories')
     .select('id, label, icon, icon_ref, color, display_order, is_active, created_at')
-    .eq('user_id', userId);
+    .eq('user_id', userId));
 
   if (stampCatError) {
     console.error('[syncService] Pull stamp_categories error:', stampCatError);
@@ -1819,10 +1826,10 @@ async function pullStampConfig(userId: string, now: string, pendingDeleted: Set<
   }
 
   // 15. Pull bonuses
-  const { data: serverBonuses, error: bonusesError } = await supabase
+  const { data: serverBonuses, error: bonusesError } = await selectAll(() => supabase!
     .from('bonuses')
     .select('id, label, display_order, is_active, created_at')
-    .eq('user_id', userId);
+    .eq('user_id', userId));
 
   if (bonusesError) {
     console.error('[syncService] Pull bonuses error:', bonusesError);
@@ -1869,12 +1876,10 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   const scopeParams = studentId ? [studentId] : [];
 
   // 16. Pull stamp_cards
-  let cardsQuery = supabase
-    .from('stamp_cards')
-    .select('id, student_id, card_number, status, completed_at, created_at')
-    .eq('user_id', userId);
-  if (studentId) cardsQuery = cardsQuery.eq('student_id', studentId);
-  const { data: serverStampCards, error: stampCardsError } = await cardsQuery;
+  const { data: serverStampCards, error: stampCardsError } = await selectAll(() => {
+    const query = supabase!.from('stamp_cards').select('id, student_id, card_number, status, completed_at, created_at').eq('user_id', userId);
+    return studentId ? query.eq('student_id', studentId) : query;
+  });
 
   if (stampCardsError) {
     console.error('[syncService] Pull stamp_cards error:', stampCardsError);
@@ -1931,12 +1936,10 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   if (stampCardsError) {
     console.warn('[syncService] Skipping stamps pull because stamp_cards pull failed');
   } else {
-  let stampsQuery = supabase
-    .from('stamps')
-    .select('id, card_id, student_id, category_id, slot_number, awarded_at')
-    .eq('user_id', userId);
-  if (studentId) stampsQuery = stampsQuery.eq('student_id', studentId);
-  const { data: serverStamps, error: stampsError } = await stampsQuery;
+  const { data: serverStamps, error: stampsError } = await selectAll(() => {
+    const query = supabase!.from('stamps').select('id, card_id, student_id, category_id, slot_number, awarded_at').eq('user_id', userId);
+    return studentId ? query.eq('student_id', studentId) : query;
+  });
 
   if (stampsError) {
     console.error('[syncService] Pull stamps error:', stampsError);
@@ -2006,12 +2009,10 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   if (stampCardsError) {
     console.warn('[syncService] Skipping bonus_selections pull because stamp_cards pull failed');
   } else {
-  let selQuery = supabase
-    .from('bonus_selections')
-    .select('id, card_id, bonus_id, student_id, selected_at, used_at')
-    .eq('user_id', userId);
-  if (studentId) selQuery = selQuery.eq('student_id', studentId);
-  const { data: serverBonusSel, error: bonusSelError } = await selQuery;
+  const { data: serverBonusSel, error: bonusSelError } = await selectAll(() => {
+    const query = supabase!.from('bonus_selections').select('id, card_id, bonus_id, student_id, selected_at, used_at').eq('user_id', userId);
+    return studentId ? query.eq('student_id', studentId) : query;
+  });
 
   if (bonusSelError) {
     console.error('[syncService] Pull bonus_selections error:', bonusSelError);
@@ -2127,10 +2128,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
   try {
     // 1. Pull classes from Supabase
-    const { data: serverClasses, error: classesError } = await supabase
+    const { data: serverClasses, error: classesError } = await selectAll(() => supabase!
       .from('classes')
       .select('id, name, created_at, updated_at')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (classesError) {
       console.error('[syncService] Pull classes error:', classesError);
@@ -2190,10 +2191,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 2. Pull students from Supabase
-    const { data: serverStudents, error: studentsError } = await supabase
+    const { data: serverStudents, error: studentsError } = await selectAll(() => supabase!
       .from('students')
       .select('id, user_id, class_id, pseudo, created_at, has_pap, has_ppre, has_pai')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (studentsError) {
       console.error('[syncService] Pull students error:', studentsError);
@@ -2257,10 +2258,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 3. Pull rooms from Supabase
-    const { data: serverRooms, error: roomsError } = await supabase
+    const { data: serverRooms, error: roomsError } = await selectAll(() => supabase!
       .from('rooms')
       .select('id, name, grid_rows, grid_cols, disabled_cells, created_at')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (roomsError) {
       console.error('[syncService] Pull rooms error:', roomsError);
@@ -2322,10 +2323,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     {
       const pendingDeleted = await getPendingDeletedIds(['class_groups', 'class_group_members', 'class_group_plans']);
 
-      const { data: serverGroups, error: groupsError } = await supabase
+      const { data: serverGroups, error: groupsError } = await selectAll(() => supabase!
         .from('class_groups')
         .select('id, user_id, class_id, name, color, sort_order, created_at, updated_at')
-        .eq('user_id', userId);
+        .eq('user_id', userId));
 
       if (groupsError) {
         console.error('[syncService] Pull class_groups error:', groupsError);
@@ -2358,10 +2359,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         // Membres : par groupe serveur
         const groupIds = serverGroups.map(g => g.id).filter(id => !pendingDeleted.has(id));
         if (groupIds.length > 0) {
-          const { data: serverMembers, error: membersError } = await supabase
+          const { data: serverMembers, error: membersError } = await selectAllIn(groupIds, (ids) => supabase!
             .from('class_group_members')
             .select('id, group_id, student_id, created_at')
-            .in('group_id', groupIds);
+            .in('group_id', ids));
 
           if (membersError) {
             console.error('[syncService] Pull class_group_members error:', membersError);
@@ -2413,10 +2414,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     const classIds = localClasses.map(c => c.id);
 
     if (classIds.length > 0) {
-      const { data: serverPlans, error: plansError } = await supabase
+      const { data: serverPlans, error: plansError } = await selectAllIn(classIds, (ids) => supabase!
         .from('class_room_plans')
         .select('id, class_id, room_id, positions, created_at, updated_at')
-        .in('class_id', classIds);
+        .in('class_id', ids));
 
       if (plansError) {
         console.error('[syncService] Pull plans error:', plansError);
@@ -2461,10 +2462,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     // 4b. Pull plans par groupe (class_group_plans) — table dediee, class_room_plans intacte
     {
       const pendingDeleted = await getPendingDeletedIds(['class_group_plans']);
-      const { data: serverGroupPlans, error: groupPlansError } = await supabase
+      const { data: serverGroupPlans, error: groupPlansError } = await selectAll(() => supabase!
         .from('class_group_plans')
         .select('id, class_id, room_id, group_id, positions, created_at, updated_at')
-        .eq('user_id', userId);
+        .eq('user_id', userId));
 
       if (groupPlansError) {
         console.error('[syncService] Pull class_group_plans error:', groupPlansError);
@@ -2512,10 +2513,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 5. Pull sessions from Supabase
-    const { data: serverSessions, error: sessionsError } = await supabase
+    const { data: serverSessions, error: sessionsError } = await selectAll(() => supabase!
       .from('sessions')
       .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at, group_id')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (sessionsError) {
       console.error('[syncService] Pull sessions error:', sessionsError);
@@ -2569,10 +2570,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     const sessionIds = localSessions.map(s => s.id);
 
     if (sessionIds.length > 0) {
-      const { data: serverEvents, error: eventsError } = await supabase
+      const { data: serverEvents, error: eventsError } = await selectAllIn(sessionIds, (ids) => supabase!
         .from('events')
         .select('id, session_id, student_id, type, subtype, note, photo_path, timestamp')
-        .in('session_id', sessionIds);
+        .in('session_id', ids));
 
       if (eventsError) {
         console.error('[syncService] Pull events error:', eventsError);
@@ -2623,10 +2624,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 7. Pull TP templates from Supabase
-    const { data: serverTpTemplates, error: tpTemplatesError } = await supabase
+    const { data: serverTpTemplates, error: tpTemplatesError } = await selectAll(() => supabase!
       .from('tp_templates')
       .select('id, name, created_at, level, chapter, activity')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (tpTemplatesError) {
       console.error('[syncService] Pull TP templates error:', tpTemplatesError);
@@ -2660,10 +2661,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
       // 8. Pull TP template criteria
       const templateIds = serverTpTemplates.map(t => t.id);
-      const { data: serverCriteria, error: criteriaError } = await supabase
+      const { data: serverCriteria, error: criteriaError } = await selectAllIn(templateIds, (ids) => supabase!
         .from('tp_template_criteria')
         .select('id, template_id, label, max_points, display_order')
-        .in('template_id', templateIds);
+        .in('template_id', ids));
 
       if (criteriaError) {
         console.error('[syncService] Pull TP criteria error:', criteriaError);
@@ -2699,10 +2700,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     const pendingGroupDeletes = await getPendingDeletedIds(['session_groups', 'session_group_members', 'grading_criteria', 'group_session_photos']);
 
     // 9. Pull group sessions from Supabase
-    const { data: serverGroupSessions, error: groupSessionsError } = await supabase
+    const { data: serverGroupSessions, error: groupSessionsError } = await selectAll(() => supabase!
       .from('group_sessions')
       .select('id, user_id, class_id, name, status, created_at, completed_at, linked_session_id, template_id')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (groupSessionsError) {
       console.error('[syncService] Pull group sessions error:', groupSessionsError);
@@ -2727,10 +2728,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
       // 10. Pull grading criteria for pulled group sessions
       const gsIds = serverGroupSessions.map(gs => gs.id);
-      const { data: serverCriteriaGS, error: criteriaGSError } = await supabase
+      const { data: serverCriteriaGS, error: criteriaGSError } = await selectAllIn(gsIds, (ids) => supabase!
         .from('grading_criteria')
         .select('id, session_id, label, max_points, display_order')
-        .in('session_id', gsIds);
+        .in('session_id', ids));
       const serverCriteriaKept = (serverCriteriaGS || []).filter(c => !pendingGroupDeletes.has(c.id));
 
       if (criteriaGSError) {
@@ -2755,10 +2756,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       }
 
       // 11. Pull session groups
-      const { data: serverGroups, error: groupsError } = await supabase
+      const { data: serverGroups, error: groupsError } = await selectAllIn(gsIds, (ids) => supabase!
         .from('session_groups')
         .select('id, session_id, name, conduct_malus, position_x, position_y, comment, display_order')
-        .in('session_id', gsIds);
+        .in('session_id', ids));
 
       if (groupsError) {
         console.error('[syncService] Pull session groups error:', groupsError);
@@ -2783,10 +2784,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
         // 12. Pull group members
         const groupIds = serverGroups.map(g => g.id);
-        const { data: serverMembers, error: membersError } = await supabase
+        const { data: serverMembers, error: membersError } = await selectAllIn(groupIds, (ids) => supabase!
           .from('session_group_members')
           .select('id, group_id, student_id')
-          .in('group_id', groupIds);
+          .in('group_id', ids));
 
         if (membersError) {
           console.error('[syncService] Pull group members error:', membersError);
@@ -2811,10 +2812,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         }
 
         // 13. Pull group grades
-        const { data: serverGrades, error: gradesError } = await supabase
+        const { data: serverGrades, error: gradesError } = await selectAllIn(groupIds, (ids) => supabase!
           .from('group_grades')
           .select('id, group_id, criteria_id, points_awarded')
-          .in('group_id', groupIds);
+          .in('group_id', ids));
 
         if (gradesError) {
           console.error('[syncService] Pull group grades error:', gradesError);
