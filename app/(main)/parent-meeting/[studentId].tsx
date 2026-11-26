@@ -57,6 +57,7 @@ const TYPE_LABEL: Record<string, string> = {
 
 const KIND_LABEL: Record<string, string> = {
   ecrit: 'Écrit',
+  activite: 'Activité',
   tp: 'TP',
   oral: 'Oral',
   dm: 'DM',
@@ -429,7 +430,7 @@ export default function StudentDashboardScreen() {
                       <Text style={styles.gradeMeta}>
                         {[formatShortDate(l.date), l.kind ? KIND_LABEL[l.kind] ?? l.kind : null,
                           l.coefficient !== 1 ? `coef ${formatGrade(l.coefficient, 1)}` : null,
-                          !l.countsInAverage ? 'hors moyenne' : null,
+                          !l.countsInAverage ? 'hors moyenne' : l.onlyIfRaises ? 'si elle monte la moyenne' : null,
                           l.isAdapted ? 'adapté' : null]
                           .filter(Boolean).join(' · ')}
                       </Text>

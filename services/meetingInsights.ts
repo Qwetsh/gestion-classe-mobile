@@ -10,6 +10,7 @@
 import { queryAll } from './database/client';
 import { supabase } from './supabase/client';
 import { Period } from '../constants/periods';
+import { studentAverage, type AverageItem } from './gradeAverage';
 
 // ============================================================
 // Périodes
@@ -287,6 +288,8 @@ interface AssessmentRow {
   period: number | null;
   coefficient: number | string | null;
   counts_in_average: boolean;
+  /** Migration 093 : ne compte que pour l'élève dont elle fait monter la moyenne. */
+  only_if_raises_average: boolean | null;
   kind: string | null;
 }
 
@@ -325,6 +328,8 @@ export interface GradeLine {
   baremeTotal: number | null;
   coefficient: number;
   countsInAverage: boolean;
+  /** Compte dans la moyenne seulement si elle la fait monter (sans effet hors moyenne). */
+  onlyIfRaises: boolean;
   /** Note /20 retenue (null = pas de note). */
   grade: number | null;
   raw: number | null;
@@ -360,17 +365,6 @@ async function fetchPaged<T>(build: (from: number, to: number) => PromiseLike<{ 
   }
 }
 
-function weightedAvg(items: { value: number; coef: number }[]): number | null {
-  let sum = 0;
-  let w = 0;
-  for (const it of items) {
-    if (it.coef <= 0) continue;
-    sum += it.value * it.coef;
-    w += it.coef;
-  }
-  return w > 0 ? sum / w : null;
-}
-
 export async function loadGradePositioning(
   userId: string,
   studentId: string,
@@ -385,7 +379,7 @@ export async function loadGradePositioning(
   const assessments = await fetchPaged<AssessmentRow>((from, to) => {
     let q = sb
       .from('written_assessments')
-      .select('id, class_id, name, date, created_at, bareme_total, period, coefficient, counts_in_average, kind')
+      .select('id, class_id, name, date, created_at, bareme_total, period, coefficient, counts_in_average, only_if_raises_average, kind')
       .eq('user_id', userId)
       .eq('school_year', schoolYear)
       .eq('is_deleted', false);
@@ -451,6 +445,7 @@ export async function loadGradePositioning(
         baremeTotal: toNumber(a.bareme_total),
         coefficient: toNumber(a.coefficient) ?? 1,
         countsInAverage: a.counts_in_average !== false,
+        onlyIfRaises: a.counts_in_average !== false && a.only_if_raises_average === true,
         grade: mine ? effectiveGrade(mine) : null,
         raw: mine ? toNumber(mine.grade_raw) : null,
         status: mine?.status ?? null,
@@ -463,20 +458,20 @@ export async function loadGradePositioning(
     })
     .reverse(); // plus récentes d'abord
 
-  // Moyenne de chaque élève sur la période
-  const perStudent = new Map<string, { value: number; coef: number }[]>();
+  // Moyenne de chaque élève sur la période (règle du carnet web, cf. ./gradeAverage)
+  const perStudent = new Map<string, AverageItem[]>();
   for (const g of grades) {
     const a = assessmentById.get(g.assessment_id);
     if (!a || a.counts_in_average === false) continue;
     const v = effectiveGrade(g);
     if (v === null) continue;
     const l = perStudent.get(g.student_id) ?? [];
-    l.push({ value: v, coef: toNumber(a.coefficient) ?? 1 });
+    l.push({ value: v, coef: toNumber(a.coefficient) ?? 1, onlyIfRaises: a.only_if_raises_average === true });
     perStudent.set(g.student_id, l);
   }
   const averages = new Map<string, number>();
   for (const [sid, items] of perStudent) {
-    const avg = weightedAvg(items);
+    const avg = studentAverage(items);
     if (avg !== null) averages.set(sid, avg);
   }
 
