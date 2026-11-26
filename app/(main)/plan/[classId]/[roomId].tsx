@@ -18,11 +18,14 @@ import {
   useStudentStore,
   useRoomStore,
   usePlanStore,
+  useClassGroupStore,
   StudentWithMapping,
 } from '../../../../stores';
 import { theme } from '../../../../constants/theme';
 import { AccommodationBadges } from '../../../../components/AccommodationBadges';
+import { PlanScopeBar } from '../../../../components/PlanScopeBar';
 import { getStudentAtPosition } from '../../../../services/database';
+import { groupSizes, keepPlacedStudents, studentsInScope } from '../../../../utils/planScope';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -35,7 +38,7 @@ export default function PlanEditorScreen() {
   const { loadRoomById, currentRoom } = useRoomStore();
 
   // Get students for this class
-  const students: StudentWithMapping[] = classId ? studentsByClass[classId] || [] : [];
+  const classStudents: StudentWithMapping[] = classId ? studentsByClass[classId] || [] : [];
   const {
     currentPlan,
     isLoading,
@@ -43,10 +46,16 @@ export default function PlanEditorScreen() {
     setStudentPosition,
     removeStudentFromPlan,
     clearAllPositions,
+    copyFromClassPlan,
   } = usePlanStore();
+  // Groupes de classe : le plan édité est celui de la classe entière (null) ou d'un groupe
+  const { groupsByClass, membersByClass, loadForClass: loadClassGroups } = useClassGroupStore();
+  const classGroups = classId ? groupsByClass[classId] ?? [] : [];
+  const groupMembers = classId ? membersByClass[classId] ?? [] : [];
 
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [planGroupId, setPlanGroupId] = useState<string | null>(null);
 
   // Load data on mount
   useEffect(() => {
@@ -54,11 +63,13 @@ export default function PlanEditorScreen() {
       if (!classId || !roomId || !user?.id) return;
 
       setIsInitializing(true);
+      setPlanGroupId(null);
       await Promise.all([
         loadClassById(classId),
         loadRoomById(roomId),
         loadStudentsForClass(classId),
-        loadPlan(classId, roomId),
+        loadClassGroups(classId),
+        loadPlan(classId, roomId, null),
       ]);
       setIsInitializing(false);
     };
@@ -66,17 +77,26 @@ export default function PlanEditorScreen() {
     loadData();
   }, [classId, roomId, user?.id]);
 
+  const changePlanGroup = (groupId: string | null) => {
+    if (!classId || !roomId || groupId === planGroupId) return;
+    setSelectedStudent(null);
+    setPlanGroupId(groupId);
+    loadPlan(classId, roomId, groupId);
+  };
+
   // Helper to get display name
   const getDisplayName = (student: StudentWithMapping): string => {
     return student.fullName || student.pseudo;
   };
 
+  // Élèves du plan édité : toute la classe, ou les membres du groupe choisi. Une place occupée par
+  // un élève hors de cette liste (changé de groupe, parti) s'affiche libre.
+  const students = studentsInScope(classStudents, groupMembers, planGroupId);
+  const visiblePositions = keepPlacedStudents(currentPlan?.positions, students);
+
   // Get students not yet placed
-  const unplacedStudents = students.filter((s) => {
-    if (!currentPlan) return true;
-    const positions = currentPlan.positions;
-    return !Object.values(positions).includes(s.id);
-  });
+  const placedIds = new Set(Object.values(visiblePositions));
+  const unplacedStudents = students.filter((s) => !placedIds.has(s.id));
 
   // Handle cell press
   const handleCellPress = async (row: number, col: number) => {
@@ -94,7 +114,7 @@ export default function PlanEditorScreen() {
     const isDisabled = disabledCells.includes(`${row},${col}`);
     if (isDisabled) return;
 
-    const studentAtPosition = getStudentAtPosition(currentPlan.positions, row, col);
+    const studentAtPosition = getStudentAtPosition(visiblePositions, row, col);
 
     if (studentAtPosition) {
       // Cell is occupied - ask to remove
@@ -169,7 +189,7 @@ export default function PlanEditorScreen() {
       const cells = [];
       for (let c = 0; c < grid_cols; c++) {
         const disabled = isDisabled(r, c);
-        const studentId = getStudentAtPosition(currentPlan.positions, r, c);
+        const studentId = getStudentAtPosition(visiblePositions, r, c);
         const student = studentId ? students.find((s) => s.id === studentId) : null;
 
         cells.push(
@@ -293,6 +313,18 @@ export default function PlanEditorScreen() {
             </Text>
           </View>
         </View>
+
+        {classGroups.length > 0 && (
+          <PlanScopeBar
+            groups={classGroups}
+            sizes={groupSizes(groupMembers, classStudents)}
+            classSize={classStudents.length}
+            value={planGroupId}
+            onChange={changePlanGroup}
+            groupPlanIsEmpty={Object.keys(visiblePositions).length === 0}
+            onCopyFromClass={() => copyFromClassPlan(students)}
+          />
+        )}
 
         {/* Grid */}
         <ScrollView
