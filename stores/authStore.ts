@@ -4,7 +4,9 @@ import {
   signUp as supabaseSignUp,
   signIn as supabaseSignIn,
   signOut as supabaseSignOut,
-  getCurrentUser,
+  getStoredUser,
+  validateSession,
+  clearStoredSession,
   type AuthUser,
 } from '../services/supabase';
 import { supabase } from '../services/supabase';
@@ -53,6 +55,11 @@ interface AuthState {
   isInitialized: boolean;
   user: AuthUser | null;
   error: string | null;
+  /**
+   * Le serveur a refusé la session enregistrée (révoquée, compte supprimé) lors de la
+   * vérification d'arrière-plan : app/(main)/_layout.tsx renvoie alors à la connexion.
+   */
+  sessionRevoked: boolean;
 
   // Actions
   signUp: (email: string, password: string) => Promise<boolean>;
@@ -62,13 +69,14 @@ interface AuthState {
   clearError: () => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   // Initial state
   isAuthenticated: false,
   isLoading: true, // Start with loading true for initial auth check
   isInitialized: false,
   user: null,
   error: null,
+  sessionRevoked: false,
 
   // Sign up new user
   signUp: async (email: string, password: string): Promise<boolean> => {
@@ -82,6 +90,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: result.data,
         isLoading: false,
         error: null,
+        sessionRevoked: false,
       });
       trackDevice(result.data);
       return true;
@@ -106,6 +115,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         user: result.data,
         isLoading: false,
         error: null,
+        sessionRevoked: false,
       });
       trackDevice(result.data);
       return true;
@@ -132,28 +142,71 @@ export const useAuthStore = create<AuthState>((set) => ({
     });
   },
 
-  // Check if user is already authenticated (on app start)
+  // Au démarrage : « connecté ou non » se décide sur la session enregistrée dans le téléphone,
+  // sans réseau, pour que l'app s'ouvre en classe même hors ligne. Le serveur n'est consulté
+  // qu'ensuite, en arrière-plan, et ne déconnecte que s'il refuse vraiment la session.
   checkAuth: async (): Promise<void> => {
     set({ isLoading: true });
 
-    const result = await getCurrentUser();
+    let stored: AuthUser | null = null;
+    try {
+      stored = await getStoredUser();
+    } catch {
+      stored = null;
+    }
 
-    if (result.success && result.data) {
-      set({
-        isAuthenticated: true,
-        user: result.data,
-        isLoading: false,
-        isInitialized: true,
-      });
-      trackDevice(result.data);
-    } else {
+    if (!stored) {
       set({
         isAuthenticated: false,
         user: null,
         isLoading: false,
         isInitialized: true,
       });
+      return;
     }
+
+    set({
+      isAuthenticated: true,
+      user: stored,
+      isLoading: false,
+      isInitialized: true,
+      sessionRevoked: false,
+    });
+
+    // Volontairement pas de « await » : l'écran n'attend pas le serveur.
+    const storedId = stored.id;
+    void (async () => {
+      let check: Awaited<ReturnType<typeof validateSession>>;
+      try {
+        check = await validateSession();
+      } catch {
+        return; // imprévu : on reste connecté
+      }
+
+      // Entre-temps, déconnexion manuelle ou autre compte : cette réponse ne concerne plus personne.
+      const current = get();
+      if (!current.isAuthenticated || current.user?.id !== storedId) return;
+
+      if (check.status === 'valid') {
+        if (check.user.email && check.user.email !== current.user.email) {
+          set({ user: check.user });
+        }
+        trackDevice(check.user);
+      } else if (check.status === 'revoked') {
+        try {
+          await clearStoredSession();
+        } catch {
+          // sans gravité : la session est de toute façon refusée par le serveur
+        }
+        set({
+          isAuthenticated: false,
+          user: null,
+          sessionRevoked: true,
+          error: "Votre session n'est plus valide. Reconnectez-vous.",
+        });
+      }
+      // 'unreachable' (pas de réseau, délai dépassé, serveur en panne) : on reste connecté.
+    })();
   },
 
   // Clear error

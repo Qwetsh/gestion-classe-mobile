@@ -1,10 +1,19 @@
-import { Tabs } from 'expo-router';
+import { useEffect } from 'react';
+import { Tabs, router } from 'expo-router';
 import { BookOpen, Clock, Home, Users } from 'lucide-react-native';
 import { theme } from '../../constants/theme';
+import { useAuthStore } from '../../stores';
 
 const HIDDEN_TAB = { href: null, tabBarStyle: { display: 'none' as const } };
 
 export default function MainLayout() {
+  // L'app s'ouvre sur la session enregistrée, sans attendre le serveur (voir authStore.checkAuth).
+  // Si le serveur la refuse ensuite (session révoquée, compte supprimé), retour à la connexion.
+  const sessionRevoked = useAuthStore((state) => state.sessionRevoked);
+  useEffect(() => {
+    if (sessionRevoked) router.replace('/(auth)/login');
+  }, [sessionRevoked]);
+
   return (
     <Tabs
       screenOptions={{
