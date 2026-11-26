@@ -19,6 +19,7 @@ import {
 } from '../../../stores';
 import { theme } from '../../../constants/theme';
 import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
+import { MakeupReminderBanner } from '../../../components/MakeupReminderBanner';
 import { Class, Room } from '../../../types';
 
 export default function StartSessionScreen() {
@@ -120,6 +121,8 @@ export default function StartSessionScreen() {
           )}
           {/* Note écrite depuis l'accueil web pour le cours qui commence */}
           {selectedClass && <LessonNoteBanner classId={selectedClass.id} at={startedAt} compact />}
+          {/* Absents à une éval récente, à faire rattraper pendant cette séance */}
+          {selectedClass && <MakeupReminderBanner classId={selectedClass.id} at={startedAt} compact />}
         </View>
 
         {/* 2 · Choisir une salle */}
