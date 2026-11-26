@@ -35,6 +35,12 @@ export default {
     plugins: ['expo-router', 'expo-sqlite', 'expo-secure-store', 'expo-font'],
     extra: {
       router: {},
+      // Renseignés par EAS au moment de la construction ; affichés dans l'app pour savoir quel
+      // APK est installé (plusieurs APK ont porté le même numéro de version).
+      build: {
+        commit: process.env.EAS_BUILD_GIT_COMMIT_HASH ? process.env.EAS_BUILD_GIT_COMMIT_HASH.slice(0, 7) : null,
+        profile: process.env.EAS_BUILD_PROFILE || null,
+      },
       eas: {
         projectId: '27ce328c-c662-4806-988a-d525279aaace',
       },

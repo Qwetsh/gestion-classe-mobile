@@ -80,3 +80,17 @@ cp .env.example .env
 - [PRD](../_bmad-output/planning-artifacts/prd.md)
 - [Architecture](../_bmad-output/planning-artifacts/architecture.md)
 - [UX Design](../_bmad-output/planning-artifacts/ux-design-specification.md)
+
+## Savoir quel APK est installé
+
+Le numéro de version ne suffit pas : plusieurs APK ont porté le même « 1.1.0 ». Deux repères :
+
+- **Dans l'app** : toucher l'avatar en haut de l'accueil. La fenêtre de déconnexion rappelle la version, le commit de construction et le profil (`Version 1.1.0 · d1b583d · preview`).
+- **Dans git** : chaque APK construit est étiqueté `apk/AAAA-MM-JJ-profil` sur son commit. Après chaque construction réussie :
+
+  ```bash
+  git tag -a apk/2026-11-25-preview <commit> -m "APK preview du 25/11/2026"
+  git push origin --tags
+  ```
+
+`master` suit le dernier APK construit : on construit depuis `master`, jamais depuis une branche de travail ni depuis la copie OneDrive.
