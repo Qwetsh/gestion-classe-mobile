@@ -19,7 +19,9 @@ import {
   useSessionStore,
   useSyncStore,
 } from '../../stores';
+import Constants from 'expo-constants';
 import { theme } from '../../constants/theme';
+import { formatBuildLabel } from '../../utils/buildInfo';
 import { FeedbackButton, SyncButton } from '../../components';
 
 function formatRelative(dateStr: string): string {
@@ -106,7 +108,11 @@ export default function HomeScreen() {
   }, [user?.id, classesLoading, isSyncing, sync, loadClasses, loadRooms]);
 
   const handleLogout = async () => {
-    Alert.alert('Déconnexion', 'Voulez-vous vous déconnecter ?', [
+    // La version est rappelée ici : c'est le seul endroit de l'app où savoir quel APK est installé.
+    const buildLabel = formatBuildLabel(Constants.expoConfig?.version, Constants.expoConfig?.extra?.build);
+    Alert.alert('Déconnexion', `Voulez-vous vous déconnecter ?
+
+${buildLabel}`, [
       { text: 'Annuler', style: 'cancel' },
       {
         text: 'Déconnexion',
