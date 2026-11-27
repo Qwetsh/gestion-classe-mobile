@@ -603,14 +603,29 @@ export async function loadImplicationGrade(
   }
   const start: string = boundaryRes.data?.started_at ?? new Date(0).toISOString();
 
-  const events = await fetchPaged<{ type: string }>((from, to) =>
+  const remoteEvents = await fetchPaged<{ id: string; type: string }>((from, to) =>
     sb.from('events')
-      .select('type')
+      .select('id, type')
       .eq('student_id', studentId)
       .gte('timestamp', start)
       .order('timestamp', { ascending: false })
       .range(from, to),
   );
+  // Ce que le téléphone n'a pas encore envoyé compte aussi (sinon la note donnée en réunion
+  // oublie les dernières séances) ; ce qu'il a supprimé, pas encore sur le serveur, ne compte plus.
+  const remoteIds = new Set(remoteEvents.map((e) => e.id));
+  const deletedIds = new Set(
+    (await queryAll<{ record_id: string }>(`SELECT record_id FROM pending_deletions WHERE table_name = 'events'`))
+      .map((r) => r.record_id),
+  );
+  const localPending = await queryAll<{ id: string; type: string }>(
+    `SELECT id, type FROM events WHERE student_id = ? AND synced_at IS NULL AND timestamp >= ?`,
+    [studentId, start],
+  );
+  const events = [
+    ...remoteEvents.filter((e) => !deletedIds.has(e.id)),
+    ...localPending.filter((e) => !remoteIds.has(e.id)),
+  ];
   const count = (t: string) => events.filter((e) => e.type === t).length;
   const manual = (manualRes.data ?? []).reduce((s: number, m: { count: number | null }) => s + (m.count ?? 0), 0);
   const participations = count('participation') + manual;

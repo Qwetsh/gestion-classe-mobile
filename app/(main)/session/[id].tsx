@@ -94,7 +94,7 @@ import { AccommodationBadges } from '../../../components/AccommodationBadges';
 import { LessonNoteBanner } from '../../../components/LessonNoteBanner';
 import { getStudentAtPosition, EVENT_TYPES, EventType, SortieSubtype, Event, getStudentEventsInSession } from '../../../services/database';
 import { deleteEventNow } from '../../../services/sync/liveSync';
-import { connectClassroomChannel, disconnectClassroomChannel, sendClassroomCommand } from '../../../services/sync/classroomChannel';
+import { connectClassroomChannel, disconnectClassroomChannel, onClassroomCommand, sendClassroomCommand } from '../../../services/sync/classroomChannel';
 import {
   pickFromCamera,
   pickFromGallery,
@@ -993,6 +993,27 @@ function NativeSessionScreen() {
     if (!activeSession?.id) return;
     connectClassroomChannel(activeSession.id);
     return () => disconnectClassroomChannel();
+  }, [activeSession?.id]);
+
+  // Commandes venues du tableau projeté. « +1 tampon » ouvre la fenêtre habituelle du tampon
+  // pour cet élève (le professeur choisit le motif, le téléphone reste la source de vérité) ;
+  // un tirage au sort fait au tableau s'affiche ici.
+  const boardStudentsRef = useRef(students);
+  boardStudentsRef.current = students;
+  useEffect(() => {
+    if (!activeSession?.id) return;
+    return onClassroomCommand((cmd) => {
+      if (cmd.kind === 'stamp' && cmd.source === 'board') {
+        const st = boardStudentsRef.current.find((s) => s.id === cmd.studentId);
+        if (st) {
+          setStampStudent(st);
+          setShowStampModal(true);
+        }
+      } else if (cmd.kind === 'pick' && cmd.source === 'board' && cmd.studentId) {
+        const st = boardStudentsRef.current.find((s) => s.id === cmd.studentId);
+        if (st) Alert.alert('Tiré au sort au tableau', st.fullName || st.pseudo);
+      }
+    });
   }, [activeSession?.id]);
 
   // Libellé court affiché sur le plan : le prénom seul, sauf homonymes dans la classe
