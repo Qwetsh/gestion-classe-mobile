@@ -309,8 +309,9 @@ export async function updateGroupSessionName(id: string, name: string): Promise<
  * Delete a group session and all related data
  */
 export async function deleteGroupSession(id: string): Promise<void> {
-  // SQLite cascade will handle related tables
+  // SQLite cascade will handle related tables ; côté serveur aussi, une fois la suppression envoyée
   await executeSql(`DELETE FROM group_sessions WHERE id = ?`, [id]);
+  await queueRemoteDeletion('group_sessions', id);
 
   if (__DEV__) {
     console.log('[groupSessionRepository] Deleted session:', id);

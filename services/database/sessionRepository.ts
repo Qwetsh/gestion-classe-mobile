@@ -206,11 +206,26 @@ export async function deleteSession(id: string): Promise<void> {
     console.log('[sessionRepository] deleteSession called with id:', id);
   }
 
+  // La suppression part aussi au serveur (pending_deletions), sinon la réception suivante remet la
+  // séance. Côté serveur, ses événements et ses pages de tableau partent avec elle (cascade). Les
+  // séances de groupe liées passent d'abord : le serveur refuse de supprimer une séance encore citée.
+  const linkedGroupSessions = await queryAll<{ id: string }>(
+    `SELECT id FROM group_sessions WHERE linked_session_id = ?`,
+    [id]
+  );
+  const base = Date.now();
+  const queue = (table: string, recordId: string, offsetMs: number) => ({
+    sql: `INSERT OR IGNORE INTO pending_deletions (id, table_name, record_id, created_at) VALUES (?, ?, ?, ?)`,
+    params: [Crypto.randomUUID(), table, recordId, new Date(base + offsetMs).toISOString()],
+  });
+
   // Atomic deletion: events + linked group sessions + session
   await executeTransaction([
     { sql: `DELETE FROM events WHERE session_id = ?`, params: [id] },
     { sql: `DELETE FROM group_sessions WHERE linked_session_id = ?`, params: [id] },
     { sql: `DELETE FROM sessions WHERE id = ?`, params: [id] },
+    ...linkedGroupSessions.map((gs) => queue('group_sessions', gs.id, 0)),
+    queue('sessions', id, 1),
   ]);
 
   if (__DEV__) {

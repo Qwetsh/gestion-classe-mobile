@@ -2543,7 +2543,10 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       console.error('[syncService] Pull sessions error:', sessionsError);
       result.errors.push(`Sessions: ${sessionsError.message}`);
     } else if (serverSessions && serverSessions.length > 0) {
+      // Séances supprimées sur le téléphone, suppression pas encore partie : ne pas les remettre
+      const pendingSessionDeletes = await getPendingDeletedIds(['sessions']);
       for (const session of serverSessions) {
+        if (pendingSessionDeletes.has(session.id)) continue;
         // Check if exists locally
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM sessions WHERE id = ?`,
@@ -2721,6 +2724,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
     // Lignes supprimées sur le téléphone, pas encore sur le serveur : ne pas les ressusciter
     const pendingGroupDeletes = await getPendingDeletedIds(['session_groups', 'session_group_members', 'grading_criteria', 'group_session_photos']);
+    const pendingGroupSessionDeletes = await getPendingDeletedIds(['group_sessions']);
 
     // 9. Pull group sessions from Supabase
     const { data: serverGroupSessions, error: groupSessionsError } = await supabase
@@ -2733,6 +2737,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       result.errors.push(`Group Sessions: ${groupSessionsError.message}`);
     } else if (serverGroupSessions && serverGroupSessions.length > 0) {
       for (const gs of serverGroupSessions) {
+        if (pendingGroupSessionDeletes.has(gs.id)) continue;
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM group_sessions WHERE id = ?`,
           [gs.id]
