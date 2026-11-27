@@ -2289,12 +2289,17 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
       // Add/update rooms from server
       for (const room of serverRooms) {
-        const existing = await queryAll<{ id: string }>(
-          `SELECT id FROM rooms WHERE id = ?`,
+        const existing = await queryAll<{ id: string; synced_at: string | null }>(
+          `SELECT id, synced_at FROM rooms WHERE id = ?`,
           [room.id]
         );
 
         const disabledCellsJson = JSON.stringify(room.disabled_cells || []);
+
+        if (existing.length > 0 && existing[0].synced_at === null) {
+          // Modifiée sur le téléphone et pas encore envoyée : ne pas l'écraser, elle partira au prochain envoi
+          continue;
+        }
 
         if (existing.length === 0) {
           await executeSql(
@@ -2424,10 +2429,15 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       } else if (serverPlans && serverPlans.length > 0) {
         for (const plan of serverPlans) {
           // Check if exists locally
-          const existing = await queryAll<{ id: string; updated_at: string | null }>(
-            `SELECT id, updated_at FROM class_room_plans WHERE class_id = ? AND room_id = ?`,
+          const existing = await queryAll<{ id: string; updated_at: string | null; synced_at: string | null }>(
+            `SELECT id, updated_at, synced_at FROM class_room_plans WHERE class_id = ? AND room_id = ?`,
             [plan.class_id, plan.room_id]
           );
+
+          if (existing.length > 0 && existing[0].synced_at === null) {
+            // Plan retouché sur le téléphone et pas encore envoyé : ne pas l'écraser, il partira au prochain envoi
+            continue;
+          }
 
           // Convert positions to JSON string if it's an object
           const positionsJson = typeof plan.positions === 'string'
@@ -2445,7 +2455,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
               console.log('[syncService] Pulled plan for class:', plan.class_id, 'room:', plan.room_id);
             }
           } else {
-            // Update existing plan - server wins for positions
+            // Plan déjà envoyé : la version du serveur fait foi
             await executeSql(
               `UPDATE class_room_plans SET positions = ?, updated_at = ?, synced_at = ? WHERE class_id = ? AND room_id = ?`,
               [positionsJson, plan.updated_at || now, now, plan.class_id, plan.room_id]

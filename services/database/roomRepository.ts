@@ -83,7 +83,7 @@ export async function updateRoom(
   const now = new Date().toISOString();
 
   await executeSql(
-    `UPDATE rooms SET name = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE rooms SET name = ?, updated_at = ?, synced_at = NULL WHERE id = ?`,
     [name, now, id]
   );
 
@@ -102,7 +102,7 @@ export async function updateRoomGrid(
   const now = new Date().toISOString();
 
   await executeSql(
-    `UPDATE rooms SET grid_rows = ?, grid_cols = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE rooms SET grid_rows = ?, grid_cols = ?, updated_at = ?, synced_at = NULL WHERE id = ?`,
     [gridRows, gridCols, now, id]
   );
 
