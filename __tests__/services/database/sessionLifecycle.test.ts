@@ -203,16 +203,32 @@ describe('deleteSession', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('should delete events BEFORE session (FK constraint)', async () => {
+    mockDb.queryAll.mockResolvedValue([]);
     await deleteSession('session-1');
 
-    // Atomic deletion: single transaction with events first, session last
+    // Atomic deletion: single transaction with events first, then the session
     expect(mockDb.executeTransaction).toHaveBeenCalledTimes(1);
 
     const statements = mockDb.executeTransaction.mock.calls[0][0];
     const sqls = statements.map((s: { sql: string }) => s.sql);
 
     expect(sqls[0]).toContain('DELETE FROM events');
-    expect(sqls[sqls.length - 1]).toContain('DELETE FROM sessions');
+    const sessionDelete = sqls.findIndex((s: string) => s.includes('DELETE FROM sessions'));
+    expect(sessionDelete).toBeGreaterThan(0);
+  });
+
+  it('queues the remote deletion, linked group sessions first', async () => {
+    mockDb.queryAll.mockResolvedValue([{ id: 'gs-1' }]);
+    await deleteSession('session-1');
+
+    const statements = mockDb.executeTransaction.mock.calls[0][0] as { sql: string; params: string[] }[];
+    const queued = statements.filter((s) => s.sql.includes('pending_deletions'));
+    expect(queued.map((s) => [s.params[1], s.params[2]])).toEqual([
+      ['group_sessions', 'gs-1'],
+      ['sessions', 'session-1'],
+    ]);
+    // L'ordre d'envoi suit created_at : la séance de groupe part avant la séance
+    expect(queued[0].params[3] < queued[1].params[3]).toBe(true);
   });
 });
 

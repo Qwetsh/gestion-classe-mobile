@@ -14,6 +14,7 @@ import {
 import { flushPendingDeletions, toRemoteEvent } from './liveSync';
 import { getPhotosAwaitingUpload, markPhotoUploaded } from '../database/groupSessionRepository';
 import { uploadTpPhotoFile } from '../photos/tpPhotos';
+import { fetchAllRows, fetchAllRowsIn } from './fetchAll';
 
 // Verrou : jamais deux synchros (pull ou push) en parallele. Sans lui, une ligne poussee et marquee
 // synchronisee entre la lecture serveur et la lecture locale d'un pull concurrent etait prise pour
@@ -63,23 +64,28 @@ export interface SyncResult {
 export async function getUnsyncedCount(): Promise<number> {
   if (!isSupabaseConfigured) return 0;
 
+  // La pastille ne compte que ce que l'envoi fera vraiment partir. Un TP en brouillon (ou resté
+  // « actif » après sa séance) et tout ce qui en dépend restent sur le téléphone par choix : les
+  // compter laissait la pastille rouge pour toujours. Même chose pour une salle supprimée.
+  const sendableGs = (gs: string) =>
+    `(${gs}.synced_at IS NOT NULL OR ${gs}.status = 'completed' OR (${gs}.status = 'active' AND EXISTS (SELECT 1 FROM sessions se WHERE se.id = ${gs}.linked_session_id AND se.ended_at IS NULL)))`;
   const result = await queryFirst<{ total: number }>(`
     SELECT (
       (SELECT COUNT(*) FROM sessions WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM events WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM classes WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL AND is_deleted = 0) +
       (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_groups WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_group_members WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_group_plans WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_sessions WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM grading_criteria WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_session_photos WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM group_sessions gs WHERE gs.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM grading_criteria c JOIN group_sessions gs ON gs.id = c.session_id WHERE c.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM session_groups g JOIN group_sessions gs ON gs.id = g.session_id WHERE g.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM session_group_members m JOIN session_groups g ON g.id = m.group_id JOIN group_sessions gs ON gs.id = g.session_id WHERE m.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM group_grades r JOIN session_groups g ON g.id = r.group_id JOIN group_sessions gs ON gs.id = g.session_id WHERE r.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM group_session_photos p JOIN group_sessions gs ON gs.id = p.session_id WHERE p.synced_at IS NULL AND ${sendableGs('gs')}) +
       (SELECT COUNT(*) FROM tp_templates WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM stamp_categories WHERE synced_at IS NULL) +
@@ -137,7 +143,7 @@ async function syncAllUnlocked(userId: string): Promise<SyncResult> {
     // toute la chaine a chaque tentative et plus rien ne se synchronisait.
     // L'ordre respecte les dependances : classes -> eleves -> ... -> tampons.
     const steps: { name: string; run: () => Promise<void> }[] = [
-      { name: 'Suppressions', run: async () => { result.deletionsSync = await flushPendingDeletions(); } },
+      { name: 'Suppressions', run: async () => { result.deletionsSync = await flushPendingDeletions({ throwOnFailure: true }); } },
       { name: 'Classes', run: async () => { result.classesSync = await syncClasses(userId); } },
       { name: 'Eleves', run: async () => { result.studentsSync = await syncStudents(); } },
       { name: 'Groupes de classe', run: async () => { result.classGroupsSync = await syncClassGroups(); } },
@@ -696,12 +702,19 @@ async function syncClassGroups(): Promise<number> {
   if (unsynced.length === 0) return 0;
 
   const classIds = [...new Set(unsynced.map(g => g.class_id))];
-  const { data: existingClasses } = await supabase.from('classes').select('id').in('id', classIds);
+  const { data: existingClasses, error: classesError } = await supabase.from('classes').select('id').in('id', classIds);
+  // Lecture en échec (réseau) : surtout ne rien supprimer, les groupes repartiront au prochain envoi.
+  if (classesError) throw new Error(`Groupes de classe: ${classesError.message}`);
   const serverClassIds = new Set((existingClasses || []).map(c => c.id));
+  const localClassIds = new Set(
+    (await queryAll<{ id: string }>(`SELECT id FROM classes WHERE id IN (${classIds.map(() => '?').join(',')})`, classIds)).map(c => c.id)
+  );
 
   const toPush = unsynced.filter(g => serverClassIds.has(g.class_id));
   for (const g of unsynced) {
-    if (!serverClassIds.has(g.class_id)) {
+    // Groupe d'une classe supprimée partout : il n'a plus lieu d'être. Une classe encore sur le
+    // téléphone mais pas sur le serveur (envoi en attente) garde ses groupes.
+    if (!serverClassIds.has(g.class_id) && !localClassIds.has(g.class_id)) {
       await executeSql(`DELETE FROM class_groups WHERE id = ?`, [g.id]);
       if (__DEV__) console.log('[syncService] Dropped class_group of missing class:', g.id);
     }
@@ -1869,12 +1882,14 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   const scopeParams = studentId ? [studentId] : [];
 
   // 16. Pull stamp_cards
-  let cardsQuery = supabase
-    .from('stamp_cards')
-    .select('id, student_id, card_number, status, completed_at, created_at')
-    .eq('user_id', userId);
-  if (studentId) cardsQuery = cardsQuery.eq('student_id', studentId);
-  const { data: serverStampCards, error: stampCardsError } = await cardsQuery;
+  const { data: serverStampCards, error: stampCardsError } = await fetchAllRows((from, to) => {
+    let q = supabase!
+      .from('stamp_cards')
+      .select('id, student_id, card_number, status, completed_at, created_at')
+      .eq('user_id', userId);
+    if (studentId) q = q.eq('student_id', studentId);
+    return q.order('id').range(from, to);
+  });
 
   if (stampCardsError) {
     console.error('[syncService] Pull stamp_cards error:', stampCardsError);
@@ -1931,12 +1946,14 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   if (stampCardsError) {
     console.warn('[syncService] Skipping stamps pull because stamp_cards pull failed');
   } else {
-  let stampsQuery = supabase
-    .from('stamps')
-    .select('id, card_id, student_id, category_id, slot_number, awarded_at')
-    .eq('user_id', userId);
-  if (studentId) stampsQuery = stampsQuery.eq('student_id', studentId);
-  const { data: serverStamps, error: stampsError } = await stampsQuery;
+  const { data: serverStamps, error: stampsError } = await fetchAllRows((from, to) => {
+    let q = supabase!
+      .from('stamps')
+      .select('id, card_id, student_id, category_id, slot_number, awarded_at')
+      .eq('user_id', userId);
+    if (studentId) q = q.eq('student_id', studentId);
+    return q.order('id').range(from, to);
+  });
 
   if (stampsError) {
     console.error('[syncService] Pull stamps error:', stampsError);
@@ -2006,12 +2023,14 @@ async function pullStampCards(userId: string, now: string, pendingDeleted: Set<s
   if (stampCardsError) {
     console.warn('[syncService] Skipping bonus_selections pull because stamp_cards pull failed');
   } else {
-  let selQuery = supabase
-    .from('bonus_selections')
-    .select('id, card_id, bonus_id, student_id, selected_at, used_at')
-    .eq('user_id', userId);
-  if (studentId) selQuery = selQuery.eq('student_id', studentId);
-  const { data: serverBonusSel, error: bonusSelError } = await selQuery;
+  const { data: serverBonusSel, error: bonusSelError } = await fetchAllRows((from, to) => {
+    let q = supabase!
+      .from('bonus_selections')
+      .select('id, card_id, bonus_id, student_id, selected_at, used_at')
+      .eq('user_id', userId);
+    if (studentId) q = q.eq('student_id', studentId);
+    return q.order('id').range(from, to);
+  });
 
   if (bonusSelError) {
     console.error('[syncService] Pull bonus_selections error:', bonusSelError);
@@ -2190,10 +2209,14 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 2. Pull students from Supabase
-    const { data: serverStudents, error: studentsError } = await supabase
+    // Lecture complète : une liste tronquée ferait purger des élèves, et avec eux leurs vrais
+    // noms, qui ne sont gardés que sur ce téléphone.
+    const { data: serverStudents, error: studentsError } = await fetchAllRows((from, to) => supabase!
       .from('students')
       .select('id, user_id, class_id, pseudo, created_at, has_pap, has_ppre, has_pai')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .order('id')
+      .range(from, to));
 
     if (studentsError) {
       console.error('[syncService] Pull students error:', studentsError);
@@ -2358,10 +2381,12 @@ async function pullFromServerUnlocked(userId: string): Promise<{
         // Membres : par groupe serveur
         const groupIds = serverGroups.map(g => g.id).filter(id => !pendingDeleted.has(id));
         if (groupIds.length > 0) {
-          const { data: serverMembers, error: membersError } = await supabase
+          const { data: serverMembers, error: membersError } = await fetchAllRowsIn(groupIds, (chunk, from, to) => supabase!
             .from('class_group_members')
             .select('id, group_id, student_id, created_at')
-            .in('group_id', groupIds);
+            .in('group_id', chunk)
+            .order('id')
+            .range(from, to));
 
           if (membersError) {
             console.error('[syncService] Pull class_group_members error:', membersError);
@@ -2512,16 +2537,21 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     }
 
     // 5. Pull sessions from Supabase
-    const { data: serverSessions, error: sessionsError } = await supabase
+    const { data: serverSessions, error: sessionsError } = await fetchAllRows((from, to) => supabase!
       .from('sessions')
       .select('id, user_id, class_id, room_id, topic, notes, started_at, ended_at, group_id')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .order('id')
+      .range(from, to));
 
     if (sessionsError) {
       console.error('[syncService] Pull sessions error:', sessionsError);
       result.errors.push(`Sessions: ${sessionsError.message}`);
     } else if (serverSessions && serverSessions.length > 0) {
+      // Séances supprimées sur le téléphone, suppression pas encore partie : ne pas les remettre
+      const pendingSessionDeletes = await getPendingDeletedIds(['sessions']);
       for (const session of serverSessions) {
+        if (pendingSessionDeletes.has(session.id)) continue;
         // Check if exists locally
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM sessions WHERE id = ?`,
@@ -2569,10 +2599,12 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     const sessionIds = localSessions.map(s => s.id);
 
     if (sessionIds.length > 0) {
-      const { data: serverEvents, error: eventsError } = await supabase
+      const { data: serverEvents, error: eventsError } = await fetchAllRowsIn(sessionIds, (chunk, from, to) => supabase!
         .from('events')
         .select('id, session_id, student_id, type, subtype, note, photo_path, timestamp')
-        .in('session_id', sessionIds);
+        .in('session_id', chunk)
+        .order('id')
+        .range(from, to));
 
       if (eventsError) {
         console.error('[syncService] Pull events error:', eventsError);
@@ -2697,6 +2729,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
 
     // Lignes supprimées sur le téléphone, pas encore sur le serveur : ne pas les ressusciter
     const pendingGroupDeletes = await getPendingDeletedIds(['session_groups', 'session_group_members', 'grading_criteria', 'group_session_photos']);
+    const pendingGroupSessionDeletes = await getPendingDeletedIds(['group_sessions']);
 
     // 9. Pull group sessions from Supabase
     const { data: serverGroupSessions, error: groupSessionsError } = await supabase
@@ -2709,6 +2742,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       result.errors.push(`Group Sessions: ${groupSessionsError.message}`);
     } else if (serverGroupSessions && serverGroupSessions.length > 0) {
       for (const gs of serverGroupSessions) {
+        if (pendingGroupSessionDeletes.has(gs.id)) continue;
         const existing = await queryAll<{ id: string }>(
           `SELECT id FROM group_sessions WHERE id = ?`,
           [gs.id]

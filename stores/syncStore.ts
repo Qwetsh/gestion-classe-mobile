@@ -88,11 +88,15 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       // empecher le push : avant, un pull trop long (Wi-Fi du college) sautait le push, et les tampons
       // poses en classe attendaient le prochain lancement reussi de l'app (audit n°2, A3).
       let pullError: string | null = null;
+      let pullErrors: string[] = [];
       if (__DEV__) {
         console.log('[syncStore] Pulling from server...');
       }
       try {
-        await withTimeout(pullFromServer(userId), SYNC_TIMEOUT_MS, 'Pull serveur');
+        // La réception ne lève pas d'exception : elle range ses erreurs dans le résultat,
+        // qui était ignoré (erreurs de réception jamais montrées).
+        const pulled = await withTimeout(pullFromServer(userId), SYNC_TIMEOUT_MS, 'Pull serveur');
+        pullErrors = pulled?.errors ?? [];
       } catch (error) {
         pullError = error instanceof Error ? error.message : 'Pull serveur impossible';
         console.error('[syncStore] Pull failed, pushing anyway:', pullError);
@@ -109,6 +113,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       const result = await withTimeout(syncAll(userId), SYNC_TIMEOUT_MS, 'Push serveur');
       if (pullError) {
         result.errors.unshift(`Pull serveur : ${pullError}`);
+        result.success = false;
+      }
+      if (pullErrors.length > 0) {
+        result.errors.unshift(...pullErrors.map(e => `Réception : ${e}`));
         result.success = false;
       }
 
