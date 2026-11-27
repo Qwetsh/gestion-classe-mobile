@@ -80,11 +80,12 @@ let flushInProgress = false;
  * Appelée par la synchro complète et, en direct, après chaque suppression.
  * Retourne le nombre de suppressions propagées.
  */
-export async function flushPendingDeletions(): Promise<number> {
+export async function flushPendingDeletions(options?: { throwOnFailure?: boolean }): Promise<number> {
   if (!canReachServer() || !supabase || flushInProgress) return 0;
 
   flushInProgress = true;
   let done = 0;
+  const failures: string[] = [];
   try {
     const pending = await queryAll<PendingDeletion>(
       `SELECT id, table_name, record_id FROM pending_deletions ORDER BY created_at ASC`
@@ -94,6 +95,7 @@ export async function flushPendingDeletions(): Promise<number> {
       const { error } = await supabase.from(p.table_name).delete().eq('id', p.record_id);
       if (error) {
         if (__DEV__) console.warn('[liveSync] Remote delete failed:', p.table_name, p.record_id, error.message);
+        failures.push(`${p.table_name} : ${error.message}`);
         continue;
       }
       await executeSql(`DELETE FROM pending_deletions WHERE id = ?`, [p.id]);
@@ -101,8 +103,13 @@ export async function flushPendingDeletions(): Promise<number> {
     }
   } catch (err) {
     if (__DEV__) console.warn('[liveSync] flushPendingDeletions error:', err);
+    failures.push(err instanceof Error ? err.message : String(err));
   } finally {
     flushInProgress = false;
+  }
+  // Synchro complète : une suppression refusée est dite, au lieu de rester en attente sans un mot.
+  if (options?.throwOnFailure && failures.length > 0) {
+    throw new Error(`${failures.length} suppression(s) refusée(s) par le serveur (${failures[0]})`);
   }
   return done;
 }

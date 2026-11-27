@@ -1522,26 +1522,44 @@ function NativeSessionScreen() {
       return;
     }
 
-    setIsUploadingPhoto(true);
-    let photoPath: string | null = null;
-
-    // Upload photo if one was selected
-    if (remarquePhotoUri) {
-      // Generate a temporary ID for the photo path
-      const tempId = Date.now().toString();
-      const result = await uploadEventPhoto(user.id, tempId, remarquePhotoUri, photoQuality);
-      if (result.success && result.path) {
-        photoPath = result.path;
+    const studentId = selectedStudent.id;
+    const saveRemarque = async (photoPath: string | null) => {
+      setIsUploadingPhoto(true);
+      try {
+        await addEvent(studentId, EVENT_TYPES.REMARQUE, null, trimmedText || null, photoPath);
+        setRemarqueText('');
+        setRemarquePhotoUri(null);
+        setShowRemarqueModal(false);
+        setSelectedStudent(null);
+      } finally {
+        setIsUploadingPhoto(false);
       }
+    };
+
+    if (!remarquePhotoUri) {
+      await saveRemarque(null);
+      return;
     }
 
-    await addEvent(selectedStudent.id, EVENT_TYPES.REMARQUE, null, trimmedText || null, photoPath);
-
-    setRemarqueText('');
-    setRemarquePhotoUri(null);
+    // La photo part tout de suite vers le serveur. Si l'envoi échoue (pas de réseau), on ne
+    // ferme pas en silence : la photo serait perdue. Le professeur choisit.
+    setIsUploadingPhoto(true);
+    const tempId = Date.now().toString();
+    const result = await uploadEventPhoto(user.id, tempId, remarquePhotoUri, photoQuality)
+      .catch(() => ({ success: false as const, path: undefined }));
     setIsUploadingPhoto(false);
-    setShowRemarqueModal(false);
-    setSelectedStudent(null);
+    if (result.success && result.path) {
+      await saveRemarque(result.path);
+      return;
+    }
+    Alert.alert(
+      'Photo non envoyée',
+      "La photo n'a pas pu être envoyée (pas de réseau ?). Réessayez plus tard, ou enregistrez la remarque sans la photo.",
+      [
+        { text: 'Garder et réessayer', style: 'cancel' },
+        { text: 'Enregistrer sans photo', onPress: () => { void saveRemarque(null); } },
+      ]
+    );
   };
 
   const handlePickRemarquePhoto = async (source: 'camera' | 'gallery') => {
@@ -1612,18 +1630,25 @@ function NativeSessionScreen() {
   const handleSaveOralEvaluation = async (student: StudentWithMapping, grade: number) => {
     if (!user || !activeSession) return;
 
+    // L'évaluation orale s'écrit directement sur le serveur : en cas d'échec (pas de réseau),
+    // la fenêtre reste ouverte avec la note choisie, pour réessayer.
+    const failed = () => Alert.alert(
+      'Évaluation non enregistrée',
+      "L'évaluation orale a besoin du réseau. La fenêtre reste ouverte : réessayez dès que le réseau revient."
+    );
     setIsSavingOral(true);
     try {
       const result = await addEvaluation(user.id, student.id, activeSession.class_id, grade);
       if (!result) {
-        Alert.alert('Erreur', 'Impossible d\'enregistrer l\'évaluation');
+        failed();
+        return;
       }
-    } catch (error) {
-      Alert.alert('Erreur', 'Impossible d\'enregistrer l\'évaluation');
-    } finally {
-      setIsSavingOral(false);
       setShowOralSheet(false);
       setOralPickedStudent(null);
+    } catch (error) {
+      failed();
+    } finally {
+      setIsSavingOral(false);
     }
   };
 
