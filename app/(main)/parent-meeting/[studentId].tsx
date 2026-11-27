@@ -6,7 +6,6 @@ import {
   Pressable,
   ActivityIndicator,
   ScrollView,
-  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
@@ -14,6 +13,7 @@ import { useParentMeetingStore } from '../../../stores/parentMeetingStore';
 import { ORAL_GRADE_LABELS } from '../../../stores/oralEvaluationStore';
 import { useAuthStore, useGroupSessionStore } from '../../../stores';
 import { theme, PERIOD_LABELS_FULL } from '../../../constants';
+import { RemarkPhoto } from '../../../components/RemarkPhoto';
 import {
   BehaviorPositioning,
   GradePositioning,
@@ -503,9 +503,7 @@ export default function StudentDashboardScreen() {
                         {c.type !== 'remarque' && <Text style={styles.commentType}>{TYPE_LABEL[c.type] ?? c.type} : </Text>}
                         {c.note || 'Remarque sans texte'}
                       </Text>
-                      {c.photo_path && (
-                        <Image source={{ uri: c.photo_path }} style={styles.commentPhoto} resizeMode="cover" />
-                      )}
+                      {c.photo_path && <RemarkPhoto path={c.photo_path} style={styles.commentPhoto} />}
                     </View>
                   ))}
                 </View>

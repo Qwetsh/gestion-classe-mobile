@@ -64,23 +64,28 @@ export interface SyncResult {
 export async function getUnsyncedCount(): Promise<number> {
   if (!isSupabaseConfigured) return 0;
 
+  // La pastille ne compte que ce que l'envoi fera vraiment partir. Un TP en brouillon (ou resté
+  // « actif » après sa séance) et tout ce qui en dépend restent sur le téléphone par choix : les
+  // compter laissait la pastille rouge pour toujours. Même chose pour une salle supprimée.
+  const sendableGs = (gs: string) =>
+    `(${gs}.synced_at IS NOT NULL OR ${gs}.status = 'completed' OR (${gs}.status = 'active' AND EXISTS (SELECT 1 FROM sessions se WHERE se.id = ${gs}.linked_session_id AND se.ended_at IS NULL)))`;
   const result = await queryFirst<{ total: number }>(`
     SELECT (
       (SELECT COUNT(*) FROM sessions WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM events WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM classes WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM students WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM rooms WHERE synced_at IS NULL AND is_deleted = 0) +
       (SELECT COUNT(*) FROM class_room_plans WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_groups WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_group_members WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM class_group_plans WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_sessions WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM grading_criteria WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM session_groups WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM session_group_members WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_grades WHERE synced_at IS NULL) +
-      (SELECT COUNT(*) FROM group_session_photos WHERE synced_at IS NULL) +
+      (SELECT COUNT(*) FROM group_sessions gs WHERE gs.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM grading_criteria c JOIN group_sessions gs ON gs.id = c.session_id WHERE c.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM session_groups g JOIN group_sessions gs ON gs.id = g.session_id WHERE g.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM session_group_members m JOIN session_groups g ON g.id = m.group_id JOIN group_sessions gs ON gs.id = g.session_id WHERE m.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM group_grades r JOIN session_groups g ON g.id = r.group_id JOIN group_sessions gs ON gs.id = g.session_id WHERE r.synced_at IS NULL AND ${sendableGs('gs')}) +
+      (SELECT COUNT(*) FROM group_session_photos p JOIN group_sessions gs ON gs.id = p.session_id WHERE p.synced_at IS NULL AND ${sendableGs('gs')}) +
       (SELECT COUNT(*) FROM tp_templates WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM tp_template_criteria WHERE synced_at IS NULL) +
       (SELECT COUNT(*) FROM stamp_categories WHERE synced_at IS NULL) +
