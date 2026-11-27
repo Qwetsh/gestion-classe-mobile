@@ -36,6 +36,19 @@ export const classroomChannelName = (sessionId: string) => `classroom:${sessionI
 let channel: RealtimeChannel | null = null;
 let channelSessionId: string | null = null;
 
+type CommandListener = (cmd: ClassroomCommand) => void;
+const listeners = new Set<CommandListener>();
+
+/**
+ * Écoute les commandes venues de l'écran (« +1 tampon », tirage au sort du tableau).
+ * Avant, le canal ne servait qu'à émettre : ces commandes n'arrivaient jamais.
+ * Renvoie la fonction qui arrête l'écoute.
+ */
+export function onClassroomCommand(listener: CommandListener): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 /** Rejoint le canal de la séance (idempotent). */
 export function connectClassroomChannel(sessionId: string): void {
   if (!isSupabaseConfigured || !supabase) return;
@@ -45,6 +58,12 @@ export function connectClassroomChannel(sessionId: string): void {
   channelSessionId = sessionId;
   channel = supabase.channel(classroomChannelName(sessionId), {
     config: { broadcast: { ack: false, self: false } },
+  });
+  channel.on('broadcast', { event: CLASSROOM_EVENT }, ({ payload }) => {
+    const cmd = payload as ClassroomCommand;
+    for (const listener of listeners) {
+      try { listener(cmd); } catch (err) { if (__DEV__) console.warn('[classroomChannel] listener error:', err); }
+    }
   });
   channel.subscribe((status) => {
     if (__DEV__) console.log('[classroomChannel]', status);

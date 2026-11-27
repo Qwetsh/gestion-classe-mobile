@@ -75,10 +75,11 @@ export default function RoomDetailScreen() {
 
     return (
       <View style={styles.gridPreviewCard}>
+        {/* Tableau EN BAS, comme dans l'éditeur de plan et la séance : la dernière rangée est celle du devant */}
+        <View style={styles.gridContainer}>{rows}</View>
         <View style={styles.teacherArea}>
           <Text style={styles.teacherText}>Tableau</Text>
         </View>
-        <View style={styles.gridContainer}>{rows}</View>
         <View style={styles.gridLegend}>
           <View style={styles.legendItem}>
             <View style={[styles.legendDot, { backgroundColor: theme.colors.primary }]} />
@@ -329,7 +330,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceSecondary,
     borderRadius: theme.radius.md,
     padding: theme.spacing.sm,
-    marginBottom: theme.spacing.md,
+    marginTop: theme.spacing.md,
     alignItems: 'center',
   },
   teacherText: {

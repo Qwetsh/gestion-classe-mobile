@@ -245,16 +245,20 @@ async function syncStudents(): Promise<number> {
     class_id: string;
     pseudo: string;
     created_at: string;
-  }>(`SELECT id, user_id, class_id, pseudo, created_at FROM students WHERE synced_at IS NULL`);
+    is_deleted: number | null;
+  }>(`SELECT id, user_id, class_id, pseudo, created_at, is_deleted FROM students WHERE synced_at IS NULL`);
 
   if (unsynced.length === 0) return 0;
 
+  // is_deleted part aussi : un élève retiré de la classe sur le téléphone l'est sur le serveur
+  // (avant, le retrait restait local et la réception suivante remettait l'élève).
   const toSync = unsynced.map((s) => ({
     id: s.id,
     user_id: s.user_id,
     class_id: s.class_id,
     pseudo: s.pseudo,
     created_at: s.created_at,
+    is_deleted: s.is_deleted === 1,
   }));
 
   const { error } = await supabase
@@ -2213,7 +2217,7 @@ async function pullFromServerUnlocked(userId: string): Promise<{
     // noms, qui ne sont gardés que sur ce téléphone.
     const { data: serverStudents, error: studentsError } = await fetchAllRows((from, to) => supabase!
       .from('students')
-      .select('id, user_id, class_id, pseudo, created_at, has_pap, has_ppre, has_pai')
+      .select('id, user_id, class_id, pseudo, created_at, has_pap, has_ppre, has_pai, is_deleted')
       .eq('user_id', userId)
       .order('id')
       .range(from, to));
@@ -2245,15 +2249,21 @@ async function pullFromServerUnlocked(userId: string): Promise<{
       // Add new students from server
       for (const student of serverStudents) {
         try {
-          const existing = await queryAll<{ id: string }>(
-            `SELECT id FROM students WHERE id = ?`,
+          const existing = await queryAll<{ id: string; synced_at: string | null }>(
+            `SELECT id, synced_at FROM students WHERE id = ?`,
             [student.id]
           );
 
+          if (existing.length > 0 && existing[0].synced_at === null) {
+            // Modifié sur le téléphone (retrait, pseudo…) et pas encore envoyé : ne pas l'écraser
+            continue;
+          }
+
           if (existing.length === 0) {
             await executeSql(
-              `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at, is_deleted, has_pap, has_ppre, has_pai) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+              `INSERT INTO students (id, user_id, class_id, pseudo, created_at, synced_at, is_deleted, has_pap, has_ppre, has_pai) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [student.id, student.user_id, student.class_id, student.pseudo, student.created_at, now,
+                student.is_deleted ? 1 : 0,
                 student.has_pap ? 1 : 0, student.has_ppre ? 1 : 0, student.has_pai ? 1 : 0]
             );
             result.students++;
@@ -2261,11 +2271,11 @@ async function pullFromServerUnlocked(userId: string): Promise<{
               console.log('[syncService] Pulled student:', student.pseudo);
             }
           } else {
-            // Student exists: restore it and sync server-side changes
-            // (class change on web, year-transition detach, pseudo edit, PAP/PPRE/PAI)
+            // Student exists: sync server-side changes (class change on web, year-transition
+            // detach, pseudo edit, PAP/PPRE/PAI, retrait) ; is_deleted vient du serveur
             await executeSql(
-              `UPDATE students SET is_deleted = 0, synced_at = ?, class_id = ?, pseudo = ?, has_pap = ?, has_ppre = ?, has_pai = ? WHERE id = ?`,
-              [now, student.class_id, student.pseudo,
+              `UPDATE students SET is_deleted = ?, synced_at = ?, class_id = ?, pseudo = ?, has_pap = ?, has_ppre = ?, has_pai = ? WHERE id = ?`,
+              [student.is_deleted ? 1 : 0, now, student.class_id, student.pseudo,
                 student.has_pap ? 1 : 0, student.has_ppre ? 1 : 0, student.has_pai ? 1 : 0, student.id]
             );
             if (__DEV__) {
