@@ -126,8 +126,10 @@ export async function updatePositions(
   // First ensure the plan exists
   await getOrCreatePlan(classId, roomId);
 
+  // synced_at = NULL : le plan est « à envoyer ». Sans cela, une retouche faite sur le
+  // téléphone ne partait jamais au serveur et la synchronisation suivante l'écrasait.
   await executeSql(
-    `UPDATE class_room_plans SET positions = ?, updated_at = ? WHERE class_id = ? AND room_id = ?`,
+    `UPDATE class_room_plans SET positions = ?, updated_at = ?, synced_at = NULL WHERE class_id = ? AND room_id = ?`,
     [positionsJson, now, classId, roomId]
   );
 
